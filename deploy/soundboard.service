@@ -1,0 +1,15 @@
+[Unit]
+Description=Raspberry Pi Soundboard
+After=sound.target
+
+[Service]
+Type=simple
+User=pi
+Environment="SDL_AUDIODRIVER=alsa"
+WorkingDirectory=/home/pi/soundboard
+ExecStart=/usr/bin/python3 /home/pi/soundboard/soundboard_pi.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

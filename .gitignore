@@ -1,0 +1,25 @@
+# Audio library & runtime data (not code)
+sounds/
+cache_audio/
+staging/
+usage.json
+test.wav
+*.log
+*.log.*
+
+# Secrets — never commit
+.flask_secret
+
+# Python
+__pycache__/
+*.pyc
+
+# Patch backups & pipes
+*.bak
+*.bak.*
+.lgd-*
+
+# secrets + persisted chat/activity
+secrets_config.py
+chat_store.json
+activity_store.json

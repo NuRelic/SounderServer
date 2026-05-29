@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <title>Soundserver — Login</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+      background: radial-gradient(circle at 50% 28%, #1d1d44, #0a0a14 70%);
+      font-family: system-ui, -apple-system, sans-serif; color: #e0e0e0; padding: 16px;
+    }
+    .card {
+      background: #0f0f1e; border: 1px solid #2a2a45; border-radius: 18px;
+      padding: 34px 28px; max-width: 360px; width: 100%; text-align: center;
+      box-shadow: 0 18px 55px rgba(0,0,0,.6);
+    }
+    h1 { margin: 0 0 4px; font-size: 1.6rem; color: #a78bfa; }
+    .sub { color: #8b8ba0; font-size: .85rem; margin-bottom: 22px; }
+    input[type=password] {
+      width: 100%; padding: 14px; border: 1px solid #333; border-radius: 11px;
+      background: #16213e; color: #fff; font-size: 1.05rem; margin-bottom: 12px;
+    }
+    button {
+      width: 100%; padding: 14px; border: none; border-radius: 11px; background: #7c3aed;
+      color: #fff; font-weight: 700; font-size: 1.05rem; cursor: pointer; transition: background .15s;
+    }
+    button:hover { background: #6d28d9; }
+    .err { color: #f87171; font-size: .85rem; min-height: 18px; margin-bottom: 8px; }
+    .scouter { margin-top: 20px; font-size: .82rem; color: #f59e0b; font-weight: 700; letter-spacing: .3px; }
+    .hint { margin-top: 6px; font-size: .8rem; color: #6b7280; }
+    .hint b { color: #93c5fd; }
+  </style>
+</head>
+<body>
+  <form class="card" method="POST" action="/login">
+    <h1>🔊 Soundserver</h1>
+    <div class="sub">Enter the password to get in</div>
+    <div class="err">{{ err }}</div>
+    <input type="text" name="name" placeholder="Your name (optional)" autocomplete="nickname" maxlength="24">
+    <input type="password" name="password" placeholder="Password" autocomplete="current-password">
+    <button type="submit">Enter</button>
+    <div class="scouter">💥 “WHAT DOES THE SCOUTER SAY ABOUT THE PASSWORD LEVEL?!”</div>
+    <div class="hint">…ask <b>Vegeta</b>.</div>
+  </form>
+</body>
+</html>
