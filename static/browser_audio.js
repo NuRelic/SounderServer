@@ -86,12 +86,4 @@
   pollPresence(); setInterval(pollPresence, 8000);
   document.addEventListener("pointerdown", unlock, { once: true, capture: true });
   document.addEventListener("touchstart", unlock, { once: true, capture: true });
-
-  // small unobtrusive source link at the bottom of the page
-  try {
-    var _gh = document.createElement("div");
-    _gh.style.cssText = "text-align:center; padding:16px 12px 28px; font-size:.72rem;";
-    _gh.innerHTML = '<a href="https://github.com/NuRelic/SounderServer" target="_blank" rel="noopener" style="color:#6b7280; text-decoration:none;">\u2699\uFE0F source on GitHub</a>';
-    document.body.appendChild(_gh);
-  } catch (e) {}
 })();
