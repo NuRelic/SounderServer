@@ -70,7 +70,7 @@
 
   function pollPresence() { fetch("/api/presence").then(function (r) { return r.json(); }).then(function (d) { renderPresence(d.users || []); }).catch(function () {}); }
 
-  function start() { setOn(); pollActive(); if (!timer) timer = setInterval(pollActive, 1000); }
+  function start() { setOn(); pollActive(); if (!timer) timer = setInterval(pollActive, 600); }
   function stop() { if (timer) { clearInterval(timer); timer = null; } stopAll(); setOff(); }
 
   btn.addEventListener("click", function () { unlock(); if (!on) start(); else stop(); });
@@ -113,6 +113,12 @@
       try { localStorage.setItem("cc_bvol", browserVol); } catch (e) {}
     });
   }
+
+  // responsiveness: a click is probably a play — poll right away a few times
+  document.addEventListener("click", function () {
+    if (!on) return;
+    [120, 300, 550].forEach(function (ms) { setTimeout(pollActive, ms); });
+  }, true);
 
   start();
   pollPresence(); setInterval(pollPresence, 8000);
