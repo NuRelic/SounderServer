@@ -37,6 +37,7 @@
   var clockOffset = 0, _bestRtt = Infinity;
   function syncedNow() { return (Date.now() + clockOffset) / 1000; }   // server epoch seconds
   function clockSample() {
+    if (document.hidden) return;   // hidden tabs are timer-throttled anyway; resync on return
     var t0 = Date.now();
     fetch("/api/time", { cache: "no-store" }).then(function (r) { return r.json(); }).then(function (d) {
       var t1 = Date.now(), rtt = t1 - t0;
@@ -78,6 +79,7 @@
           var _tokUrl = "/api/active/" + s.token + ".mp3";
           var _cached = (_key && clipCache[_key] && clipCache[_key] !== 1) ? clipCache[_key] : null;
           a = new Audio(_cached || _tokUrl);
+          try { a.preload = "auto"; a.load(); } catch (e) {}   // fetch during the sync buffer so play() is instant
           a.volume = browserVol; a._start = s.start || 0; a._dur = s.duration || 0;
           pool[s.token] = a;
           // cache short clips for instant, network-free replay next time
@@ -127,8 +129,13 @@
     renderActive([]);
   }
 
+  var _activeSig = null;
   function renderActive(act) {
     var el = document.getElementById("cc-active"); if (!el) return;
+    // skip the innerHTML rebuild (and its reflow) when nothing visible changed
+    var sig = (isAdmin ? "a" : "") + "|" + act.map(function (s) { return s.token + ":" + (s.paused ? 1 : 0) + ":" + (s.by || "") + ":" + (s.name || ""); }).join("|");
+    if (sig === _activeSig) return;
+    _activeSig = sig;
     if (!act.length) { el.textContent = ""; return; }
     el.innerHTML = act.map(function (s) {
       var label = (s.kind === "song" ? "🎵 " : "🔊 ") + escapeHtml(s.name || "sound") + (s.by ? ' <span style="opacity:.7">· ' + escapeHtml(s.by) + "</span>" : "");
@@ -142,10 +149,22 @@
   }
   function escapeHtml(s) { return String(s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
 
-  function pollPresence() { fetch("/api/presence").then(function (r) { return r.json(); }).then(function (d) { renderPresence(d.users || []); }).catch(function () {}); }
+  function pollPresence() { if (document.hidden) return; fetch("/api/presence").then(function (r) { return r.json(); }).then(function (d) { renderPresence(d.users || []); }).catch(function () {}); }
 
-  function start() { setOn(); pollActive(); if (!timer) timer = setInterval(pollActive, 600); }
-  function stop() { if (timer) { clearInterval(timer); timer = null; } stopAll(); setOff(); }
+  // Adaptive poll cadence: brisk while sound is playing, relaxed when idle, and
+  // slowest when the tab is hidden (a pocketed phone still hears new sounds, just
+  // a beat later). The click burst below covers local-play snappiness.
+  function nextPollDelay() {
+    for (var k in pool) return 600;            // something playing -> stay brisk
+    return document.hidden ? 3000 : 1200;      // idle
+  }
+  function scheduleNextPoll() {
+    if (timer) clearTimeout(timer);
+    if (!on) return;
+    timer = setTimeout(function () { pollActive(); scheduleNextPoll(); }, nextPollDelay());
+  }
+  function start() { setOn(); pollActive(); scheduleNextPoll(); }
+  function stop() { if (timer) { clearTimeout(timer); timer = null; } stopAll(); setOff(); }
 
   btn.addEventListener("click", function () { unlock(); if (!on) start(); else stop(); });
 
@@ -161,6 +180,7 @@
 
   // per-person play limits: show to everyone, let admins change them
   function fetchLimits() {
+    if (document.hidden) return;
     fetch("/api/limits", { cache: "no-store" }).then(function (r) { return r.json(); }).then(function (d) {
       var lim = document.getElementById("cc-limits");
       if (lim) lim.textContent = "🎚️ Max per person: " + d.songs_per_person + " song" + (d.songs_per_person > 1 ? "s" : "") + " · " + d.sfx_per_person + " sound" + (d.sfx_per_person > 1 ? "s" : "") + " at once";
@@ -188,16 +208,27 @@
     });
   }
 
-  // responsiveness: a click is probably a play — poll right away a few times
-  document.addEventListener("click", function () {
+  // responsiveness: a click on a PLAY control is probably a play — poll right away
+  // a few times. Gated so chat/tab/scroll clicks don't fire wasted catch-up polls.
+  document.addEventListener("click", function (e) {
+    var t = e.target;
+    if (!(t && t.closest && t.closest(".song-btn,.slot-btn,.random-btn,.cc-topbtn,[data-fn]"))) return;
     lastClick = Date.now();
     if (!on) return;
     [120, 300, 550].forEach(function (ms) { setTimeout(pollActive, ms); });
   }, true);
 
+  // returning to the foreground: catch up immediately instead of waiting out the
+  // relaxed intervals, and re-arm the adaptive poll.
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) return;
+    clockSample(); fetchLimits(); pollPresence();
+    if (on) { pollActive(); scheduleNextPoll(); }
+  });
+
   // sync mode: keep each sound locked to the shared timeline (catch up if behind)
   setInterval(function () {
-    if (!syncOn) return;
+    if (!syncOn || document.hidden) return;
     Object.keys(pool).forEach(function (tok) {
       var a = pool[tok];
       if (!a || a._waiting || a.paused || !a._start) return;

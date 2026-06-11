@@ -331,7 +331,7 @@
         #cc-search-bar{flex:1;}
         #cc-toprow #cc-stream-btn{width:auto; padding:10px 18px; font-size:.92rem;}
     }</style>
-    <script src="/static/browser_audio.js?v=3"></script>
+    <script src="/static/browser_audio.js?v=4"></script>
 
     <div class="section-tabs" id="mainTabs">
         <button class="active" onclick="showSection('songs')">🎵 Songs</button>
@@ -880,6 +880,7 @@
         }
 
         async function updateStatus() {
+            if (document.hidden) return;   // skip the 2s status poll while the tab is hidden
             try {
                 const res = await fetch('/api/status');
                 const data = await res.json();
@@ -1088,6 +1089,7 @@
         loadDcc();
         updateStatus();
         setInterval(updateStatus, 2000);
+        document.addEventListener('visibilitychange', () => { if (!document.hidden) updateStatus(); });
     </script>
 <script src="/static/wavesurfer.min.js"></script>
 <script src="/static/wavesurfer.regions.min.js"></script>
@@ -1101,7 +1103,7 @@
 })();
 </script>
 
-<script src="/static/chat.js"></script>
+<script src="/static/chat.js?v=2"></script>
     <div style="text-align:center; padding:18px 12px 32px; font-size:.72rem;">
         <a href="https://github.com/NuRelic/SounderServer" target="_blank" rel="noopener" style="color:#6b7280; text-decoration:none;">&#9881;&#65039; source on GitHub</a>
     </div>

@@ -254,12 +254,19 @@ def _prune_active():
 
 def _register_active(ch_idx, channel, sound, path, name, by, kind, duration):
     global _PLAY_SEQ
+    key = _sound_key(path)                       # stat once here, not on every /api/active poll
     with _ACTIVE_LOCK:
         _PLAY_SEQ += 1
         tok = _PLAY_SEQ
         _ACTIVE[tok] = {"ch": channel, "ch_idx": ch_idx, "sound": sound, "path": path,
                         "name": name, "by": by, "sid": _trigger_sid(), "kind": kind, "start": time.time(),
-                        "duration": duration, "paused": False}
+                        "duration": duration, "paused": False, "src": key}
+    # Prewarm the browser MP3 now (background) so the first /api/active/<tok>.mp3
+    # fetch doesn't block on ffmpeg — overlaps the poll-detect the browser already waits.
+    try:
+        threading.Thread(target=_cached_mp3, args=(path,), daemon=True).start()
+    except Exception:
+        pass
     return tok
 
 
@@ -316,7 +323,7 @@ def _active_list():
     with _ACTIVE_LOCK:
         return [{"token": t, "name": e["name"], "by": e["by"], "kind": e["kind"],
                  "paused": bool(e.get("paused")), "start": e["start"], "duration": e.get("duration", 0),
-                 "src": _sound_key(e["path"])}
+                 "src": e.get("src", "")}
                 for t, e in sorted(_ACTIVE.items())]
 
 
@@ -2029,7 +2036,8 @@ def api_chat():
 @webapp.after_request
 def _no_cache_api(resp):
     try:
-        if request.path.startswith("/api/"):
+        p = request.path
+        if p.startswith("/api/") and not (p.endswith(".mp3") or p.endswith(".wav")):
             resp.headers["Cache-Control"] = "no-store, max-age=0"
             resp.headers["Pragma"] = "no-cache"
     except Exception:
@@ -2177,7 +2185,9 @@ def api_active_wav(token):
         path = e["path"] if e else None
     if not path or not os.path.exists(path):
         return ("gone", 404)
-    return _send_file(path, mimetype="audio/wav", conditional=True)
+    resp = _send_file(path, mimetype="audio/wav", conditional=True)
+    resp.headers["Cache-Control"] = "public, max-age=86400, immutable"
+    return resp
 
 
 _AUDIO_CACHE_DIR = os.path.join(os.path.dirname(SOUND_DIR), "cache_audio")
@@ -2239,8 +2249,12 @@ def api_active_mp3(token):
         return ("gone", 404)
     mp3 = _cached_mp3(path)
     if mp3:
-        return _send_file(mp3, mimetype="audio/mpeg", conditional=True)
-    return _send_file(path, mimetype="audio/wav", conditional=True)   # fallback
+        resp = _send_file(mp3, mimetype="audio/mpeg", conditional=True)
+        resp.headers["Cache-Control"] = "public, max-age=86400, immutable"
+        return resp
+    resp = _send_file(path, mimetype="audio/wav", conditional=True)   # fallback
+    resp.headers["Cache-Control"] = "public, max-age=86400, immutable"
+    return resp
 
 
 @webapp.route('/api/active/<int:token>/stop', methods=['POST'])

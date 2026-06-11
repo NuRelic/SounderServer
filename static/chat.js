@@ -83,8 +83,8 @@
   }
 
   function get(url) { return fetch(url, { cache: "no-store" }).then(function (r) { return r.json(); }); }
-  function pollChat() { get("/api/chat?since=" + chatSince).then(function (d) { (d.messages || []).forEach(addMsg); }).catch(function () {}); }
-  function pollLog() { get("/api/activity?since=" + logSince).then(function (d) { (d.events || []).forEach(addEvent); }).catch(function () {}); }
+  function pollChat() { if (document.hidden) return; get("/api/chat?since=" + chatSince).then(function (d) { (d.messages || []).forEach(addMsg); }).catch(function () {}); }
+  function pollLog() { if (document.hidden) return; get("/api/activity?since=" + logSince).then(function (d) { (d.events || []).forEach(addEvent); }).catch(function () {}); }
 
   function send() {
     var t = textEl.value.trim(); if (!t) return; textEl.value = "";
@@ -150,4 +150,6 @@
   pollChat(); pollLog();
   setInterval(pollChat, 2000);
   setInterval(pollLog, 2000);
+  // catch up the chat/log the moment the tab is foregrounded again
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) { pollChat(); pollLog(); } });
 })();
