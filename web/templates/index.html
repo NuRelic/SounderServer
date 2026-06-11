@@ -86,16 +86,16 @@
         /* Song buttons */
         .song-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-            gap: 8px;
+            grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+            gap: 6px;
         }
         .song-btn {
-            padding: 12px 8px;
+            padding: 8px 6px;
             border: 1px solid #2a2a3e;
             border-radius: 8px;
             background: #16213e;
             color: #e0e0e0;
-            font-size: 0.8rem;
+            font-size: 0.76rem;
             cursor: pointer;
             text-align: center;
             transition: all 0.15s;
@@ -340,6 +340,7 @@
         <button id="tab-add" onclick="showSection('add')">➕ Add / Edit</button>
     </div>
     <div class="section-tabs" id="sfxSubTabs" style="display:none; background:#111;">
+        <button onclick="showSfxCat('_favorites')">⭐ Favs</button>
         <button class="active" onclick="showSfxCat('react')">React</button>
         <button onclick="showSfxCat('anime_quotes')">Anime</button>
         <button onclick="showSfxCat('gaming')">Gaming</button>
@@ -373,9 +374,6 @@
 
     <!-- SFX -->
     <div id="section-sfx" class="panel">
-        <button class="random-btn" id="sfxRandomBtn" onclick="playRandomSfx()">
-            🎰 Random from this category
-        </button>
         <div class="song-grid" id="sfxGrid">
             <div class="loading">Loading...</div>
         </div>
@@ -911,31 +909,57 @@
                 if (b.textContent.includes('SFX')) b.classList.add('active');
             });
             // Highlight sub-tab
-            const tabMap = {'react':'React','anime_quotes':'Anime','gaming':'Gaming','meme_clips':'Memes'};
+            const tabMap = {'_favorites':'⭐ Favs','react':'React','anime_quotes':'Anime','gaming':'Gaming','meme_clips':'Memes'};
             document.querySelectorAll('#sfxSubTabs button').forEach(b => {
                 b.classList.toggle('active', b.textContent === tabMap[cat]);
             });
-            loadSfxCategory(cat);
+            if (cat === '_favorites') loadFavorites();
+            else loadSfxCategory(cat);
+        }
+
+        function sfxFavs() { try { return JSON.parse(localStorage.getItem('cc_sfx_favs') || '[]'); } catch (e) { return []; } }
+        function isSfxFav(fn) { return sfxFavs().indexOf(fn) !== -1; }
+        function toggleSfxFav(fn) { var f = sfxFavs(); var i = f.indexOf(fn); if (i === -1) f.push(fn); else f.splice(i, 1); try { localStorage.setItem('cc_sfx_favs', JSON.stringify(f)); } catch (e) {} }
+
+        function renderSfxClips(clips) {
+            const grid = document.getElementById('sfxGrid');
+            grid.innerHTML = '';
+            if (!clips || !clips.length) { grid.innerHTML = '<div class="loading">Nothing here yet</div>'; return; }
+            for (const clip of clips) {
+                const btn = document.createElement('button');
+                btn.className = 'song-btn';
+                btn.style.position = 'relative';
+                const lbl = document.createElement('span'); lbl.textContent = clip.display;
+                const star = document.createElement('span');
+                star.textContent = isSfxFav(clip.filename) ? '★' : '☆';
+                star.style.cssText = 'position:absolute;top:1px;right:6px;font-size:1rem;color:#f59e0b;cursor:pointer;line-height:1;';
+                star.onclick = function (e) { e.stopPropagation(); toggleSfxFav(clip.filename); star.textContent = isSfxFav(clip.filename) ? '★' : '☆'; };
+                btn.appendChild(lbl); btn.appendChild(star);
+                btn.onclick = () => playSfx(clip.filename, clip.category, btn);
+                grid.appendChild(btn);
+            }
         }
 
         async function loadSfxCategory(cat) {
             try {
                 const res = await fetch(`/api/sfx/list/${cat}`);
                 const data = await res.json();
-                const grid = document.getElementById('sfxGrid');
-                grid.innerHTML = '';
-                const catDisplay = cat.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase());
-                document.getElementById('sfxRandomBtn').textContent = `🎰 Random ${catDisplay}`;
-                for (const clip of data.clips) {
-                    const btn = document.createElement('button');
-                    btn.className = 'song-btn';
-                    btn.textContent = clip.display;
-                    btn.onclick = () => playSfx(clip.filename, clip.category, btn);
-                    grid.appendChild(btn);
-                }
-                if (data.clips.length === 0) {
-                    grid.innerHTML = '<div class="loading">No clips yet</div>';
-                }
+                (data.clips || []).sort((a, b) => (b.count || 0) - (a.count || 0));
+                renderSfxClips(data.clips || []);
+            } catch (e) {
+                document.getElementById('sfxGrid').innerHTML = '<div class="loading">Failed to load</div>';
+            }
+        }
+
+        async function loadFavorites() {
+            try {
+                const res = await fetch('/api/sfx/list');
+                const data = await res.json();
+                const favs = sfxFavs();
+                let clips = (data.clips || []).filter(c => favs.indexOf(c.filename) !== -1);
+                clips.sort((a, b) => (b.count || 0) - (a.count || 0));
+                if (!clips.length) { document.getElementById('sfxGrid').innerHTML = '<div class="loading">No favorites yet — tap the ☆ on any sound to add it</div>'; return; }
+                renderSfxClips(clips);
             } catch (e) {
                 document.getElementById('sfxGrid').innerHTML = '<div class="loading">Failed to load</div>';
             }
@@ -959,6 +983,13 @@
         }
 
         async function playRandomSfx() {
+            if (currentSfxCat === '_favorites') {
+                const favs = sfxFavs();
+                if (!favs.length) return;
+                const fn = favs[Math.floor(Math.random() * favs.length)];
+                await fetch('/api/sfx/play', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({filename: fn}) });
+                updateStatus(); return;
+            }
             await fetch('/api/sfx/play', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},

@@ -1489,6 +1489,13 @@ def api_sfx_list(category=None):
             if f.endswith(".wav") and os.path.isfile(os.path.join(SFX_DIR, f)):
                 name = f.replace('.wav', '').replace('sfx_', '').replace('_', ' ').title()
                 clips.append({"filename": f, "display": name, "category": "_root"})
+    try:
+        with open(USAGE_FILE) as _uf:
+            _usage = json.load(_uf)
+    except Exception:
+        _usage = {}
+    for _c in clips:
+        _c["count"] = _usage.get(_c["filename"], {}).get("count", 0)
     return jsonify({"clips": clips})
 
 
