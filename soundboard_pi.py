@@ -315,7 +315,8 @@ def _active_list():
     _prune_active()
     with _ACTIVE_LOCK:
         return [{"token": t, "name": e["name"], "by": e["by"], "kind": e["kind"],
-                 "paused": bool(e.get("paused")), "start": e["start"], "duration": e.get("duration", 0)}
+                 "paused": bool(e.get("paused")), "start": e["start"], "duration": e.get("duration", 0),
+                 "src": _sound_key(e["path"])}
                 for t, e in sorted(_ACTIVE.items())]
 
 
@@ -2184,14 +2185,22 @@ _TRANSCODE_LOCKS = {}
 _TRANSCODE_GLOBAL_LOCK = threading.Lock()
 
 
-def _cached_mp3(src_path):
-    """Return a cached 128k MP3 of src_path, transcoding once (keyed by path+mtime+size)."""
+def _sound_key(src_path):
+    """Stable content id for a sound file (path+mtime+size) — shared by the MP3 cache
+    and exposed to browsers so they can cache short clips for instant replay."""
     import hashlib
     try:
         st = os.stat(src_path)
     except OSError:
+        return ""
+    return hashlib.md5(("%s|%d|%d" % (src_path, int(st.st_mtime), st.st_size)).encode()).hexdigest()
+
+
+def _cached_mp3(src_path):
+    """Return a cached 128k MP3 of src_path, transcoding once (keyed by path+mtime+size)."""
+    key = _sound_key(src_path)
+    if not key:
         return None
-    key = hashlib.md5(("%s|%d|%d" % (src_path, int(st.st_mtime), st.st_size)).encode()).hexdigest()
     out = os.path.join(_AUDIO_CACHE_DIR, key + ".mp3")
     if os.path.exists(out) and os.path.getsize(out) > 0:
         return out

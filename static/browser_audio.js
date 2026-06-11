@@ -15,6 +15,23 @@
   var pool = {};   // token -> Audio element
   var SILENT = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
 
+  // Blob cache of short clips (<= CLIP_MAX_SEC) keyed by the server's stable content
+  // id (s.src), so replays start instantly with no network fetch / transcode.
+  var clipCache = {}, clipOrder = [], CLIP_MAX = 120, CLIP_MAX_SEC = 10;
+  function cacheClip(key, url) {
+    if (!key || clipCache[key]) return;
+    clipCache[key] = 1;   // reserve so we don't double-fetch while in flight
+    fetch(url, { cache: "force-cache" }).then(function (r) { return r.ok ? r.blob() : null; }).then(function (b) {
+      if (!b) { delete clipCache[key]; return; }
+      clipCache[key] = URL.createObjectURL(b); clipOrder.push(key);
+      while (clipOrder.length > CLIP_MAX) {
+        var k = clipOrder.shift();
+        if (clipCache[k] && clipCache[k] !== 1) { try { URL.revokeObjectURL(clipCache[k]); } catch (e) {} }
+        delete clipCache[k];
+      }
+    }).catch(function () { delete clipCache[key]; });
+  }
+
   var SYNC_BUFFER = 1.0;   // predictable lag (s) in sync mode
   var syncOn = true; try { var _sv = localStorage.getItem("cc_sync"); if (_sv !== null) syncOn = (_sv === "1"); } catch (e) {}   // default ON
   var clockOffset = 0, _bestRtt = Infinity;
@@ -57,9 +74,14 @@
         seen[s.token] = 1;
         var a = pool[s.token];
         if (!a) {
-          a = new Audio("/api/active/" + s.token + ".mp3");
+          var _key = s.src || "";
+          var _tokUrl = "/api/active/" + s.token + ".mp3";
+          var _cached = (_key && clipCache[_key] && clipCache[_key] !== 1) ? clipCache[_key] : null;
+          a = new Audio(_cached || _tokUrl);
           a.volume = browserVol; a._start = s.start || 0; a._dur = s.duration || 0;
           pool[s.token] = a;
+          // cache short clips for instant, network-free replay next time
+          if (_key && !_cached && s.duration && s.duration <= CLIP_MAX_SEC) cacheClip(_key, _tokUrl);
           a.addEventListener("playing", function () {
             if (lastClick && (Date.now() - lastClick) <= 4000) {
               var ms = Date.now() - lastClick; lastClick = 0;
