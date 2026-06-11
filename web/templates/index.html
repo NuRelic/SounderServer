@@ -335,7 +335,7 @@
         <button class="active" onclick="showSection('songs')">🎵 Songs</button>
         <button onclick="showSection('sfx')">💥 SFX</button>
         <button onclick="showSection('dcc')">🎙 DCC</button>
-        <button onclick="showSection('add')">➕ Add</button>
+        <button id="tab-add" onclick="showSection('add')">➕ Add / Edit</button>
     </div>
     <div class="section-tabs" id="sfxSubTabs" style="display:none; background:#111;">
         <button class="active" onclick="showSfxCat('react')">React</button>
@@ -1024,6 +1024,7 @@
 (function(){
   fetch("/api/me").then(function(r){return r.json();}).then(function(d){
     if(!d.admin){ ["cc-volbar","cc-transport","cc-limit-admin"].forEach(function(id){ var v=document.getElementById(id); if(v) v.style.display="none"; }); }
+    if(!d.can_edit){ var ta=document.getElementById("tab-add"); if(ta) ta.style.display="none"; }
   }).catch(function(){});
 })();
 </script>

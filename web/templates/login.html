@@ -6,43 +6,90 @@
   <title>Soundserver — Login</title>
   <style>
     * { box-sizing: border-box; }
-    body {
-      margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
       background: radial-gradient(circle at 50% 28%, #1d1d44, #0a0a14 70%);
-      font-family: system-ui, -apple-system, sans-serif; color: #e0e0e0; padding: 16px;
-    }
-    .card {
-      background: #0f0f1e; border: 1px solid #2a2a45; border-radius: 18px;
-      padding: 34px 28px; max-width: 360px; width: 100%; text-align: center;
-      box-shadow: 0 18px 55px rgba(0,0,0,.6);
-    }
+      font-family: system-ui, -apple-system, sans-serif; color: #e0e0e0; padding: 16px; }
+    .card { background: #0f0f1e; border: 1px solid #2a2a45; border-radius: 18px; padding: 30px 26px;
+      max-width: 370px; width: 100%; text-align: center; box-shadow: 0 18px 55px rgba(0,0,0,.6); }
     h1 { margin: 0 0 4px; font-size: 1.6rem; color: #a78bfa; }
-    .sub { color: #8b8ba0; font-size: .85rem; margin-bottom: 22px; }
-    input[type=password] {
-      width: 100%; padding: 14px; border: 1px solid #333; border-radius: 11px;
-      background: #16213e; color: #fff; font-size: 1.05rem; margin-bottom: 12px;
-    }
-    button {
-      width: 100%; padding: 14px; border: none; border-radius: 11px; background: #7c3aed;
-      color: #fff; font-weight: 700; font-size: 1.05rem; cursor: pointer; transition: background .15s;
-    }
-    button:hover { background: #6d28d9; }
-    .err { color: #f87171; font-size: .85rem; min-height: 18px; margin-bottom: 8px; }
-    .scouter { margin-top: 20px; font-size: .82rem; color: #f59e0b; font-weight: 700; letter-spacing: .3px; }
-    .hint { margin-top: 6px; font-size: .8rem; color: #6b7280; }
-    .hint b { color: #93c5fd; }
+    .sub { color: #8b8ba0; font-size: .85rem; margin-bottom: 18px; }
+    input { width: 100%; padding: 13px; border: 1px solid #333; border-radius: 11px;
+      background: #16213e; color: #fff; font-size: 1.02rem; margin-bottom: 10px; }
+    button.go { width: 100%; padding: 13px; border: none; border-radius: 11px; background: #7c3aed;
+      color: #fff; font-weight: 700; font-size: 1.02rem; cursor: pointer; }
+    button.go:hover { background: #6d28d9; }
+    .err { color: #f87171; font-size: .85rem; min-height: 16px; margin-bottom: 8px; }
+    .ok { color: #4ade80; font-size: .85rem; min-height: 16px; }
+    .scouter { margin-top: 16px; font-size: .8rem; color: #f59e0b; font-weight: 700; }
+    .hint { margin-top: 4px; font-size: .8rem; color: #6b7280; } .hint b { color: #93c5fd; }
+    .tabs { display: flex; gap: 6px; margin-bottom: 16px; }
+    .tabs a { flex: 1; padding: 8px; border-radius: 8px; font-size: .8rem; cursor: pointer;
+      background: #16213e; color: #9ca3af; text-decoration: none; font-weight: 600; }
+    .tabs a.on { background: #7c3aed; color: #fff; }
+    .note { font-size: .78rem; color: #8b8ba0; margin: 6px 0 12px; line-height: 1.4; }
   </style>
 </head>
 <body>
-  <form class="card" method="POST" action="/login">
+  <div class="card">
     <h1>🔊 Soundserver</h1>
-    <div class="sub">Enter the password to get in</div>
-    <div class="err">{{ err }}</div>
-    <input type="text" name="name" placeholder="Your name (optional)" autocomplete="nickname" maxlength="24">
-    <input type="password" name="password" placeholder="Password" autocomplete="current-password">
-    <button type="submit">Enter</button>
-    <div class="scouter">💥 “WHAT DOES THE SCOUTER SAY ABOUT THE PASSWORD LEVEL?!”</div>
-    <div class="hint">…ask <b>Vegeta</b>.</div>
-  </form>
+    <div class="sub">Welcome to the party</div>
+    <div class="tabs">
+      <a id="t-quick" class="on" onclick="mode('quick')">Quick access</a>
+      <a id="t-login" onclick="mode('login')">Account</a>
+      <a id="t-signup" onclick="mode('signup')">Sign up</a>
+    </div>
+
+    <!-- Quick access: shared password -->
+    <form id="m-quick" method="POST" action="/login">
+      <div class="err">{{ err }}</div>
+      <input type="text" name="name" placeholder="Your name (optional)" autocomplete="nickname" maxlength="24">
+      <input type="password" name="password" placeholder="Password" autocomplete="current-password">
+      <button class="go" type="submit">Enter</button>
+      <div class="scouter">💥 “WHAT DOES THE SCOUTER SAY ABOUT THE PASSWORD LEVEL?!”</div>
+      <div class="hint">…ask <b>Vegeta</b>.</div>
+    </form>
+
+    <!-- Account login -->
+    <form id="m-login" method="POST" action="/login" style="display:none;">
+      <input type="hidden" name="mode" value="account">
+      <div class="note">Log in with your approved account for Add / Edit access.</div>
+      <input type="text" name="login" placeholder="Email or username" autocomplete="username">
+      <input type="password" name="password" placeholder="Your account password" autocomplete="current-password">
+      <button class="go" type="submit">Log in</button>
+    </form>
+
+    <!-- Sign up -->
+    <div id="m-signup" style="display:none;">
+      <div class="note">Create an account to unlock <b>Add / Edit</b>. An admin approves new accounts.
+        This password is for your <i>soundboard account</i> — never your email password.</div>
+      <input id="su-email" type="email" placeholder="Email" autocomplete="email">
+      <input id="su-user" type="text" placeholder="Username" autocomplete="username" maxlength="24">
+      <input id="su-pass" type="password" placeholder="Choose a password (6+ chars)" autocomplete="new-password">
+      <button class="go" type="button" onclick="signup()">Request access</button>
+      <div id="su-msg" class="ok"></div>
+    </div>
+  </div>
+
+  <script>
+    function mode(m) {
+      ["quick", "login", "signup"].forEach(function (k) {
+        document.getElementById("m-" + k).style.display = (k === m) ? "block" : "none";
+        document.getElementById("t-" + k).classList.toggle("on", k === m);
+      });
+    }
+    function signup() {
+      var msg = document.getElementById("su-msg");
+      var body = { email: document.getElementById("su-email").value,
+                   username: document.getElementById("su-user").value,
+                   password: document.getElementById("su-pass").value };
+      msg.className = "ok"; msg.textContent = "Sending…";
+      fetch("/api/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+        .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+        .then(function (res) {
+          if (res.ok) { msg.className = "ok"; msg.textContent = "✅ Request sent! You'll get access once an admin approves you."; }
+          else { msg.className = "err"; msg.textContent = res.d.error || "Could not register."; }
+        }).catch(function () { msg.className = "err"; msg.textContent = "Network error."; });
+    }
+  </script>
 </body>
 </html>

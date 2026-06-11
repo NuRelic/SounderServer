@@ -1036,6 +1036,36 @@ try:
 except Exception:              # secrets_config.py is gitignored; put the REAL passwords there
     _USER_PASS, _ADMIN_PASS = "changeme-user", "changeme-admin"
 
+try:
+    from secrets_config import GMAIL_USER as _GMAIL_USER, GMAIL_APP_PASSWORD as _GMAIL_PW
+except Exception:
+    _GMAIL_USER, _GMAIL_PW = "", ""
+_ADMIN_EMAIL = "bnowlin6@gmail.com"
+_account_check_login = None
+
+
+def _send_admin_email(subject, body_html):
+    if not _GMAIL_USER or not _GMAIL_PW:
+        logger.warning("[email] not configured; skipping send")
+        return False
+    try:
+        import smtplib, ssl
+        from email.message import EmailMessage
+        msg = EmailMessage()
+        msg["Subject"] = subject
+        msg["From"] = _GMAIL_USER
+        msg["To"] = _ADMIN_EMAIL
+        msg.set_content("Open in an HTML-capable email client.")
+        msg.add_alternative(body_html, subtype="html")
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ssl.create_default_context()) as srv:
+            srv.login(_GMAIL_USER, _GMAIL_PW)
+            srv.send_message(msg)
+        logger.info("[email] sent: %s" % subject)
+        return True
+    except Exception as e:
+        logger.warning("[email] send failed: %r" % e)
+        return False
+
 # Persistent secret key so logins survive restarts / the nightly 4am reboot.
 _secret_path = "/home/pi/soundboard/.flask_secret"
 try:
@@ -1064,7 +1094,7 @@ _RNAME_NOUN = ["Saiyan", "DJ", "Goblin", "Bard", "Ronin", "Gremlin", "Maestro", 
 @webapp.before_request
 def _require_login():
     p = request.path
-    if p == "/login" or p == "/logout" or p.startswith("/static/"):
+    if p in ("/login", "/logout", "/api/register") or p.startswith("/approve/") or p.startswith("/static/"):
         return None
     if _session.get("auth"):
         _touch_presence()
@@ -1074,23 +1104,46 @@ def _require_login():
     return _redirect("/login")
 
 
+@webapp.before_request
+def _gate_edit():
+    """Add/Edit (clip studio, add, uploads) requires admin OR an approved account."""
+    p = request.path
+    if p.startswith("/api/clip/") or p == "/api/add" or p.startswith("/api/upload/"):
+        if not (_session.get("admin") or _session.get("account_approved")):
+            return ("Add/Edit requires an approved account", 403)
+
+
 @webapp.route("/login", methods=["GET", "POST"])
 def _login():
     err = ""
     if request.method == "POST":
         pw = (request.form.get("password") or "").strip()
-        nm = (request.form.get("name") or "").strip()[:24]
-        if not nm:
-            nm = random.choice(_RNAME_ADJ) + " " + random.choice(_RNAME_NOUN)
-        role = True if _hmac.compare_digest(pw, _ADMIN_PASS) else (False if _hmac.compare_digest(pw, _USER_PASS) else None)
-        if role is not None:
-            _session.permanent = True
-            _session["auth"] = True
-            _session["admin"] = role
-            _session["name"] = nm
-            _session["sid"] = _os.urandom(8).hex()
-            return _redirect("/")
-        err = "Nope - that's not it. (Hint: Vegeta)"
+        if request.form.get("mode") == "account":
+            login_id = (request.form.get("login") or "").strip()
+            acct = _account_check_login(login_id, pw) if _account_check_login else None
+            if acct:
+                _session.permanent = True
+                _session["auth"] = True
+                _session["admin"] = False
+                _session["name"] = acct.get("username") or login_id
+                _session["account"] = acct.get("email")
+                _session["account_approved"] = True
+                _session["sid"] = _os.urandom(8).hex()
+                return _redirect("/")
+            err = "No approved account matches that login + password."
+        else:
+            nm = (request.form.get("name") or "").strip()[:24]
+            if not nm:
+                nm = random.choice(_RNAME_ADJ) + " " + random.choice(_RNAME_NOUN)
+            role = True if _hmac.compare_digest(pw, _ADMIN_PASS) else (False if _hmac.compare_digest(pw, _USER_PASS) else None)
+            if role is not None:
+                _session.permanent = True
+                _session["auth"] = True
+                _session["admin"] = role
+                _session["name"] = nm
+                _session["sid"] = _os.urandom(8).hex()
+                return _redirect("/")
+            err = "Nope - that's not it. (Hint: Vegeta)"
     return render_template("login.html", err=err)
 
 
@@ -1102,7 +1155,9 @@ def _logout():
 
 @webapp.route("/api/me")
 def _api_me():
-    return jsonify({"admin": bool(_session.get("admin"))})
+    return jsonify({"admin": bool(_session.get("admin")),
+                    "can_edit": bool(_session.get("admin") or _session.get("account_approved")),
+                    "user": _session.get("name") or ""})
 @webapp.route("/api/presence")
 def _api_presence():
     return jsonify({"users": _presence_list()})
@@ -1178,6 +1233,21 @@ try:
     })
 except Exception as _e2:
     logger.warning("clip editor disabled: %r" % _e2)
+
+
+# --- Real accounts (email + admin approval) gating Add/Edit ---
+try:
+    import accounts as _accounts
+    _account_check_login = _accounts.init(webapp, {
+        "accounts_file": os.path.join(os.path.dirname(SOUND_DIR), "accounts.json"),
+        "logger": logger,
+        "base_url": "https://sounderserver.party",
+        "admin_email": _ADMIN_EMAIL,
+        "send_email": _send_admin_email,
+        "is_admin": lambda: bool(_session.get("admin")),
+    })
+except Exception as _e3:
+    logger.warning("accounts disabled: %r" % _e3)
 
 
 

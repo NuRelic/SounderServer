@@ -24,3 +24,4 @@ secrets_config.py
 chat_store.json
 activity_store.json
 limits.json
+accounts.json
