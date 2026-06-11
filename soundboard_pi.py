@@ -315,7 +315,8 @@ def _active_list():
     _prune_active()
     with _ACTIVE_LOCK:
         return [{"token": t, "name": e["name"], "by": e["by"], "kind": e["kind"],
-                 "paused": bool(e.get("paused"))} for t, e in sorted(_ACTIVE.items())]
+                 "paused": bool(e.get("paused")), "start": e["start"], "duration": e.get("duration", 0)}
+                for t, e in sorted(_ACTIVE.items())]
 
 
 def _pick_song_channel():
@@ -2114,6 +2115,11 @@ def api_play_top():
         return jsonify({"error": "not found"}), 404
     sfx_play_file(fp)
     return jsonify({"status": "playing"})
+
+
+@webapp.route('/api/time')
+def api_time():
+    return jsonify({"t": time.time()})
 
 
 @webapp.route('/api/active')

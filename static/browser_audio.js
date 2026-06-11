@@ -15,6 +15,30 @@
   var pool = {};   // token -> Audio element
   var SILENT = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
 
+  var SYNC_BUFFER = 1.0;   // predictable lag (s) in sync mode
+  var syncOn = false; try { syncOn = localStorage.getItem("cc_sync") === "1"; } catch (e) {}
+  var clockOffset = 0, _bestRtt = Infinity;
+  function syncedNow() { return (Date.now() + clockOffset) / 1000; }   // server epoch seconds
+  function clockSample() {
+    var t0 = Date.now();
+    fetch("/api/time", { cache: "no-store" }).then(function (r) { return r.json(); }).then(function (d) {
+      var t1 = Date.now(), rtt = t1 - t0;
+      if (rtt < _bestRtt) { _bestRtt = rtt; clockOffset = d.t * 1000 - (t0 + rtt / 2); }
+    }).catch(function () {});
+  }
+  for (var _i = 0; _i < 5; _i++) setTimeout(clockSample, _i * 250);
+  setInterval(clockSample, 20000);
+  function schedulePlay(a, tok) {
+    var head = (syncedNow() - a._start) - SYNC_BUFFER;   // position on the shared timeline
+    if (head < -0.03) {                                  // not started yet -> wait, then play from 0
+      a._waiting = true; try { a.currentTime = 0; } catch (e) {}
+      setTimeout(function () { if (pool[tok] === a) { a._waiting = false; a.play().catch(function () {}); } }, (-head) * 1000);
+    } else if (!a._dur || head < a._dur) {               // late -> seek in to catch up
+      a._waiting = false; try { a.currentTime = Math.max(0, head); } catch (e) {}
+      a.play().catch(function () {});
+    } else { a._waiting = false; }                        // already over -> skip
+  }
+
   function setOff() { on = false; ico.innerHTML = "&#128266;"; lbl.textContent = "Listen in this browser"; btn.style.background = "#6d28d9"; btn.style.animation = "ccPulse 2.2s infinite"; }
   function setOn() { on = true; ico.innerHTML = "&#128261;"; lbl.textContent = "● Listening — tap to stop"; btn.style.background = "#dc2626"; btn.style.animation = "none"; }
 
@@ -34,12 +58,13 @@
         var a = pool[s.token];
         if (!a) {
           a = new Audio("/api/active/" + s.token + ".mp3");
-          a.volume = browserVol;
-          a.play().catch(function () {});
+          a.volume = browserVol; a._start = s.start || 0; a._dur = s.duration || 0;
           pool[s.token] = a;
+          if (syncOn && a._start) schedulePlay(a, s.token);
+          else a.play().catch(function () {});
         }
         if (s.paused) { if (!a.paused) a.pause(); }
-        else { if (a.paused) a.play().catch(function () {}); }
+        else if (!a._waiting) { if (a.paused) a.play().catch(function () {}); }
       });
       Object.keys(pool).forEach(function (tok) {
         if (!seen[tok]) { try { pool[tok].pause(); pool[tok].src = ""; } catch (e) {} delete pool[tok]; }
@@ -119,6 +144,33 @@
     if (!on) return;
     [120, 300, 550].forEach(function (ms) { setTimeout(pollActive, ms); });
   }, true);
+
+  // sync mode: keep each sound locked to the shared timeline (catch up if behind)
+  setInterval(function () {
+    if (!syncOn) return;
+    Object.keys(pool).forEach(function (tok) {
+      var a = pool[tok];
+      if (!a || a._waiting || a.paused || !a._start) return;
+      var desired = (syncedNow() - a._start) - SYNC_BUFFER;
+      if (desired < 0) return;
+      var drift = a.currentTime - desired;
+      if (Math.abs(drift) > 0.35) { try { a.currentTime = desired; } catch (e) {} a.playbackRate = 1; }
+      else if (Math.abs(drift) > 0.08) { a.playbackRate = drift > 0 ? 0.96 : 1.04; }
+      else { a.playbackRate = 1; }
+    });
+  }, 1200);
+
+  var _syncBtn = document.getElementById("cc-sync-btn");
+  function renderSyncBtn() { if (_syncBtn) { _syncBtn.textContent = syncOn ? "🔁 Sync: ON (~1s)" : "🔁 Sync: off"; _syncBtn.style.background = syncOn ? "#16a34a" : "#374151"; } }
+  if (_syncBtn) {
+    renderSyncBtn();
+    _syncBtn.addEventListener("click", function () {
+      syncOn = !syncOn; try { localStorage.setItem("cc_sync", syncOn ? "1" : "0"); } catch (e) {}
+      renderSyncBtn();
+      Object.keys(pool).forEach(function (tok) { try { pool[tok].pause(); pool[tok].src = ""; } catch (e) {} delete pool[tok]; });
+      if (on) pollActive();
+    });
+  }
 
   start();
   pollPresence(); setInterval(pollPresence, 8000);
