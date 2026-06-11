@@ -27,10 +27,11 @@
     "#cc-chat-send{padding:9px 14px;border:none;border-radius:8px;background:#2563eb;color:#fff;font-weight:700;cursor:pointer;}" +
     ".cc-toplist{flex:1;overflow-y:auto;padding:10px;display:none;flex-direction:column;gap:5px;}" +
     ".cc-toph{color:#a78bfa;font-weight:700;font-size:.72rem;text-transform:uppercase;letter-spacing:.5px;margin:2px 2px 6px;}" +
-    ".cc-topbtn{display:block;width:100%;text-align:left;background:#16213e;border:1px solid #2a2a45;color:#e0e0e0;border-radius:7px;padding:8px 10px;font-size:.82rem;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}" +
+    ".cc-topbtn{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:#16213e;border:1px solid #2a2a45;color:#e0e0e0;border-radius:7px;padding:8px 10px;font-size:.82rem;cursor:pointer;line-height:1.3;}" +
     ".cc-topbtn:hover{background:#26345e;}" +
-    ".cc-topbtn .n{color:#6b7280;margin-right:5px;}" +
-    ".cc-topbtn b{color:#86efac;float:right;margin-left:8px;}" +
+    ".cc-topbtn .nm{flex:1;white-space:normal;word-break:break-word;}" +
+    ".cc-topbtn .n{color:#6b7280;margin-right:4px;}" +
+    ".cc-topbtn b{color:#86efac;flex:0 0 auto;}" +
     "@media (min-width:820px){ body{margin-right:320px;} #cc-room{transform:translateX(0);} #cc-room-tab{display:none;} #cc-room-x{display:none;} }";
   document.head.appendChild(style);
 
@@ -94,8 +95,8 @@
     var h = '<div class="cc-toph">' + heading + '</div>';
     h += (items || []).map(function (it, i) {
       return '<button class="cc-topbtn" data-fn="' + esc(it.filename) + '" data-kind="' + kind +
-             '" title="' + esc(it.display) + ' (' + it.count + ' plays)"><span class="n">' + (i + 1) + '.</span>' +
-             esc(it.display) + ' <b>' + it.count + '</b></button>';
+             '" title="' + esc(it.display) + ' (' + it.count + ' plays)"><span class="nm"><span class="n">' + (i + 1) + '.</span> ' +
+             esc(it.display) + '</span><b>' + it.count + '</b></button>';
     }).join("");
     el.innerHTML = h || '<div class="cc-toph">none yet</div>';
   }
