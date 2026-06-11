@@ -82,6 +82,25 @@
     }
   });
 
+  // per-person play limits: show to everyone, let admins change them
+  function fetchLimits() {
+    fetch("/api/limits", { cache: "no-store" }).then(function (r) { return r.json(); }).then(function (d) {
+      var lim = document.getElementById("cc-limits");
+      if (lim) lim.textContent = "🎚️ Max per person: " + d.songs_per_person + " song" + (d.songs_per_person > 1 ? "s" : "") + " · " + d.sfx_per_person + " sound" + (d.sfx_per_person > 1 ? "s" : "") + " at once";
+      var si = document.getElementById("cc-lim-songs"), xi = document.getElementById("cc-lim-sfx");
+      if (si && document.activeElement !== si) si.value = d.songs_per_person;
+      if (xi && document.activeElement !== xi) xi.value = d.sfx_per_person;
+    }).catch(function () {});
+  }
+  fetchLimits();
+  setInterval(fetchLimits, 10000);
+  var _applyBtn = document.getElementById("cc-lim-apply");
+  if (_applyBtn) _applyBtn.addEventListener("click", function () {
+    fetch("/api/limits", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ songs_per_person: parseInt(document.getElementById("cc-lim-songs").value, 10),
+                             sfx_per_person: parseInt(document.getElementById("cc-lim-sfx").value, 10) }) }).then(fetchLimits).catch(function () {});
+  });
+
   start();
   pollPresence(); setInterval(pollPresence, 8000);
   document.addEventListener("pointerdown", unlock, { once: true, capture: true });

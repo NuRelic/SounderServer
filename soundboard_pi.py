@@ -231,6 +231,15 @@ def _trigger_name():
         return ""
 
 
+def _trigger_sid():
+    """Stable per-session id of the requesting user (or '')."""
+    try:
+        from flask import session as _s
+        return _s.get("sid") or ""
+    except Exception:
+        return ""
+
+
 def _prune_active():
     with _ACTIVE_LOCK:
         for tok in list(_ACTIVE.keys()):
@@ -249,9 +258,57 @@ def _register_active(ch_idx, channel, sound, path, name, by, kind, duration):
         _PLAY_SEQ += 1
         tok = _PLAY_SEQ
         _ACTIVE[tok] = {"ch": channel, "ch_idx": ch_idx, "sound": sound, "path": path,
-                        "name": name, "by": by, "kind": kind, "start": time.time(),
+                        "name": name, "by": by, "sid": _trigger_sid(), "kind": kind, "start": time.time(),
                         "duration": duration, "paused": False}
     return tok
+
+
+# --- Per-person play caps (admin-configurable, persisted) ---
+_LIMITS_FILE = os.path.join(os.path.dirname(SOUND_DIR), "limits.json")
+_LIMITS = {"songs_per_person": 2, "sfx_per_person": 3}
+
+
+def _load_limits():
+    try:
+        with open(_LIMITS_FILE) as f:
+            d = json.load(f)
+        _LIMITS["songs_per_person"] = int(d.get("songs_per_person", 2))
+        _LIMITS["sfx_per_person"] = int(d.get("sfx_per_person", 3))
+    except Exception:
+        pass
+
+
+def _save_limits():
+    try:
+        tmp = _LIMITS_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(_LIMITS, f)
+        os.replace(tmp, _LIMITS_FILE)
+    except Exception:
+        pass
+
+
+def _enforce_user_cap(sid, kind, cap):
+    """Stop this user's oldest sound(s) of `kind` so adding one keeps them within `cap`."""
+    if not sid:
+        return
+    _prune_active()
+    while True:
+        with _ACTIVE_LOCK:
+            mine = sorted((e["start"], t, e["ch_idx"]) for t, e in _ACTIVE.items()
+                          if e.get("sid") == sid and e["kind"] == kind)
+        if len(mine) < cap:
+            return
+        _, oldtok, oldidx = mine[0]
+        try:
+            pygame.mixer.Channel(oldidx).stop()
+        except Exception:
+            pass
+        with _ACTIVE_LOCK:
+            _ACTIVE.pop(oldtok, None)
+
+
+_load_limits()
 
 
 def _active_list():
@@ -646,6 +703,7 @@ def web_play_file(filepath):
     shuffle_stop = True  # stop any running shuffle
     web_paused = False
     try:
+        _enforce_user_cap(_trigger_sid(), "song", _LIMITS["songs_per_person"])
         ci = _pick_song_channel()
         channel = pygame.mixer.Channel(ci)
         snd = pygame.mixer.Sound(filepath)
@@ -675,6 +733,7 @@ def sfx_play_file(filepath):
     """Play an SFX/DCC clip on its own channel — overlaps everything, any number."""
     global sfx_sound, sfx_channel, sfx_now_playing_path, sfx_play_start, sfx_now_playing_name
     try:
+        _enforce_user_cap(_trigger_sid(), "sfx", _LIMITS["sfx_per_person"])
         ci = _pick_sfx_channel()
         channel = pygame.mixer.Channel(ci)
         snd = pygame.mixer.Sound(filepath)
@@ -1908,6 +1967,83 @@ def api_activity():
     with _ACTIVITY_LOCK:
         evs = [e for e in _ACTIVITY if e["id"] > since]
     return jsonify({"events": evs})
+
+
+def _resolve_sound_path(filename):
+    """Locate an SFX/DCC clip by basename across sfx/ and sound_8/ (for charts playback)."""
+    if not filename.endswith(".wav") or "/" in filename or ".." in filename:
+        return None
+    for base in (SFX_DIR, slot8_folder):
+        if not os.path.isdir(base):
+            continue
+        for d in os.listdir(base):
+            fp = os.path.join(base, d, filename)
+            if os.path.isfile(fp):
+                return fp
+        fp = os.path.join(base, filename)
+        if os.path.isfile(fp):
+            return fp
+    return None
+
+
+@webapp.route('/api/limits', methods=['GET', 'POST'])
+def api_limits():
+    if request.method == 'POST':
+        if not _session.get("admin"):
+            return jsonify({"error": "Admin only"}), 403
+        data = request.get_json(silent=True) or {}
+        try:
+            _LIMITS["songs_per_person"] = max(1, min(10, int(data.get("songs_per_person", _LIMITS["songs_per_person"]))))
+            _LIMITS["sfx_per_person"] = max(1, min(20, int(data.get("sfx_per_person", _LIMITS["sfx_per_person"]))))
+        except (TypeError, ValueError):
+            return jsonify({"error": "bad values"}), 400
+        _save_limits()
+    return jsonify(_LIMITS)
+
+
+@webapp.route('/api/top')
+def api_top():
+    """Top 50 songs + top 50 sounds by all-time play count (from usage.json)."""
+    try:
+        with open(USAGE_FILE) as f:
+            usage = json.load(f)
+    except Exception:
+        usage = {}
+    songs, sounds = [], []
+    for fn, info in usage.items():
+        cnt = info.get("count", 0)
+        src = info.get("source", "")
+        if src == "web":
+            if os.path.isfile(os.path.join(slot1_folder, fn)):
+                songs.append((cnt, fn))
+        elif src == "sfx":
+            if _resolve_sound_path(fn):
+                sounds.append((cnt, fn))
+    songs.sort(reverse=True)
+    sounds.sort(reverse=True)
+    fmt = lambda lst: [{"filename": fn, "display": get_display_name(fn), "count": c} for c, fn in lst[:50]]
+    return jsonify({"songs": fmt(songs), "sounds": fmt(sounds)})
+
+
+@webapp.route('/api/play/top', methods=['POST'])
+def api_play_top():
+    """Play a song or sound chosen from the Top charts (by filename)."""
+    data = request.get_json(silent=True) or {}
+    fn = data.get("filename", "")
+    kind = data.get("kind", "")
+    if not fn.endswith(".wav") or "/" in fn or ".." in fn:
+        return jsonify({"error": "bad filename"}), 400
+    if kind == "song":
+        fp = os.path.join(slot1_folder, fn)
+        if not os.path.isfile(fp):
+            return jsonify({"error": "not found"}), 404
+        web_play_file(fp)
+        return jsonify({"status": "playing"})
+    fp = _resolve_sound_path(fn)
+    if not fp:
+        return jsonify({"error": "not found"}), 404
+    sfx_play_file(fp)
+    return jsonify({"status": "playing"})
 
 
 @webapp.route('/api/active')
