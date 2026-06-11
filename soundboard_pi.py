@@ -2117,6 +2117,39 @@ def api_play_top():
     return jsonify({"status": "playing"})
 
 
+_METRICS = _deque(maxlen=400)
+_METRICS_LOCK = threading.Lock()
+
+
+@webapp.route('/api/metric', methods=['POST', 'GET'])
+def api_metric():
+    """Click->audible latency. POST {ms, sync} records; GET (admin) returns stats."""
+    if request.method == 'POST':
+        data = request.get_json(silent=True) or {}
+        try:
+            ms = float(data.get('ms', 0))
+        except (TypeError, ValueError):
+            ms = 0
+        if 0 < ms < 60000:
+            with _METRICS_LOCK:
+                _METRICS.append({"ms": ms, "sync": bool(data.get('sync')),
+                                 "who": _trigger_name() or "?", "ts": time.time()})
+        return jsonify({"ok": True})
+    if not _session.get("admin"):
+        return jsonify({"error": "admin only"}), 403
+    with _METRICS_LOCK:
+        snap = list(_METRICS)
+    def stats(rows):
+        v = sorted(r["ms"] for r in rows)
+        n = len(v)
+        pc = lambda q: round(v[min(n - 1, int(q * n))]) if n else 0
+        return {"count": n, "avg": round(sum(v) / n) if n else 0,
+                "p50": pc(.5), "p90": pc(.9), "max": round(v[-1]) if n else 0,
+                "last": round(rows[-1]["ms"]) if rows else 0}
+    return jsonify({"snappy": stats([r for r in snap if not r["sync"]]),
+                    "sync": stats([r for r in snap if r["sync"]])})
+
+
 @webapp.route('/api/time')
 def api_time():
     return jsonify({"t": time.time()})

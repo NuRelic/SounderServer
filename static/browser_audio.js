@@ -10,13 +10,13 @@
   if (!btn || !prim) return;
   var ico = document.getElementById("cc-stream-ico");
   var lbl = document.getElementById("cc-stream-label");
-  var on = false, unlocked = false, timer = null, isAdmin = false, browserVol = 1;
+  var on = false, unlocked = false, timer = null, isAdmin = false, browserVol = 1, lastClick = 0;
   try { var _bv = localStorage.getItem("cc_bvol"); if (_bv !== null) browserVol = Math.max(0, Math.min(1, parseFloat(_bv))); } catch (e) {}
   var pool = {};   // token -> Audio element
   var SILENT = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
 
   var SYNC_BUFFER = 1.0;   // predictable lag (s) in sync mode
-  var syncOn = false; try { syncOn = localStorage.getItem("cc_sync") === "1"; } catch (e) {}
+  var syncOn = true; try { var _sv = localStorage.getItem("cc_sync"); if (_sv !== null) syncOn = (_sv === "1"); } catch (e) {}   // default ON
   var clockOffset = 0, _bestRtt = Infinity;
   function syncedNow() { return (Date.now() + clockOffset) / 1000; }   // server epoch seconds
   function clockSample() {
@@ -60,6 +60,13 @@
           a = new Audio("/api/active/" + s.token + ".mp3");
           a.volume = browserVol; a._start = s.start || 0; a._dur = s.duration || 0;
           pool[s.token] = a;
+          a.addEventListener("playing", function () {
+            if (lastClick && (Date.now() - lastClick) <= 4000) {
+              var ms = Date.now() - lastClick; lastClick = 0;
+              var el = document.getElementById("cc-latency"); if (el) el.textContent = "⏱ " + ms + "ms";
+              fetch("/api/metric", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ms: ms, sync: syncOn }) }).catch(function () {});
+            }
+          }, { once: true });
           if (syncOn && a._start) schedulePlay(a, s.token);
           else a.play().catch(function () {});
         }
@@ -141,6 +148,7 @@
 
   // responsiveness: a click is probably a play — poll right away a few times
   document.addEventListener("click", function () {
+    lastClick = Date.now();
     if (!on) return;
     [120, 300, 550].forEach(function (ms) { setTimeout(pollActive, ms); });
   }, true);
