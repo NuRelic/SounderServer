@@ -74,7 +74,27 @@
         else if (!a._waiting) { if (a.paused) a.play().catch(function () {}); }
       });
       Object.keys(pool).forEach(function (tok) {
-        if (!seen[tok]) { try { pool[tok].pause(); pool[tok].src = ""; } catch (e) {} delete pool[tok]; }
+        if (seen[tok]) return;
+        // Sound left the server's active list. Because the browser runs ~SYNC_BUFFER
+        // behind the server (which prunes at the sound's true end), hard-pausing here
+        // clips the tail — fatal for short SFX. So if we're within the buffer of the
+        // natural end, let it play out; only stop now if lots of time is left (a real
+        // admin kill mid-playback).
+        var a = pool[tok];
+        var mediaDur = isFinite(a.duration) ? a.duration : (a._dur || 0);
+        var rem = mediaDur ? (mediaDur - a.currentTime) : 0;
+        if (!a.paused && rem > SYNC_BUFFER + 0.6) {
+          try { a.pause(); a.src = ""; } catch (e) {}
+          delete pool[tok];
+        } else if (a.paused) {
+          try { a.src = ""; } catch (e) {}
+          delete pool[tok];
+        } else if (!a._finishing) {
+          a._finishing = true;
+          var done = function () { try { a.pause(); a.src = ""; } catch (e) {} delete pool[tok]; };
+          a.addEventListener("ended", done, { once: true });
+          setTimeout(done, Math.max(250, (rem + 0.5) * 1000));   // safety if 'ended' never fires
+        }
       });
       renderActive(act);
     }).catch(function () {});
