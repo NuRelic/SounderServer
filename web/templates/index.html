@@ -336,11 +336,11 @@
     <div class="section-tabs" id="mainTabs">
         <button class="active" onclick="showSection('songs')">🎵 Songs</button>
         <button onclick="showSection('sfx')">💥 SFX</button>
+        <button onclick="showSection('favorites')">⭐ Favorites</button>
         <button onclick="showSection('dcc')">🎙 DCC</button>
         <button id="tab-add" onclick="showSection('add')">➕ Add / Edit</button>
     </div>
     <div class="section-tabs" id="sfxSubTabs" style="display:none; background:#111;">
-        <button onclick="showSfxCat('_favorites')">⭐ Favs</button>
         <button class="active" onclick="showSfxCat('react')">React</button>
         <button onclick="showSfxCat('anime_quotes')">Anime</button>
         <button onclick="showSfxCat('gaming')">Gaming</button>
@@ -375,6 +375,13 @@
     <!-- SFX -->
     <div id="section-sfx" class="panel">
         <div class="song-grid" id="sfxGrid">
+            <div class="loading">Loading...</div>
+        </div>
+    </div>
+
+    <!-- FAVORITES (songs + sfx) -->
+    <div id="section-favorites" class="panel">
+        <div class="song-grid" id="favGrid">
             <div class="loading">Loading...</div>
         </div>
     </div>
@@ -442,6 +449,8 @@
             document.getElementById('sfxSubTabs').style.display = name === 'sfx' ? 'flex' : 'none';
             if (name === 'sfx') {
                 loadSfxCategory(currentSfxCat);
+            } else if (name === 'favorites') {
+                loadFavoritesSection();
             }
         }
 
@@ -503,7 +512,13 @@
             for (const song of group.songs) {
                 const btn = document.createElement('button');
                 btn.className = 'song-btn';
-                btn.innerHTML = `<span class="song-num">#${song.number}</span>${song.display}`;
+                btn.style.position = 'relative';
+                const lbl = document.createElement('span'); lbl.textContent = song.display;
+                const star = document.createElement('span');
+                star.textContent = isFav('song', song.filename) ? '★' : '☆';
+                star.style.cssText = 'position:absolute;top:1px;right:6px;font-size:1rem;color:#f59e0b;cursor:pointer;line-height:1;';
+                star.onclick = function (e) { e.stopPropagation(); toggleFav({kind:'song', filename:song.filename, display:song.display, category:''}); star.textContent = isFav('song', song.filename) ? '★' : '☆'; };
+                btn.appendChild(lbl); btn.appendChild(star);
                 btn.onclick = () => playSong(song.filename, btn);
                 grid.appendChild(btn);
             }
@@ -909,17 +924,32 @@
                 if (b.textContent.includes('SFX')) b.classList.add('active');
             });
             // Highlight sub-tab
-            const tabMap = {'_favorites':'⭐ Favs','react':'React','anime_quotes':'Anime','gaming':'Gaming','meme_clips':'Memes'};
+            const tabMap = {'react':'React','anime_quotes':'Anime','gaming':'Gaming','meme_clips':'Memes'};
             document.querySelectorAll('#sfxSubTabs button').forEach(b => {
                 b.classList.toggle('active', b.textContent === tabMap[cat]);
             });
-            if (cat === '_favorites') loadFavorites();
-            else loadSfxCategory(cat);
+            loadSfxCategory(cat);
         }
 
-        function sfxFavs() { try { return JSON.parse(localStorage.getItem('cc_sfx_favs') || '[]'); } catch (e) { return []; } }
-        function isSfxFav(fn) { return sfxFavs().indexOf(fn) !== -1; }
-        function toggleSfxFav(fn) { var f = sfxFavs(); var i = f.indexOf(fn); if (i === -1) f.push(fn); else f.splice(i, 1); try { localStorage.setItem('cc_sfx_favs', JSON.stringify(f)); } catch (e) {} }
+        // Unified favorites (songs + sfx), stored in localStorage 'cc_favs'
+        function favsRaw() { try { return JSON.parse(localStorage.getItem('cc_favs') || '[]'); } catch (e) { return []; } }
+        function saveFavs(a) { try { localStorage.setItem('cc_favs', JSON.stringify(a)); } catch (e) {} }
+        function isFav(kind, fn) { return favsRaw().some(function (f) { return f.kind === kind && f.filename === fn; }); }
+        function toggleFav(item) {
+            var a = favsRaw(); var i = a.findIndex(function (f) { return f.kind === item.kind && f.filename === item.filename; });
+            if (i === -1) a.push({kind:item.kind, filename:item.filename, display:item.display||item.filename, category:item.category||''});
+            else a.splice(i, 1);
+            saveFavs(a);
+        }
+        // one-time migration of the old sfx-only favorites list
+        (function () { try {
+            var old = JSON.parse(localStorage.getItem('cc_sfx_favs') || '[]');
+            if (old && old.length) {
+                var a = favsRaw();
+                old.forEach(function (fn) { if (!a.some(function (f) { return f.kind === 'sfx' && f.filename === fn; })) a.push({kind:'sfx', filename:fn, display:fn, category:''}); });
+                saveFavs(a); localStorage.removeItem('cc_sfx_favs');
+            }
+        } catch (e) {} })();
 
         function renderSfxClips(clips) {
             const grid = document.getElementById('sfxGrid');
@@ -931,9 +961,9 @@
                 btn.style.position = 'relative';
                 const lbl = document.createElement('span'); lbl.textContent = clip.display;
                 const star = document.createElement('span');
-                star.textContent = isSfxFav(clip.filename) ? '★' : '☆';
+                star.textContent = isFav('sfx', clip.filename) ? '★' : '☆';
                 star.style.cssText = 'position:absolute;top:1px;right:6px;font-size:1rem;color:#f59e0b;cursor:pointer;line-height:1;';
-                star.onclick = function (e) { e.stopPropagation(); toggleSfxFav(clip.filename); star.textContent = isSfxFav(clip.filename) ? '★' : '☆'; };
+                star.onclick = function (e) { e.stopPropagation(); toggleFav({kind:'sfx', filename:clip.filename, display:clip.display, category:clip.category||''}); star.textContent = isFav('sfx', clip.filename) ? '★' : '☆'; };
                 btn.appendChild(lbl); btn.appendChild(star);
                 btn.onclick = () => playSfx(clip.filename, clip.category, btn);
                 grid.appendChild(btn);
@@ -951,18 +981,34 @@
             }
         }
 
-        async function loadFavorites() {
-            try {
-                const res = await fetch('/api/sfx/list');
-                const data = await res.json();
-                const favs = sfxFavs();
-                let clips = (data.clips || []).filter(c => favs.indexOf(c.filename) !== -1);
-                clips.sort((a, b) => (b.count || 0) - (a.count || 0));
-                if (!clips.length) { document.getElementById('sfxGrid').innerHTML = '<div class="loading">No favorites yet — tap the ☆ on any sound to add it</div>'; return; }
-                renderSfxClips(clips);
-            } catch (e) {
-                document.getElementById('sfxGrid').innerHTML = '<div class="loading">Failed to load</div>';
+        function renderFavGrid(items) {
+            const grid = document.getElementById('favGrid');
+            grid.innerHTML = '';
+            if (!items.length) { grid.innerHTML = '<div class="loading">No favorites yet — tap the ☆ on any song or sound to add it</div>'; return; }
+            for (const it of items) {
+                const btn = document.createElement('button');
+                btn.className = 'song-btn';
+                btn.style.position = 'relative';
+                const lbl = document.createElement('span'); lbl.textContent = (it.kind === 'song' ? '🎵 ' : '🔊 ') + (it.display || it.filename);
+                const star = document.createElement('span');
+                star.textContent = '★';
+                star.style.cssText = 'position:absolute;top:1px;right:6px;font-size:1rem;color:#f59e0b;cursor:pointer;line-height:1;';
+                star.onclick = function (e) { e.stopPropagation(); toggleFav(it); loadFavoritesSection(); };
+                btn.appendChild(lbl); btn.appendChild(star);
+                btn.onclick = () => { if (it.kind === 'song') playSong(it.filename, btn); else playSfx(it.filename, it.category, btn); };
+                grid.appendChild(btn);
             }
+        }
+
+        async function loadFavoritesSection() {
+            let meta = {};
+            try { const r = await fetch('/api/sfx/list'); const d = await r.json(); (d.clips || []).forEach(function (c) { meta[c.filename] = c; }); } catch (e) {}
+            const items = favsRaw().map(function (f) {
+                if (f.kind === 'sfx' && meta[f.filename]) return {kind:'sfx', filename:f.filename, display:meta[f.filename].display, category:meta[f.filename].category, count:meta[f.filename].count||0};
+                return {kind:f.kind, filename:f.filename, display:f.display, category:f.category||'', count:0};
+            });
+            items.sort(function (a, b) { return (b.count||0) - (a.count||0); });
+            renderFavGrid(items);
         }
 
         async function loadSfx() {
@@ -983,13 +1029,6 @@
         }
 
         async function playRandomSfx() {
-            if (currentSfxCat === '_favorites') {
-                const favs = sfxFavs();
-                if (!favs.length) return;
-                const fn = favs[Math.floor(Math.random() * favs.length)];
-                await fetch('/api/sfx/play', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({filename: fn}) });
-                updateStatus(); return;
-            }
             await fetch('/api/sfx/play', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
