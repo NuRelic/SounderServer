@@ -10,7 +10,8 @@
   if (!btn || !prim) return;
   var ico = document.getElementById("cc-stream-ico");
   var lbl = document.getElementById("cc-stream-label");
-  var on = false, unlocked = false, timer = null, isAdmin = false;
+  var on = false, unlocked = false, timer = null, isAdmin = false, browserVol = 1;
+  try { var _bv = localStorage.getItem("cc_bvol"); if (_bv !== null) browserVol = Math.max(0, Math.min(1, parseFloat(_bv))); } catch (e) {}
   var pool = {};   // token -> Audio element
   var SILENT = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
 
@@ -26,12 +27,14 @@
   function pollActive() {
     if (!on) return;
     fetch("/api/active").then(function (r) { return r.json(); }).then(function (d) {
+      if (!on) return;   // stopped while this poll was in flight
       var act = d.active || [], seen = {};
       act.forEach(function (s) {
         seen[s.token] = 1;
         var a = pool[s.token];
         if (!a) {
           a = new Audio("/api/active/" + s.token + ".mp3");
+          a.volume = browserVol;
           a.play().catch(function () {});
           pool[s.token] = a;
         }
@@ -100,6 +103,16 @@
       body: JSON.stringify({ songs_per_person: parseInt(document.getElementById("cc-lim-songs").value, 10),
                              sfx_per_person: parseInt(document.getElementById("cc-lim-sfx").value, 10) }) }).then(fetchLimits).catch(function () {});
   });
+
+  var _bvSlider = document.getElementById("cc-browser-vol");
+  if (_bvSlider) {
+    _bvSlider.value = Math.round(browserVol * 100);
+    _bvSlider.addEventListener("input", function () {
+      browserVol = (parseInt(_bvSlider.value, 10) || 0) / 100;
+      Object.keys(pool).forEach(function (t) { try { pool[t].volume = browserVol; } catch (e) {} });
+      try { localStorage.setItem("cc_bvol", browserVol); } catch (e) {}
+    });
+  }
 
   start();
   pollPresence(); setInterval(pollPresence, 8000);

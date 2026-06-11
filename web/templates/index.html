@@ -307,6 +307,10 @@
             <button id="cc-stream-btn" style="width:100%;display:flex;align-items:center;justify-content:center;gap:10px;padding:15px;border:none;border-radius:12px;background:#6d28d9;color:#fff;font-size:1.05rem;font-weight:700;cursor:pointer;animation:ccPulse 2.2s infinite;">
                 <span id="cc-stream-ico">&#128266;</span><span id="cc-stream-label">Listen in this browser</span>
             </button>
+            <div style="display:flex; align-items:center; gap:7px; margin-top:7px;">
+                <span style="font-size:.85rem;">🔊</span>
+                <input id="cc-browser-vol" type="range" min="0" max="100" value="100" title="Your browser volume" style="flex:1; cursor:pointer; min-width:90px;">
+            </div>
         </div>
         <div id="cc-search-bar" style="padding:8px 12px; background:#0f0f0f;">
             <input type="text" id="globalSearch" placeholder="🔍 Search everything..."

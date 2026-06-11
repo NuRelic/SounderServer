@@ -1,14 +1,13 @@
 [
-  {"name": "Meme / Misc", "start": 1001, "end": 1999},
-  {"name": "Persona", "start": 4001, "end": 4999},
-  {"name": "Anime", "start": 5001, "end": 5999},
-  {"name": "Initial D", "start": 6001, "end": 6999},
-  {"name": "Chill / Vibes", "start": 8001, "end": 8999},
-  {"name": "Undertale", "start": 10001, "end": 10999},
-  {"name": "Game Bangers", "start": 14001, "end": 14999},
-  {"name": "Mewgenics", "start": 15001, "end": 15999},
-  {"name": "Electronic", "start": 20001, "end": 20999},
-  {"name": "Pop / Party", "start": 22001, "end": 22999},
-  {"name": "Katherine Bops", "start": 23001, "end": 23999},
-  {"name": "Disney", "start": 25001, "end": 25999}
+ {"name": "Meme / Misc", "start": 1001, "end": 1999},
+ {"name": "Persona", "start": 4001, "end": 4999},
+ {"name": "Anime", "start": 5001, "end": 5999},
+ {"name": "Initial D", "start": 6001, "end": 6999},
+ {"name": "Chill / Vibes", "start": 8001, "end": 8999},
+ {"name": "Undertale", "start": 10001, "end": 10999},
+ {"name": "Game Bangers", "start": 14001, "end": 14999},
+ {"name": "Mewgenics", "start": 15001, "end": 15999},
+ {"name": "Electronic", "start": 20001, "end": 20999},
+ {"name": "Bangers", "start": 22001, "end": 23999},
+ {"name": "Disney", "start": 25001, "end": 25999}
 ]
