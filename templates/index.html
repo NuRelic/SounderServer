@@ -1,0 +1,1194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sound Server</title>
+<style>
+  :root{
+    --bg:#0d0f14; --panel:#161a23; --panel2:#1d2230; --line:#272d3d;
+    --txt:#e6e9f0; --dim:#8b93a7; --accent:#7c6cff; --accent2:#00d2a8;
+    --wav:#3aa0ff; --mp3:#ff8a3a; --fav:#ffce4d;
+    --l0:#3aa0ff; --l1:#ffa53a; --l2:#00d2a8; --l3:#ff6ec7; --song:#c98bff;
+  }
+  .lane-0{color:var(--l0)} .lane-1{color:var(--l1)} .lane-2{color:var(--l2)} .lane-3{color:var(--l3)}
+  .lane-long{color:var(--song)}
+  .lane-song0{color:#c98bff} .lane-song1{color:#ffce4d}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    display:flex;flex-direction:column;height:100vh;overflow:hidden}
+  header{display:flex;align-items:center;gap:14px;padding:10px 16px;
+    background:var(--panel);border-bottom:1px solid var(--line);flex:0 0 auto}
+  header h1{font-size:15px;margin:0;font-weight:700;letter-spacing:.3px}
+  header h1 .tag{color:var(--accent);}
+  header .who{margin-left:auto;display:flex;align-items:center;gap:8px;color:var(--dim)}
+  header input.name{background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+    border-radius:6px;padding:5px 8px;width:130px}
+  .namecolor{width:26px;height:26px;padding:0;border:1px solid var(--line);border-radius:6px;
+    background:none;cursor:pointer}
+  /* channels strip */
+  .channels{display:flex;gap:10px;align-items:center;padding:8px 16px;
+    background:var(--panel);border-bottom:1px solid var(--line);flex:0 0 auto;flex-wrap:wrap}
+  .chan{display:flex;align-items:center;gap:8px;background:var(--panel2);
+    border:1px solid var(--line);border-radius:10px;padding:6px 10px;flex:1 1 340px;min-width:300px}
+  .chan .dot{width:9px;height:9px;border-radius:50%;background:#444;flex:0 0 auto}
+  .chan.live .dot{box-shadow:0 0 8px currentColor}
+  .chan.wav{color:var(--wav)} .chan.mp3{color:var(--mp3)}
+  .chan .lab{font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:.5px;flex:0 0 auto}
+  .chan .occ{display:flex;gap:6px;flex-wrap:wrap;flex:1;min-width:0}
+  .chan .occ .none{color:var(--dim)}
+  .chip{display:inline-flex;align-items:center;gap:5px;background:rgba(255,255,255,.05);
+    border:1px solid var(--line);border-radius:14px;padding:2px 5px 2px 10px;font-size:12px;color:var(--txt)}
+  .chip .cnm{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px}
+  .chip .by{color:var(--dim)}
+  .chip .kill{width:16px;height:16px;border-radius:50%;background:#ff5b5b;color:#fff;border:none;
+    font-size:10px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center}
+  .chan .cap{margin-left:auto;display:flex;align-items:center;gap:4px;color:var(--dim);flex:0 0 auto}
+  .chan .cap button{width:22px;height:22px;border-radius:6px;border:1px solid var(--line);
+    background:var(--bg);color:var(--txt);cursor:pointer;font-weight:700}
+  .vol-ctl{display:flex;align-items:center;gap:7px;background:var(--panel2);border:1px solid var(--line);
+    border-radius:10px;padding:6px 11px;font-size:12px;color:var(--dim);flex:0 0 auto;white-space:nowrap}
+  .vol-ctl input[type=range]{width:88px}
+  .lanes-ctl{display:flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--line);
+    border-radius:10px;padding:6px 10px;font-size:12px;color:var(--dim);flex:0 0 auto;white-space:nowrap}
+  .lanes-ctl button{width:22px;height:22px;border-radius:6px;border:1px solid var(--line);
+    background:var(--bg);color:var(--txt);cursor:pointer;font-weight:700}
+  .lane-pick{display:flex;gap:5px;margin-bottom:8px}
+  .lane-pick button{flex:1;padding:6px;border-radius:7px;border:1px solid var(--line);
+    background:var(--panel2);color:var(--dim);cursor:pointer;font-weight:700;font-size:12px}
+  .lane-pick button.on{color:#fff}
+  .fi.cmd.lane-0 .c{color:var(--l0)} .fi.cmd.lane-1 .c{color:var(--l1)}
+  .fi.cmd.lane-2 .c{color:var(--l2)} .fi.cmd.lane-3 .c{color:var(--l3)} .fi.cmd.lane-long .c{color:var(--song)}
+  .fi.cmd.lane-song0 .c{color:#c98bff} .fi.cmd.lane-song1 .c{color:#ffce4d}
+  .urlrow{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px}
+  .urlrow input{flex:1;min-width:150px;background:var(--panel2);border:1px solid var(--line);
+    color:var(--txt);border-radius:8px;padding:9px 11px}
+  .alphabar{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px}
+  .alphabar button{min-width:30px;padding:5px 8px;background:var(--panel2);border:1px solid var(--line);
+    color:var(--txt);border-radius:7px;cursor:pointer;font-weight:600}
+  .alphabar button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  .alphabar button:disabled{opacity:.28;cursor:default}
+  .addhint{color:var(--dim);font-size:13px;padding:10px 2px}
+  .unlock{margin-left:8px;background:var(--accent);border:none;color:#fff;
+    padding:6px 12px;border-radius:8px;cursor:pointer;font-weight:600}
+  .spk{background:none;border:none;color:var(--txt);cursor:pointer;font-size:14px;padding:0 2px 0 0;line-height:1}
+  .btn-edit.solo-on{background:var(--accent2);border-color:var(--accent2);color:#04201a}
+  .btn-edit.sync-on{background:var(--accent);border-color:var(--accent);color:#fff}
+  /* main split */
+  .main{flex:1 1 auto;display:flex;min-height:0}
+  .board{flex:1 1 auto;display:flex;flex-direction:column;min-width:0}
+  .tabs{display:flex;gap:4px;padding:10px 16px 0;flex:0 0 auto}
+  .tabs button{background:none;border:none;color:var(--dim);padding:8px 14px;
+    cursor:pointer;border-radius:8px 8px 0 0;font-weight:600;font-size:13px}
+  .tabs button.on{color:var(--txt);background:var(--panel)}
+  .tabs{align-items:center}
+  .tabs-right{margin-left:auto;display:flex;align-items:center;gap:8px;padding-right:16px}
+  .toolbar{display:flex;gap:8px;align-items:center;padding:8px 16px;flex:0 0 auto;flex-wrap:wrap}
+  .toolbar input.search{flex:0 1 190px;background:var(--panel2);border:1px solid var(--line);
+    color:var(--txt);border-radius:8px;padding:8px 12px}
+  .allbar{display:flex;flex-wrap:wrap;gap:3px;flex:1 1 auto;min-width:0}
+  .allbar button{min-width:22px;padding:3px 6px;font-size:11px;background:var(--panel2);
+    border:1px solid var(--line);color:var(--dim);border-radius:6px;cursor:pointer;font-weight:600}
+  .allbar button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  .allbar button:disabled{opacity:.28;cursor:default}
+  .count{color:var(--dim);font-size:12px}
+  .grid{flex:1 1 auto;overflow:auto;padding:4px 16px 16px;align-content:start;
+    display:grid;grid-template-columns:repeat(auto-fill,minmax(152px,1fr));gap:11px}
+  .snd{position:relative;background:var(--panel2);border:1px solid var(--line);
+    border-radius:9px;padding:7px 24px 9px 11px;cursor:pointer;text-align:left;
+    color:var(--txt);overflow:hidden;transition:border-color .1s,transform .05s;
+    display:flex;flex-direction:column;justify-content:center;min-height:38px;user-select:none}
+  .snd.drag{touch-action:none}
+  .snd:hover{border-color:var(--accent)}
+  .snd:active{transform:scale(.97)}
+  .snd.drag{cursor:grab}
+  .snd.dragging{opacity:.35;border-color:var(--accent)}
+  .snd.dropbefore{box-shadow:-3px 0 0 var(--accent2)}
+  .snd .nm{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.25;
+    position:relative;z-index:1;pointer-events:none}
+  .snd .fmt{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;line-height:1;
+    position:relative;z-index:1;pointer-events:none}
+  /* per-lane click zones on a playable tile */
+  .snd .zone{position:absolute;top:0;bottom:0;z-index:0}
+  .snd .zone{border-left:1px solid rgba(255,255,255,.07)}
+  .snd .zone.z0{border-left:none}
+  .snd .zone::after{content:'';position:absolute;left:0;right:0;bottom:0;height:3px;background:currentColor;opacity:.55}
+  .snd .zone.z0:hover{background:rgba(58,160,255,.20)}
+  .snd .zone.z1:hover{background:rgba(255,165,58,.20)}
+  .snd .zone.z2:hover{background:rgba(0,210,168,.20)}
+  .snd .zone.z3:hover{background:rgba(255,110,199,.20)}
+  /* song tiles: distinct look + per-song-lane colored zones */
+  .snd.song{border-color:rgba(201,139,255,.4)}
+  .snd.song .nm{color:#e7d9ff}
+  .snd .zone.zsong0{border-left:none}
+  .snd .zone.zsong0:hover{background:rgba(201,139,255,.22)}
+  .snd .zone.zsong1:hover{background:rgba(255,206,77,.22)}
+  .grid.topmode .snd{padding-top:21px;min-height:52px;justify-content:flex-end;padding-bottom:11px}
+  .snd .pc{position:absolute;top:4px;left:6px;font-size:10px;color:#04201a;background:var(--accent2);
+    border-radius:8px;padding:1px 6px;font-weight:700;z-index:2;pointer-events:none}
+  .typefilter{display:flex;gap:3px;flex:0 0 auto}
+  .typefilter button{padding:4px 9px;font-size:11px;background:var(--panel2);border:1px solid var(--line);
+    color:var(--dim);border-radius:6px;cursor:pointer;font-weight:600}
+  .typefilter button.on{background:var(--song);border-color:var(--song);color:#1a0e2e}
+  .snd.wav .fmt{color:var(--wav)} .snd.mp3 .fmt{color:var(--mp3)}
+  .snd .star{position:absolute;top:6px;right:6px;color:#444;font-size:15px;
+    background:none;border:none;cursor:pointer;padding:2px;line-height:1;z-index:3}
+  .snd .star.on{color:var(--fav)}
+  /* edit (organize) mode */
+  .grid.editing{outline:1.5px dashed var(--accent);outline-offset:-5px;border-radius:14px;
+    background:rgba(124,108,255,.05)}
+  .snd.edit{cursor:grab;border-style:dashed;border-color:var(--accent)}
+  .snd.edit:active{cursor:grabbing}
+  .grid.editing .snd{animation:wiggle .45s ease-in-out infinite}
+  .grid.editing .snd:nth-child(2n){animation-delay:.1s}
+  .grid.editing .snd:nth-child(3n){animation-delay:.2s}
+  @keyframes wiggle{0%,100%{transform:rotate(-.7deg)}50%{transform:rotate(.7deg)}}
+  .snd .rm{display:none;position:absolute;top:5px;right:5px;width:19px;height:19px;border-radius:50%;
+    background:#ff5b5b;color:#fff;border:none;font-size:13px;line-height:1;cursor:pointer;
+    align-items:center;justify-content:center;z-index:3}
+  .snd.edit .rm{display:flex}
+  .snd.edit .star{display:none}
+  .btn-edit{background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+    border-radius:8px;padding:7px 13px;cursor:pointer;font-weight:600;white-space:nowrap}
+  .btn-edit.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  .editbar{display:none;align-items:center;gap:8px;margin:0 16px 2px;padding:8px 12px;
+    border-radius:10px;background:rgba(124,108,255,.14);border:1px solid var(--accent);font-size:13px}
+  .editbar.show{display:flex}
+  /* header login */
+  .me{display:flex;align-items:center;gap:6px;color:var(--dim)}
+  .me .badge{padding:3px 9px;border-radius:20px;font-size:12px;font-weight:700}
+  .me .badge.admin{background:rgba(0,210,168,.15);color:var(--accent2);border:1px solid var(--accent2)}
+  .me .badge.editor{background:rgba(124,108,255,.15);color:var(--accent);border:1px solid var(--accent)}
+  /* modals */
+  .modal-back{position:fixed;inset:0;background:rgba(0,0,0,.62);display:none;
+    align-items:center;justify-content:center;z-index:60;padding:16px}
+  .modal-back.show{display:flex}
+  .modal{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:18px 20px;width:min(640px,94vw);max-height:92vh;overflow:auto}
+  .modal h2{margin:0 0 6px;font-size:16px}
+  .modal .sub{color:var(--dim);font-size:13px;margin:0 0 6px}
+  .modal label{display:block;font-size:12px;color:var(--dim);margin:12px 0 4px;text-transform:uppercase;letter-spacing:.4px}
+  .modal input[type=text],.modal input[type=password],.modal input[type=email]{width:100%;
+    background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:9px 11px}
+  .modal input[type=range]{width:100%}
+  .mrow{display:flex;gap:8px;align-items:center;margin-top:16px}
+  .mrow .sp{flex:1}
+  .mbtn{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:8px;
+    padding:8px 14px;cursor:pointer;font-weight:600}
+  .mbtn:hover{border-color:var(--accent)}
+  .mbtn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .mbtn.danger{background:rgba(255,91,91,.12);border-color:#ff5b5b;color:#ff8a8a}
+  .merr{color:#ff8a8a;font-size:12px;margin-top:8px;min-height:14px}
+  .orline{text-align:center;color:var(--dim);font-size:12px;margin:12px 0}
+  #wave{width:100%;height:130px;background:var(--panel2);border-radius:8px;
+    display:block;cursor:ew-resize;touch-action:none}
+  .wmeta{display:flex;gap:14px;align-items:center;margin-top:8px;font-size:12px;color:var(--dim)}
+  .wmeta b{color:var(--txt)}
+  /* add/edit */
+  .addwrap{flex:1 1 auto;overflow:auto;padding:16px;max-width:720px}
+  .addwrap h3{margin:18px 0 8px;font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
+  .drop{border:1.5px dashed var(--line);border-radius:12px;padding:24px;text-align:center;
+    color:var(--dim);background:var(--panel)}
+  .drop.drag{border-color:var(--accent);color:var(--txt)}
+  .editrow{display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)}
+  .editrow .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .editrow button{background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+    border-radius:6px;padding:4px 10px;cursor:pointer}
+  .editrow button.del{color:#ff6b6b}
+  /* feed */
+  .feed{flex:0 0 360px;display:flex;flex-direction:column;background:var(--panel);
+    border-left:1px solid var(--line);min-height:0}
+  .feed .ftab{padding:10px 14px;font-weight:700;border-bottom:1px solid var(--line);
+    display:flex;align-items:center;gap:8px}
+  .presence{padding:6px 14px;font-size:12px;color:var(--dim);border-bottom:1px solid var(--line);
+    display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  .presence .pdot{width:7px;height:7px;border-radius:50%;background:var(--accent2);flex:0 0 auto}
+  .presence .who2{color:var(--txt)}
+  .feed .items{flex:1 1 auto;overflow:auto;padding:10px 12px;display:flex;flex-direction:column;gap:4px}
+  .fi{font-size:13px;padding:2px 0;word-break:break-word}
+  .fi .u{color:var(--accent2);font-weight:600}
+  .fi.cmd .c{color:var(--txt);font-weight:600}
+  .fi.cmd.wav .c{color:var(--wav)} .fi.cmd.mp3 .c{color:var(--mp3)}
+  .fi .t{color:var(--dim);font-size:10px;margin-left:4px}
+  .fi.chat .x{color:var(--txt)}
+  .composer{position:relative;border-top:1px solid var(--line);padding:10px}
+  .composer input{width:100%;background:var(--panel2);border:1px solid var(--line);
+    color:var(--txt);border-radius:8px;padding:9px 12px}
+  .hint{color:var(--dim);font-size:11px;margin-top:5px}
+  .lookup{position:absolute;bottom:100%;left:10px;right:10px;background:var(--panel2);
+    border:1px solid var(--accent);border-radius:8px;max-height:240px;overflow:auto;
+    box-shadow:0 -6px 24px rgba(0,0,0,.4);display:none}
+  .lookup.show{display:block}
+  .lk{padding:7px 12px;cursor:pointer;display:flex;gap:8px;align-items:center}
+  .lk.sel{background:var(--accent)}
+  .lk .fmt{font-size:10px;text-transform:uppercase}
+  .lk.wav .fmt{color:var(--wav)} .lk.mp3 .fmt{color:var(--mp3)}
+  .lk.sel .fmt{color:#fff}
+  .lk .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+</style>
+</head>
+<body>
+<header>
+  <h1>🔊 Sound&nbsp;Server</h1>
+  <div class="who">
+    <span>you:</span>
+    <input class="name" id="name" placeholder="name">
+    <input type="color" id="nameColor" class="namecolor" title="your name color">
+    <span class="me" id="me">
+      <span class="badge" id="meBadge" style="display:none"></span>
+      <button class="btn-edit" id="loginBtn">🔓 Log in</button>
+    </span>
+    <button class="btn-edit" id="syncBtn" title="Sync: align playback with everyone on a shared timeline (~1s delay)">🔁 Sync</button>
+    <button class="btn-edit" id="soloBtn" title="Solo: play only for you — you won't hear others and they won't hear you">🎧 Solo</button>
+  </div>
+</header>
+
+<div class="channels">
+  <div id="laneBoxes" style="display:flex;gap:10px;flex:1;flex-wrap:wrap;min-width:0"></div>
+  <div class="lanes-ctl" id="songLanesCtl" style="display:none">
+    <span>🎵 Songs</span><button id="songLanesDn">−</button><b id="songLanesN">1</b><button id="songLanesUp">+</button>
+  </div>
+  <div class="lanes-ctl" id="lanesCtl" style="display:none">
+    <span>🔊 Lanes</span><button id="lanesDn">−</button><b id="lanesN">2</b><button id="lanesUp">+</button>
+  </div>
+  <div class="vol-ctl"><button class="spk" id="muteBtn" title="mute / unmute">🔊</button><span>You</span><input type="range" id="browserVol" min="0" max="100" value="100"></div>
+  <div class="vol-ctl" id="boxVolCtl" style="display:none"><span>🏠 Box</span><input type="range" id="boxVol" min="0" max="100" value="50"></div>
+  <span class="count" id="libcount"></span>
+</div>
+
+<div class="main">
+  <div class="board">
+    <div class="tabs">
+      <button class="on" data-tab="all">All</button>
+      <button data-tab="fav">★ Favorites</button>
+      <button data-tab="top">🔥 Top</button>
+      <button data-tab="add" id="addTab" style="display:none">➕ Add / Edit</button>
+      <span class="tabs-right">
+        <span class="count" id="shown"></span>
+        <button class="btn-edit" id="ceditToggle" style="display:none">✏️ Edit</button>
+        <button class="btn-edit" id="editToggle" style="display:none">✏️ Edit layout</button>
+      </span>
+    </div>
+    <div class="toolbar" id="toolbar">
+      <input class="search" id="search" placeholder="filter…">
+      <div class="typefilter" id="typeFilter" style="display:none">
+        <button data-t="all" class="on">All</button>
+        <button data-t="songs">🎵 Songs</button>
+        <button data-t="sounds">Sounds</button>
+      </div>
+      <div class="allbar" id="allAlpha" style="display:none"></div>
+    </div>
+    <div class="editbar" id="editbar">
+      <span>🔧 <b>Organizing</b> — drag tiles to reorder · tap ✕ to remove · playback is paused</span>
+      <span style="margin-left:auto"></span>
+      <button class="btn-edit on" id="editDone">✓ Done</button>
+    </div>
+    <div class="editbar" id="cbar">
+      <span>✏️ <b>Editing clips</b> — click a tile to trim &amp; set volume · ✕ to delete · playback is paused</span>
+      <span style="margin-left:auto"></span>
+      <button class="btn-edit on" id="ceditDone">✓ Done</button>
+    </div>
+    <div class="grid" id="grid"></div>
+    <div class="addwrap" id="addwrap" style="display:none">
+      <h3>Add from a link (YouTube, TikTok, SoundCloud…)</h3>
+      <div class="urlrow">
+        <input type="text" id="urlInput" placeholder="paste a link…">
+        <input type="text" id="urlName" placeholder="name (optional)" style="flex:0 0 180px">
+        <button class="mbtn primary" id="urlGo">⬇ Download &amp; add</button>
+      </div>
+      <div class="merr" id="urlStatus"></div>
+      <h3>Upload a file (.wav / .mp3)</h3>
+      <label class="drop" id="drop">
+        <input type="file" id="file" accept=".wav,.mp3" style="display:none">
+        Drop a file here or click to choose
+      </label>
+      <h3>Edit existing</h3>
+      <input class="search" id="editsearch" placeholder="search all by name…" style="width:100%;margin-bottom:10px">
+      <div class="alphabar" id="alphabar"></div>
+      <div id="editlist"></div>
+    </div>
+  </div>
+
+  <div class="feed">
+    <div class="ftab">💬 Feed <span class="count" style="margin-left:auto">chat · commands · log</span></div>
+    <div class="presence" id="presence"></div>
+    <div class="items" id="feed"></div>
+    <div class="composer">
+      <div class="lookup" id="lookup"></div>
+      <div class="lane-pick" id="lanePick"></div>
+      <input id="msg" placeholder="!type a sound, or just chat…" autocomplete="off">
+      <div class="hint">Type <b>!name</b> → live lookup, Enter fires top hit · plain text = chat</div>
+    </div>
+  </div>
+</div>
+
+<!-- login modal -->
+<div class="modal-back" id="loginModal">
+  <div class="modal" style="width:min(420px,94vw)">
+    <h2 id="loginTitle">🔐 Log in to edit</h2>
+    <p class="sub" id="loginSub">Adding & editing clips (trim, volume, delete) is limited to admins and logged-in accounts. Playing sounds needs no login.</p>
+    <label>Password</label>
+    <input type="password" id="loginPass" placeholder="password">
+    <div id="loginEmailWrap">
+      <div class="orline">— or —</div>
+      <label>Account email</label>
+      <input type="email" id="loginEmail" placeholder="you@example.com">
+    </div>
+    <div class="mrow"><span class="sp"></span>
+      <button class="mbtn" id="loginCancel">Cancel</button>
+      <button class="mbtn primary" id="loginGo">Log in</button>
+    </div>
+    <div class="merr" id="loginErr"></div>
+  </div>
+</div>
+
+<!-- clip editor modal -->
+<div class="modal-back" id="editModal">
+  <div class="modal">
+    <h2 id="editTitle">Edit clip</h2>
+    <p class="sub">Drag across the waveform to select what to keep. Save overwrites the file in place.</p>
+    <canvas id="wave" width="600" height="130"></canvas>
+    <div class="wmeta">
+      <span>start <b id="tStart">0.00</b>s</span>
+      <span>end <b id="tEnd">0.00</b>s</span>
+      <span>keep <b id="tLen">0.00</b>s</span>
+      <span class="sp" style="flex:1"></span>
+      <button class="mbtn" id="prevPlay">▶ Preview</button>
+      <button class="mbtn" id="selFull">⤢ Full</button>
+    </div>
+    <label>Volume <b id="volLbl">100%</b></label>
+    <input type="range" id="vol" min="0" max="300" value="100">
+    <label>Name</label>
+    <input type="text" id="editName">
+    <div class="mrow">
+      <button class="mbtn danger" id="editDelete">🗑 Delete</button>
+      <span class="sp"></span>
+      <button class="mbtn" id="editCancel">Cancel</button>
+      <button class="mbtn primary" id="editSave">Save (overwrite)</button>
+    </div>
+    <div class="merr" id="editErr"></div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let SOUNDS = [], BYFILE = {}, TAB = 'all', FAVORDER = [], EDITMODE = false;
+let LANES = 2, LANE = 0, SONG_LANES = 1, ALLLETTER = null, SONGFILTER = 'all';
+const LANE_COLORS = ['#3aa0ff','#ffa53a','#00d2a8','#ff6ec7'];
+const SONG_COLOR = '#c98bff';
+let ME = {admin:false, can_edit:false, email:null}, CEDIT = false;
+
+// ---- identity / auth ----
+async function fetchMe(){
+  try{ ME = await (await fetch('/api/me')).json(); }catch(e){ ME={admin:false,can_edit:false,email:null}; }
+  applyMe();
+}
+function applyMe(){
+  const badge = $('#meBadge'), btn = $('#loginBtn');
+  if(ME.admin){ badge.style.display='inline-block'; badge.className='badge admin'; badge.textContent='🛡 admin'; btn.textContent='Log out'; }
+  else if(ME.can_edit){ badge.style.display='inline-block'; badge.className='badge editor'; badge.textContent='✉ '+(ME.email||'editor'); btn.textContent='Log out'; }
+  else { badge.style.display='none'; btn.textContent='🔓 Log in'; }
+  $('#addTab').style.display = ME.can_edit ? 'inline-block' : 'none';
+  $('#boxVolCtl').style.display = ME.admin ? 'flex' : 'none';
+  $('#lanesCtl').style.display = ME.admin ? 'flex' : 'none';
+  $('#songLanesCtl').style.display = ME.admin ? 'flex' : 'none';
+  $('#syncBtn').style.display = ME.admin ? 'inline-block' : 'none';
+  if(!ME.can_edit && (TAB==='add')){ TAB='all'; document.querySelectorAll('.tabs button').forEach(x=>x.classList.toggle('on',x.dataset.tab==='all')); }
+  if(!ME.can_edit) CEDIT=false;
+  render();
+  if(ME.needs_login) showWall();
+}
+let audioUnlocked = false;
+const playing = {};      // token -> Audio (shared/room sounds)
+const soloPlaying = {};  // lane -> Audio (private solo sounds)
+const handled = new Set();// tokens we've already started
+
+// ---- login modal / access wall ----
+let WALL = false;
+function showWall(){
+  if(WALL) return;
+  WALL = true;
+  $('#loginTitle').textContent = '🔊 Enter the access password';
+  $('#loginSub').textContent = 'This soundboard is private — enter the password to come in.';
+  $('#loginEmailWrap').style.display = 'none';
+  $('#loginCancel').style.display = 'none';
+  $('#loginErr').textContent = ''; $('#loginPass').value = '';
+  $('#loginModal').classList.add('show'); setTimeout(()=>$('#loginPass').focus(), 50);
+}
+function openEditLogin(){                 // header button → edit/admin login
+  $('#loginTitle').textContent = '🔐 Log in to edit';
+  $('#loginSub').textContent = 'Adding & editing clips is limited to admins and logged-in accounts.';
+  $('#loginEmailWrap').style.display = ''; $('#loginCancel').style.display = '';
+  $('#loginErr').textContent=''; $('#loginPass').value=''; $('#loginEmail').value='';
+  $('#loginModal').classList.add('show'); $('#loginPass').focus();
+}
+$('#loginBtn').onclick = async () => {
+  if(ME.can_edit || ME.admin){ await fetch('/api/logout',{method:'POST'}); await fetchMe(); return; }
+  openEditLogin();
+};
+$('#loginCancel').onclick = () => $('#loginModal').classList.remove('show');
+$('#loginGo').onclick = doLogin;
+$('#loginPass').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
+$('#loginEmail').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
+async function doLogin(){
+  const password = $('#loginPass').value, email = $('#loginEmail').value.trim();
+  const r = await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({password, email})});
+  const d = await r.json();
+  if(d.ok){
+    ME = d; applyMe();
+    if(WALL && !ME.needs_login){ WALL = false; $('#loginModal').classList.remove('show'); startApp(); }
+    else if(!WALL){ $('#loginModal').classList.remove('show'); }
+  } else {
+    $('#loginErr').textContent = d.error || 'login failed';
+  }
+}
+
+// ---- identity ----
+function uname(){ return $('#name').value.trim() || 'someone'; }
+$('#name').value = localStorage.getItem('ss_name') ||
+  'guest'+Math.floor(Math.random()*900+100);
+$('#name').onchange = () => localStorage.setItem('ss_name', $('#name').value.trim());
+function ucolor(){ return $('#nameColor').value; }
+$('#nameColor').value = localStorage.getItem('ss_color') || '#7c6cff';
+$('#nameColor').oninput = () => localStorage.setItem('ss_color', $('#nameColor').value);
+
+// ---- audio unlock (autoplay policy) ----
+function unlock(){
+  if(audioUnlocked) return;
+  const a = new Audio("data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=");
+  a.play().catch(()=>{}); audioUnlocked = true;
+}
+document.addEventListener('click', unlock, {once:false});
+
+// ---- load library ----
+async function loadSounds(){
+  const r = await fetch('/api/sounds'); const d = await r.json();
+  SOUNDS = d.sounds; BYFILE = {}; SOUNDS.forEach(s=>BYFILE[s.file]=s);
+  FAVORDER = d.fav_order || [];
+  $('#libcount').textContent = d.count + ' sounds';
+  render();
+  if(d.scanning) setTimeout(loadSounds, 4000);   // refresh as song durations fill in
+}
+
+// ---- render board ----
+function render(){
+  const q = $('#search').value.trim().toLowerCase();
+  const grid = $('#grid');
+  const editing  = (TAB==='fav' && EDITMODE);                 // layout reorder
+  const cediting = (TAB==='all' && CEDIT && ME.can_edit);     // content edit (trim/delete)
+  const anyEdit  = editing || cediting;
+  const showFilters = (TAB==='all' || TAB==='fav' || TAB==='top');
+  $('#toolbar').style.display = (TAB==='add' || editing) ? 'none' : 'flex';
+  grid.style.display = TAB==='add' ? 'none' : 'grid';
+  $('#addwrap').style.display = TAB==='add' ? 'block' : 'none';
+  $('#editToggle').style.display  = (TAB==='fav' && !EDITMODE) ? 'inline-block' : 'none';
+  $('#ceditToggle').style.display = (TAB==='all' && ME.can_edit && !CEDIT) ? 'inline-block' : 'none';
+  $('#editbar').classList.toggle('show', editing);
+  $('#cbar').classList.toggle('show', cediting);
+  grid.classList.toggle('editing', anyEdit);
+  $('#allAlpha').style.display = showFilters ? 'flex' : 'none';
+  $('#typeFilter').style.display = showFilters ? 'flex' : 'none';
+  $('#shown').style.display = (TAB==='add') ? 'none' : 'inline';
+  if(showFilters) buildAllAlpha();
+  if(TAB==='add'){ renderEdit(); return; }
+  // base list per tab
+  let list;
+  if(TAB==='fav') list = SOUNDS.filter(s=>s.fav);
+  else if(TAB==='top') list = SOUNDS.filter(s=>s.plays>0);
+  else list = SOUNDS.slice();
+  // shared filters: search / letter / song-type (work on every browse tab)
+  if(q && !editing) list = list.filter(s=>s.name.toLowerCase().includes(q));
+  if(showFilters && ALLLETTER && !q) list = list.filter(s=>bucketOf(s.name)===ALLLETTER);
+  if(showFilters && SONGFILTER==='songs')  list = list.filter(s=>s.long);
+  if(showFilters && SONGFILTER==='sounds') list = list.filter(s=>!s.long);
+  // per-tab ordering
+  if(TAB==='top') list.sort((a,b)=> b.plays - a.plays);
+  else if(TAB==='fav'){ const idx=f=>{const i=FAVORDER.indexOf(f);return i<0?1e9:i;}; list.sort((a,b)=> idx(a.file)-idx(b.file)); }
+  grid.classList.toggle('topmode', TAB==='top');
+  $('#shown').textContent =
+    cediting ? (list.length + ' clips · click one to edit') :
+    TAB==='top' ? (list.length + ' most-played (all-time)') :
+    TAB==='fav' ? (list.length + ' favorites' + (editing ? '' : ' · ✏️ Edit layout to reorder')) :
+    (list.length + ' shown');
+  grid.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  for(const s of list){
+    const el = document.createElement('div');
+    el.className = 'snd '+s.fmt+(anyEdit?' edit':'')+(s.long?' song':'');
+    el.innerHTML =
+      `<div class="nm">${s.long?'🎵 ':''}${esc(s.name)}</div>`+
+      (TAB==='top' ? `<div class="pc">▶ ${s.plays}</div>` : '')+
+      `<button class="star ${s.fav?'on':''}" title="favorite">★</button>`+
+      `<button class="rm" title="${cediting?'delete clip':'remove from favorites'}">✕</button>`;
+    el.dataset.file = s.file;
+    el.onclick = e => {
+      if(e.target.classList.contains('star') || e.target.classList.contains('rm')) return;
+      if(editing) return;                 // layout mode: no playback (drag only)
+      if(cediting){ openEdit(s); return; }// content mode: open editor
+      // play mode: colored zones (below) handle firing
+    };
+    el.querySelector('.star').onclick = e => { e.stopPropagation(); toggleFav(s); };
+    el.querySelector('.rm').onclick = e => {
+      e.stopPropagation();
+      if(cediting) deleteClip(s); else toggleFav(s);
+    };
+    if(editing) favDnD(el, s.file);
+    if(!anyEdit){
+      if(s.long){                         // songs → colored song-lane zones
+        for(let i=0;i<SONG_LANES;i++){
+          const z=document.createElement('div');
+          z.className='zone zsong'+i+' lane-song'+i;
+          z.style.left=(i*100/SONG_LANES)+'%'; z.style.width=(100/SONG_LANES)+'%';
+          z.onclick=()=>fireFile(s.file, 'song'+i);
+          el.appendChild(z);
+        }
+      } else {                            // short sounds → N colored lane zones
+        for(let i=0;i<LANES;i++){
+          const z=document.createElement('div');
+          z.className='zone z'+i+' lane-'+i;
+          z.style.left=(i*100/LANES)+'%'; z.style.width=(100/LANES)+'%';
+          z.onclick=()=>fireFile(s.file, i);
+          el.appendChild(z);
+        }
+      }
+    }
+    frag.appendChild(el);
+  }
+  grid.appendChild(frag);
+}
+function setEdit(on){ EDITMODE = on; render(); }
+$('#editToggle').onclick  = () => setEdit(true);
+$('#editDone').onclick    = () => setEdit(false);
+$('#ceditToggle').onclick = () => { CEDIT = true;  render(); };
+$('#ceditDone').onclick   = () => { CEDIT = false; render(); };
+
+// ---- favorites drag-to-reorder (pointer-based: works on desktop + touch) ----
+function clearDropMarks(){ document.querySelectorAll('.snd.dropbefore').forEach(x=>x.classList.remove('dropbefore')); }
+function targetUnder(x, y, exclude){
+  for(const e of document.elementsFromPoint(x, y)){
+    const s = e.closest && e.closest('.snd');
+    if(s && s!==exclude && s.dataset.file) return s;
+  }
+  return null;
+}
+function favDnD(el, file){
+  let sx=0, sy=0, dragging=false;
+  const onMove = e=>{
+    if(!dragging && Math.hypot(e.clientX-sx, e.clientY-sy) > 6){
+      dragging = true; el.classList.add('dragging');
+    }
+    if(dragging){
+      clearDropMarks();
+      const t = targetUnder(e.clientX, e.clientY, el);
+      if(t) t.classList.add('dropbefore');
+    }
+  };
+  const onUp = e=>{
+    el.removeEventListener('pointermove', onMove);
+    el.removeEventListener('pointerup', onUp);
+    try{ el.releasePointerCapture(e.pointerId); }catch(_){}
+    el.classList.remove('dragging'); clearDropMarks();
+    if(dragging){
+      const t = targetUnder(e.clientX, e.clientY, el);
+      if(t && t.dataset.file !== file) reorderFav(file, t.dataset.file);
+    }
+    // tap in organize mode does nothing — playback is paused while editing
+  };
+  el.addEventListener('pointerdown', e=>{
+    if(e.target.classList.contains('star') || (e.button && e.button!==0)) return;
+    sx=e.clientX; sy=e.clientY; dragging=false;
+    try{ el.setPointerCapture(e.pointerId); }catch(_){}
+    el.addEventListener('pointermove', onMove);
+    el.addEventListener('pointerup', onUp);
+  });
+}
+// ---- clip editor (trim + volume, in-place) ----
+let EDITCUR=null, EDITBUF=null, EDITDUR=0, regStart=0, regEnd=0, prevAudio=null;
+async function openEdit(s){
+  EDITCUR=s; $('#editErr').textContent=''; $('#editTitle').textContent='Edit · '+s.name;
+  $('#editName').value=s.name; $('#vol').value=100; $('#volLbl').textContent='100%';
+  $('#editModal').classList.add('show');
+  EDITBUF=null; EDITDUR=0; regStart=0; regEnd=0;
+  const cv=$('#wave');
+  // size canvas to its displayed width for a crisp draw
+  cv.width = cv.clientWidth || 600;
+  const g=cv.getContext('2d'); g.clearRect(0,0,cv.width,cv.height);
+  g.fillStyle='#8b93a7'; g.font='12px sans-serif'; g.fillText('decoding…',12,24);
+  try{
+    const ab = await (await fetch('/api/audio?f='+encodeURIComponent(s.file))).arrayBuffer();
+    const actx = new (window.AudioContext||window.webkitAudioContext)();
+    EDITBUF = await actx.decodeAudioData(ab);
+    EDITDUR = EDITBUF.duration; regStart=0; regEnd=EDITDUR;
+    drawWave();
+  }catch(e){
+    g.clearRect(0,0,cv.width,cv.height); g.fillStyle='#ff8a8a'; g.fillText('could not decode audio',12,24);
+  }
+}
+function drawWave(){
+  const cv=$('#wave'), w=cv.width, h=cv.height, g=cv.getContext('2d');
+  g.clearRect(0,0,w,h);
+  if(EDITBUF){
+    const data=EDITBUF.getChannelData(0), step=Math.max(1,Math.floor(data.length/w));
+    g.fillStyle='#39405a';
+    for(let x=0;x<w;x++){
+      let mn=1,mx=-1;
+      for(let i=0;i<step;i++){const v=data[x*step+i]||0; if(v<mn)mn=v; if(v>mx)mx=v;}
+      const y1=(1+mn)/2*h, y2=(1+mx)/2*h;
+      g.fillRect(x,y1,1,Math.max(1,y2-y1));
+    }
+  }
+  // dim outside selection + draw handles
+  const xs = EDITDUR? regStart/EDITDUR*w : 0, xe = EDITDUR? regEnd/EDITDUR*w : w;
+  g.fillStyle='rgba(13,15,20,.62)'; g.fillRect(0,0,xs,h); g.fillRect(xe,0,w-xe,h);
+  g.fillStyle='rgba(124,108,255,.14)'; g.fillRect(xs,0,xe-xs,h);
+  g.fillStyle='#7c6cff'; g.fillRect(xs-1,0,2,h); g.fillRect(xe-1,0,2,h);
+  $('#tStart').textContent=regStart.toFixed(2);
+  $('#tEnd').textContent=regEnd.toFixed(2);
+  $('#tLen').textContent=Math.max(0,regEnd-regStart).toFixed(2);
+}
+// drag across canvas to define the kept region
+(function(){
+  const cv=$('#wave'); let down=false, anchor=0;
+  const tAt=x=>{ const r=cv.getBoundingClientRect(); return Math.max(0,Math.min(1,(x-r.left)/r.width))*EDITDUR; };
+  cv.addEventListener('pointerdown',e=>{ if(!EDITDUR)return; down=true; anchor=tAt(e.clientX); regStart=anchor; regEnd=anchor; cv.setPointerCapture(e.pointerId); drawWave(); });
+  cv.addEventListener('pointermove',e=>{ if(!down)return; const t=tAt(e.clientX); regStart=Math.min(anchor,t); regEnd=Math.max(anchor,t); drawWave(); });
+  cv.addEventListener('pointerup',e=>{ if(!down)return; down=false; if(regEnd-regStart<0.05){ regStart=0; regEnd=EDITDUR; drawWave(); } });
+})();
+$('#selFull').onclick=()=>{ regStart=0; regEnd=EDITDUR; drawWave(); };
+$('#vol').oninput=()=>{ $('#volLbl').textContent=$('#vol').value+'%'; if(prevAudio) prevAudio.volume=Math.min(1,$('#vol').value/100); };
+$('#prevPlay').onclick=()=>{
+  if(prevAudio){ prevAudio.pause(); prevAudio=null; $('#prevPlay').textContent='▶ Preview'; return; }
+  prevAudio=new Audio('/api/audio?f='+encodeURIComponent(EDITCUR.file));
+  prevAudio.volume=Math.min(1,$('#vol').value/100);
+  prevAudio.currentTime=regStart;
+  prevAudio.play().catch(()=>{});
+  $('#prevPlay').textContent='⏸ Stop';
+  prevAudio.ontimeupdate=()=>{ if(prevAudio && prevAudio.currentTime>=regEnd){ prevAudio.pause(); prevAudio=null; $('#prevPlay').textContent='▶ Preview'; } };
+};
+function closeEdit(){ if(prevAudio){prevAudio.pause();prevAudio=null;} $('#prevPlay').textContent='▶ Preview'; $('#editModal').classList.remove('show'); }
+$('#editCancel').onclick=closeEdit;
+$('#editSave').onclick=async()=>{
+  if(!EDITCUR) return;
+  $('#editErr').textContent='Saving…';
+  const gain=$('#vol').value/100;
+  const r=await fetch('/api/edit',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({file:EDITCUR.file, start:regStart, end:regEnd, gain})});
+  const d=await r.json();
+  if(!d.ok){ $('#editErr').textContent=d.error||'save failed'; return; }
+  const newName=$('#editName').value.trim();
+  if(newName && newName!==EDITCUR.name){
+    await fetch('/api/rename',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({file:EDITCUR.file, name:newName})});
+  }
+  closeEdit(); await loadSounds();
+};
+$('#editDelete').onclick=async()=>{
+  if(!EDITCUR) return;
+  if(!confirm('Delete '+EDITCUR.name+'? This removes the file.')) return;
+  const r=await fetch('/api/delete',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({file:EDITCUR.file})});
+  const d=await r.json();
+  if(!d.ok){ $('#editErr').textContent=d.error||'delete failed'; return; }
+  closeEdit(); await loadSounds();
+};
+async function deleteClip(s){
+  if(!confirm('Delete '+s.name+'? This removes the file.')) return;
+  const r=await fetch('/api/delete',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({file:s.file})});
+  const d=await r.json();
+  if(d.ok) await loadSounds(); else alert(d.error||'delete failed');
+}
+
+function reorderFav(src, target){
+  let order = SOUNDS.filter(s=>s.fav).map(s=>s.file);
+  const idx = f => { const i = FAVORDER.indexOf(f); return i<0 ? 1e9 : i; };
+  order.sort((a,b)=> idx(a)-idx(b));
+  order = order.filter(f=>f!==src);
+  const ti = order.indexOf(target);
+  order.splice(ti < 0 ? order.length : ti, 0, src);   // insert before target
+  FAVORDER = order;
+  render();
+  fetch('/api/favorites/order',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({order})});
+}
+$('#search').oninput = () => { if($('#search').value.trim()) ALLLETTER=null; if(TAB!=='add') render(); };
+function buildAllAlpha(){
+  const counts={}; for(const s of SOUNDS){ const b=bucketOf(s.name); counts[b]=(counts[b]||0)+1; }
+  const letters=['#'].concat([...'ABCDEFGHIJKLMNOPQRSTUVWXYZ']);
+  const bar=$('#allAlpha'); bar.innerHTML='';
+  const all=document.createElement('button'); all.textContent='All';
+  if(ALLLETTER===null) all.classList.add('on');
+  all.onclick=()=>{ ALLLETTER=null; render(); }; bar.appendChild(all);
+  for(const L of letters){
+    const b=document.createElement('button'); b.textContent=L; b.disabled=!counts[L];
+    if(L===ALLLETTER) b.classList.add('on');
+    b.onclick=()=>{ ALLLETTER=L; $('#search').value=''; render(); };
+    bar.appendChild(b);
+  }
+}
+
+document.querySelectorAll('.tabs button').forEach(b=>{
+  b.onclick = () => {
+    document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on'); TAB = b.dataset.tab; EDITMODE = false; CEDIT = false; render();
+  };
+});
+
+// ---- favorites ----
+async function toggleFav(s){
+  s.fav = !s.fav;
+  await fetch('/api/favorite',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({file:s.file,on:s.fav})});
+  render();
+}
+
+// ---- firing ----
+async function fireFile(file, lane){
+  unlock();
+  if(lane===undefined) lane=LANE;
+  if(SOLO){ playLocal(file, lane); return; }       // private: local only, no broadcast
+  const r = await fetch('/api/fire',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({file, user:uname(), lane, color:ucolor()})});
+  const d = await r.json();
+  if(d.ok && d.fired) startEntry(d.fired);   // instant for the firing user
+}
+async function fireCmd(cmd, lane){
+  unlock();
+  if(lane===undefined) lane=LANE;
+  if(SOLO){ const f=resolveCmd(cmd); if(f) playLocal(f, lane); return !!f; }
+  const r = await fetch('/api/fire',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({cmd, user:uname(), lane, color:ucolor()})});
+  const d = await r.json();
+  if(d.ok && d.fired) startEntry(d.fired);
+  return d.ok;
+}
+// lane picker (for typed / lookup firing)
+function buildLanePicker(){
+  const p=$('#lanePick');
+  p.style.display = LANES<=1 ? 'none' : 'flex';
+  p.innerHTML='';
+  if(LANES<=1){ LANE=0; return; }
+  if(LANE>=LANES) LANE=0;
+  for(let i=0;i<LANES;i++){
+    const b=document.createElement('button');
+    b.textContent='Lane '+(i+1); b.className='lane-'+i+(i===LANE?' on':'');
+    if(i===LANE){ b.style.background=LANE_COLORS[i]; b.style.borderColor=LANE_COLORS[i]; }
+    b.onclick=()=>{ LANE=i; buildLanePicker(); };
+    p.appendChild(b);
+  }
+}
+
+// ---- browser playback (decentralised) ----
+const activeMeta = {};   // token -> {start, dur}  (for the drift loop)
+function startEntry(e){
+  if(handled.has(e.token)) return;
+  handled.add(e.token);
+  const a = new Audio('/api/audio?f='+encodeURIComponent(e.file));
+  a.volume = effVol();
+  playing[e.token] = a;
+  activeMeta[e.token] = {start:e.start, dur:e.dur||0};
+  a.addEventListener('ended',()=>{ if(playing[e.token]===a){ delete playing[e.token]; delete activeMeta[e.token]; } });
+  if(SYNC){
+    // shared timeline: audio position 0 maps to wall-clock (start + buffer)
+    const target = e.start + SYNC_BUFFER;
+    const pos = serverNow() - target;
+    if(pos < 0){                                    // not time yet → schedule from 0
+      setTimeout(()=>{ try{ a.currentTime=0; a.play().catch(()=>{}); }catch(_){} }, Math.min(5000, -pos*1000));
+    } else {                                        // late → seek in to catch up
+      a.addEventListener('loadedmetadata',()=>{ if(pos < a.duration) a.currentTime=pos; });
+      a.play().catch(()=>{});
+    }
+  } else {
+    a.play().catch(()=>{});                          // snappy: from the start, ASAP
+  }
+}
+async function pollActive(){
+  try{
+    const r = await fetch('/api/active?u='+encodeURIComponent(uname())+'&c='+encodeURIComponent(ucolor())); const d = await r.json();
+    paintPresence(d.online);
+    if(typeof d.lanes==='number' && d.lanes!==LANES){   // admin changed lane count
+      LANES=d.lanes; if(LANE>=LANES)LANE=0;
+      $('#lanesN').textContent=LANES; buildLanePicker(); render();
+    }
+    if(typeof d.song_lanes==='number' && d.song_lanes!==SONG_LANES){
+      SONG_LANES=d.song_lanes; $('#songLanesN').textContent=SONG_LANES;
+    }
+    if(typeof d.box_volume==='number' && document.activeElement!==$('#boxVol')) $('#boxVol').value=d.box_volume;
+    if(typeof d.sync==='boolean' && d.sync!==SYNC){ SYNC=d.sync; applySync(); }
+    if(SOLO){
+      // private mode: don't hear the room — stop any shared sounds
+      for(const tok of Object.keys(playing)){ try{playing[tok].pause();}catch(e){} delete playing[tok]; delete activeMeta[tok]; }
+    } else {
+      const live = new Set(d.active.map(a=>a.token));
+      for(const tok of Object.keys(playing)){
+        if(!live.has(+tok)){ try{playing[tok].pause();}catch(e){} delete playing[tok]; delete activeMeta[tok]; }
+      }
+      for(const a of d.active) startEntry(a);
+    }
+    paintChannels(d.active);
+  }catch(e){}
+}
+function paintChannels(active){
+  const box=$('#laneBoxes');
+  if(box.childElementCount!==SONG_LANES+LANES){     // song lanes + N short lanes
+    box.innerHTML='';
+    for(let i=0;i<SONG_LANES;i++){
+      const c=document.createElement('div');
+      c.className='chan lane-song'+i; c.id='ch-lanesong'+i;
+      c.innerHTML=`<span class="dot"></span><span class="lab">${SONG_LANES<=1?'🎵 Song':'🎵 Song '+(i+1)}</span>`+
+        `<span class="occ" id="occ-lanesong${i}"><span class="none">—</span></span>`;
+      box.appendChild(c);
+    }
+    for(let i=0;i<LANES;i++){
+      const c=document.createElement('div');
+      c.className='chan lane-'+i; c.id='ch-lane'+i;
+      c.innerHTML=`<span class="dot"></span><span class="lab">${LANES<=1?'Sound':'L'+(i+1)}</span>`+
+        `<span class="occ" id="occ-lane${i}"><span class="none">—</span></span>`;
+      box.appendChild(c);
+    }
+  }
+  for(let i=0;i<SONG_LANES;i++) paintLane('song'+i, active.filter(a=>a.lane==='song'+i));
+  for(let i=0;i<LANES;i++) paintLane(i, active.filter(a=>a.lane===i));
+}
+function laneClass(lane){ return 'lane-'+lane; }   // 'lane-0'.. or 'lane-song0'/'lane-song1'
+function paintLane(key, occ){
+  const ch=$('#ch-lane'+key), o=$('#occ-lane'+key);
+  if(!ch) return;
+  ch.classList.toggle('live', occ.length>0);
+  if(!occ.length){ o.innerHTML='<span class="none">—</span>'; return; }
+  o.innerHTML='';
+  for(const a of occ){
+    const canKill=ME.admin||(a.by===uname());   // owner or admin
+    const chip=document.createElement('span'); chip.className='chip';
+    chip.innerHTML=`<span class="cnm">${esc(a.name)}</span><span class="by"${a.color?' style="color:'+a.color+'"':''}>· ${esc(a.by||'')}</span>`+
+      (canKill?`<button class="kill" title="stop this sound">✕</button>`:'');
+    if(canKill) chip.querySelector('.kill').onclick=()=>killActive(a.token);
+    o.appendChild(chip);
+  }
+}
+document.querySelectorAll('#typeFilter button').forEach(b=>{
+  b.onclick=()=>{ SONGFILTER=b.dataset.t;
+    document.querySelectorAll('#typeFilter button').forEach(x=>x.classList.toggle('on',x===b));
+    render(); };
+});
+function paintPresence(online){
+  const el=$('#presence');
+  if(!online || !online.length){
+    el.innerHTML='<span class="pdot" style="background:#555"></span> nobody else here'; return;
+  }
+  el.innerHTML=`<span class="pdot"></span> ${online.length} online: `+
+    online.map(o=>`<span style="color:${o.color||'#e6e9f0'};font-weight:600">${esc(o.name)}</span>`).join(', ');
+}
+function killActive(token){
+  fetch('/api/active/'+token+'/stop',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({user:uname()})}).then(()=>pollActive());
+}
+
+// ---- per-listener volume + mute (folded into the slider/speaker) ----
+let BROWSERVOL = parseFloat(localStorage.getItem('ss_bvol') || '1');
+if(isNaN(BROWSERVOL)) BROWSERVOL = 1;
+let MUTED = localStorage.getItem('ss_muted') === '1';
+$('#browserVol').value = Math.round(BROWSERVOL*100);
+function effVol(){ return MUTED ? 0 : BROWSERVOL; }              // applied volume
+function applyVol(){
+  const v = effVol();
+  for(const t in playing){ try{ playing[t].volume = v; }catch(_){ } }
+  for(const l in soloPlaying){ try{ soloPlaying[l].volume = v; }catch(_){ } }
+  $('#muteBtn').textContent = v===0 ? '🔇' : (v < 0.5 ? '🔉' : '🔊');
+}
+$('#browserVol').oninput = e => {
+  BROWSERVOL = e.target.value/100;
+  if(BROWSERVOL > 0) MUTED = false;                             // slider up = unmute
+  localStorage.setItem('ss_bvol', BROWSERVOL);
+  localStorage.setItem('ss_muted', MUTED?'1':'0');
+  applyVol();
+};
+$('#muteBtn').onclick = () => {                                  // speaker click = mute toggle
+  MUTED = !MUTED;
+  if(!MUTED && BROWSERVOL === 0){ BROWSERVOL = 1; $('#browserVol').value = 100; localStorage.setItem('ss_bvol', 1); }
+  localStorage.setItem('ss_muted', MUTED?'1':'0');
+  applyVol();
+};
+applyVol();
+$('#boxVol').oninput = e => {
+  fetch('/api/box_volume',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({v:+e.target.value})});
+};
+
+// ---- sync (shared timeline) — GLOBAL setting, admin-toggled, default on ----
+let SYNC = true;
+const SYNC_BUFFER = 1.0;          // seconds of lead so all listeners can align
+let clockOffset = 0;              // serverTime - clientTime (seconds)
+function serverNow(){ return Date.now()/1000 + clockOffset; }
+async function syncClock(){
+  let best = null;
+  for(let i=0;i<5;i++){
+    const t0 = Date.now()/1000;
+    try{
+      const d = await (await fetch('/api/time')).json();
+      const t1 = Date.now()/1000, rtt = t1 - t0;
+      const off = d.t + rtt/2 - t1;                 // est. serverTime at t1 minus t1
+      if(!best || rtt < best.rtt) best = {rtt, off};
+    }catch(e){}
+  }
+  if(best) clockOffset = best.off;
+}
+function applySync(){
+  $('#syncBtn').classList.toggle('sync-on', SYNC);
+  $('#syncBtn').textContent = SYNC ? '🔁 Sync: on' : '🔁 Sync: off';
+  if(SYNC) syncClock();
+}
+$('#syncBtn').onclick = () => {
+  if(!ME.admin) return;                              // admin-only
+  fetch('/api/sync',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({on:!SYNC})}).then(r=>r.json()).then(d=>{ SYNC=!!d.on; applySync(); });
+};
+// drift correction: keep each synced sound near its shared-timeline position
+setInterval(()=>{
+  if(!SYNC) return;
+  for(const tok in playing){
+    const m = activeMeta[tok], a = playing[tok];
+    if(!m || !a || a.paused) continue;
+    const expected = serverNow() - (m.start + SYNC_BUFFER);
+    if(expected < 0 || (m.dur && expected > m.dur)) continue;
+    const drift = a.currentTime - expected;
+    if(Math.abs(drift) > 0.35){ try{ a.currentTime = expected; }catch(_){} a.playbackRate = 1; }
+    else if(Math.abs(drift) > 0.06){ a.playbackRate = drift > 0 ? 0.96 : 1.04; }
+    else a.playbackRate = 1;
+  }
+}, 1200);
+
+// ---- solo / private mode ----
+let SOLO = localStorage.getItem('ss_solo') === '1';
+function applySolo(){
+  $('#soloBtn').classList.toggle('solo-on', SOLO);
+  $('#soloBtn').textContent = SOLO ? '🎧 Solo: on' : '🎧 Solo';
+  if(SOLO){          // entering solo: drop room audio immediately
+    for(const t of Object.keys(playing)){ try{playing[t].pause();}catch(e){} delete playing[t]; }
+  } else {           // leaving solo: stop private audio
+    for(const l of Object.keys(soloPlaying)){ try{soloPlaying[l].pause();}catch(e){} delete soloPlaying[l]; }
+  }
+}
+$('#soloBtn').onclick = () => { SOLO = !SOLO; localStorage.setItem('ss_solo', SOLO?'1':'0'); applySolo(); };
+function playLocal(file, lane){
+  unlock();
+  if(soloPlaying[lane]){ try{ soloPlaying[lane].pause(); }catch(_){ } }
+  const a = new Audio('/api/audio?f='+encodeURIComponent(file));
+  a.volume = effVol(); a.play().catch(()=>{});
+  a.addEventListener('ended', ()=>{ if(soloPlaying[lane]===a) delete soloPlaying[lane]; });
+  soloPlaying[lane] = a;
+}
+function resolveCmd(cmd){
+  const c = (cmd||'').replace(/^!/,'').trim().toLowerCase();
+  if(!c) return null;
+  let m = SOUNDS.find(s=>s.cmd===c);
+  if(!m){ const cand = SOUNDS.filter(s=>s.cmd.includes(c));
+    cand.sort((a,b)=> a.fav===b.fav ? a.name.length-b.name.length : (a.fav?-1:1)); m = cand[0]; }
+  return m ? m.file : null;
+}
+
+// ---- lanes (admin) ----
+function setLanes(n){
+  n=Math.max(1,Math.min(4,n));
+  fetch('/api/lanes',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({lanes:n})}).then(r=>r.json()).then(d=>{
+      LANES=d.lanes; $('#lanesN').textContent=LANES; if(LANE>=LANES)LANE=0;
+      buildLanePicker(); render();
+    });
+}
+$('#lanesUp').onclick=()=>setLanes(LANES+1);
+$('#lanesDn').onclick=()=>setLanes(LANES-1);
+function setSongLanes(n){
+  n=Math.max(1,Math.min(2,n));
+  fetch('/api/lanes',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({song_lanes:n})}).then(r=>r.json()).then(d=>{
+      SONG_LANES=d.song_lanes; $('#songLanesN').textContent=SONG_LANES;
+    });
+}
+$('#songLanesUp').onclick=()=>setSongLanes(SONG_LANES+1);
+$('#songLanesDn').onclick=()=>setSongLanes(SONG_LANES-1);
+
+// ---- feed ----
+let feedSince = 0;
+async function pollFeed(){
+  try{
+    const r = await fetch('/api/feed?since='+feedSince); const d = await r.json();
+    if(d.feed.length){
+      const box = $('#feed');
+      const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+      for(const it of d.feed){ feedSince = it.id; box.appendChild(feedItem(it)); }
+      while(box.children.length>200) box.removeChild(box.firstChild);
+      if(atBottom) box.scrollTop = box.scrollHeight;
+    }
+  }catch(e){}
+}
+function feedItem(it){
+  const el = document.createElement('div');
+  const t = new Date(it.ts*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  const uc = it.color || '#00d2a8';
+  if(it.kind==='cmd'){
+    el.className = 'fi cmd '+laneClass(it.lane);
+    el.innerHTML = `<span class="u" style="color:${uc}">${esc(it.user)}</span> `+
+      `<span class="c">!${esc((it.name||'').toLowerCase())}</span><span class="t">${t}</span>`;
+  } else {
+    el.className = 'fi chat';
+    el.innerHTML = `<span class="u" style="color:${uc}">${esc(it.user)}</span> `+
+      `<span class="x">${esc(it.text||'')}</span><span class="t">${t}</span>`;
+  }
+  return el;
+}
+
+// ---- composer w/ live lookup ----
+const msg = $('#msg'), lookup = $('#lookup');
+let lkItems = [], lkSel = 0;
+msg.addEventListener('input', refreshLookup);
+function refreshLookup(){
+  const v = msg.value;
+  if(!v.startsWith('!')){ hideLookup(); return; }
+  const q = v.slice(1).trim().toLowerCase();
+  let list = SOUNDS.filter(s=> q==='' ? true : s.cmd.includes(q));
+  // rank: exact cmd, then startswith, then favorites, then alpha
+  list.sort((a,b)=>{
+    const ax=a.cmd===q?0:a.cmd.startsWith(q)?1:2, bx=b.cmd===q?0:b.cmd.startsWith(q)?1:2;
+    if(ax!==bx) return ax-bx;
+    if(a.fav!==b.fav) return a.fav?-1:1;
+    return a.name.localeCompare(b.name);
+  });
+  lkItems = list.slice(0,12); lkSel = 0; paintLookup();
+}
+function paintLookup(){
+  if(!lkItems.length){ hideLookup(); return; }
+  lookup.innerHTML='';
+  lkItems.forEach((s,i)=>{
+    const d=document.createElement('div');
+    d.className='lk '+s.fmt+(i===lkSel?' sel':'');
+    d.innerHTML=`<span class="nm">${esc(s.name)}</span><span class="fmt">${s.fmt}</span>`+
+      (s.fav?'<span style="color:var(--fav)">★</span>':'');
+    d.onmousedown=e=>{e.preventDefault(); pickLookup(i);};
+    lookup.appendChild(d);
+  });
+  lookup.classList.add('show');
+}
+function hideLookup(){ lookup.classList.remove('show'); lkItems=[]; }
+function pickLookup(i){
+  const s=lkItems[i]; if(!s) return;
+  fireFile(s.file); msg.value=''; hideLookup();
+}
+msg.addEventListener('keydown', e=>{
+  if(lookup.classList.contains('show')){
+    if(e.key==='ArrowDown'){e.preventDefault(); lkSel=Math.min(lkItems.length-1,lkSel+1); paintLookup();}
+    else if(e.key==='ArrowUp'){e.preventDefault(); lkSel=Math.max(0,lkSel-1); paintLookup();}
+    else if(e.key==='Enter'){e.preventDefault(); pickLookup(lkSel);}
+    else if(e.key==='Escape'){hideLookup();}
+    return;
+  }
+  if(e.key==='Enter'){
+    const v=msg.value.trim();
+    if(!v) return;
+    if(v.startsWith('!')){ fireCmd(v.slice(1)); }
+    else { sendChat(v); }
+    msg.value='';
+  }
+});
+async function sendChat(text){
+  await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({text, user:uname(), color:ucolor()})});
+}
+
+// ---- add / edit ----
+$('#drop').addEventListener('dragover', e=>{e.preventDefault(); $('#drop').classList.add('drag');});
+$('#drop').addEventListener('dragleave', ()=> $('#drop').classList.remove('drag'));
+$('#drop').addEventListener('drop', e=>{e.preventDefault(); $('#drop').classList.remove('drag');
+  if(e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]);});
+$('#file').onchange = e=>{ if(e.target.files[0]) upload(e.target.files[0]); };
+$('#urlGo').onclick = async () => {
+  const url=$('#urlInput').value.trim(); if(!url) return;
+  const name=$('#urlName').value.trim();
+  const st=$('#urlStatus'); st.style.color='var(--dim)'; st.textContent='⏳ Downloading… this can take a bit';
+  $('#urlGo').disabled=true;
+  try{
+    const r=await fetch('/api/fetch_url',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({url,name})});
+    const d=await r.json();
+    if(d.ok){ st.style.color='var(--accent2)'; st.textContent='✓ Added';
+      $('#urlInput').value=''; $('#urlName').value=''; await loadSounds(); renderEdit(); }
+    else { st.style.color='#ff8a8a'; st.textContent='✕ '+(d.error||'failed'); }
+  }catch(e){ st.style.color='#ff8a8a'; st.textContent='✕ '+e; }
+  $('#urlGo').disabled=false;
+};
+async function upload(f){
+  const fd=new FormData(); fd.append('file', f);
+  const r=await fetch('/api/upload',{method:'POST',body:fd}); const d=await r.json();
+  if(!d.ok){ alert(d.error||'upload failed'); return; }
+  await loadSounds(); renderEdit();
+}
+let EDITLETTER = null;
+function bucketOf(name){ const c=(name[0]||'').toUpperCase(); return (c>='A'&&c<='Z')?c:'#'; }
+function buildAlphabar(){
+  const counts={}; for(const s of SOUNDS){ const b=bucketOf(s.name); counts[b]=(counts[b]||0)+1; }
+  const letters=['#'].concat([...'ABCDEFGHIJKLMNOPQRSTUVWXYZ']);
+  const bar=$('#alphabar'); bar.innerHTML='';
+  for(const L of letters){
+    const b=document.createElement('button');
+    b.textContent=L; b.disabled=!counts[L];
+    if(L===EDITLETTER) b.classList.add('on');
+    b.onclick=()=>{ EDITLETTER=L; $('#editsearch').value=''; renderEdit(); };
+    bar.appendChild(b);
+  }
+}
+$('#editsearch').oninput = ()=>{ if($('#editsearch').value.trim()) EDITLETTER=null; renderEdit(); };
+function renderEdit(){
+  buildAlphabar();
+  const q=$('#editsearch').value.trim().toLowerCase();
+  const box=$('#editlist');
+  let list;
+  if(q) list = SOUNDS.filter(s=>s.name.toLowerCase().includes(q)).slice(0,500);
+  else if(EDITLETTER) list = SOUNDS.filter(s=>bucketOf(s.name)===EDITLETTER);
+  else { box.innerHTML='<div class="addhint">Pick a letter above, or search by name, to edit clips.</div>'; return; }
+  box.innerHTML='';
+  if(!list.length){ box.innerHTML='<div class="addhint">No matches.</div>'; return; }
+  for(const s of list){
+    const row=document.createElement('div'); row.className='editrow';
+    row.innerHTML=`<span class="nm">${esc(s.name)}<span class="fmt" style="color:var(--dim)"> .${s.fmt}</span></span>`+
+      `<button data-a="play">▶</button><button data-a="ren">rename</button>`+
+      `<button data-a="del" class="del">delete</button>`;
+    row.querySelector('[data-a=play]').onclick=()=>fireFile(s.file);
+    row.querySelector('[data-a=ren]').onclick=async()=>{
+      const nn=prompt('New name (no extension):', s.name); if(!nn) return;
+      const r=await fetch('/api/rename',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({file:s.file,name:nn})}); const d=await r.json();
+      if(!d.ok){alert(d.error||'rename failed');return;} await loadSounds(); renderEdit();
+    };
+    row.querySelector('[data-a=del]').onclick=async()=>{
+      if(!confirm('Delete '+s.name+'? This removes the file.')) return;
+      await fetch('/api/delete',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({file:s.file})}); await loadSounds(); renderEdit();
+    };
+    box.appendChild(row);
+  }
+}
+
+function esc(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+
+// ---- modal backdrop closes on outside click ----
+$('#loginModal').addEventListener('click', e=>{ if(e.target.id==='loginModal' && !WALL) $('#loginModal').classList.remove('show'); });
+$('#editModal').addEventListener('click', e=>{ if(e.target.id==='editModal') closeEdit(); });
+
+// ---- boot ----
+let APP_STARTED = false;
+function startApp(){
+  if(APP_STARTED) return; APP_STARTED = true;
+  buildLanePicker(); applySolo(); applySync(); syncClock();
+  loadSounds();
+  pollFeed(); setInterval(pollFeed, 900);
+  pollActive(); setInterval(pollActive, 400);
+}
+(async function init(){
+  await fetchMe();                 // applyMe() shows the wall if REQUIRE_LOGIN and not authed
+  if(!ME.needs_login) startApp();
+})();
+</script>
+</body>
+</html>

@@ -1,27 +1,12 @@
-# Audio library & runtime data (not code)
-sounds/
-cache_audio/
-staging/
-usage.json
-test.wav
-*.log
-*.log.*
-
-# Secrets — never commit
-.flask_secret
-
-# Python
+# runtime state + secrets (never commit)
+data/
+.venv/
 __pycache__/
 *.pyc
+*.bak*
+*.log
+.DS_Store
 
-# Patch backups & pipes
-*.bak
-*.bak.*
-.lgd-*
-
-# secrets + persisted chat/activity
-secrets_config.py
-chat_store.json
-activity_store.json
-limits.json
-accounts.json
+# the local sound library + catalog seed live outside the repo
+sounds/
+*.db
