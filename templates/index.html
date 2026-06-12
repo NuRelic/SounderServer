@@ -226,6 +226,34 @@
   .lk.wav .fmt{color:var(--wav)} .lk.mp3 .fmt{color:var(--mp3)}
   .lk.sel .fmt{color:#fff}
   .lk .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* mobile feed-drawer toggle */
+  .feed-toggle{display:none;position:fixed;bottom:16px;right:16px;z-index:62;
+    width:54px;height:54px;border-radius:50%;background:var(--accent);color:#fff;border:none;
+    font-size:22px;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.45)}
+  /* ---------- mobile ---------- */
+  @media (max-width:760px){
+    header{flex-wrap:wrap;gap:8px;padding:8px 12px}
+    header h1{font-size:14px}
+    .who{margin-left:auto;flex-wrap:wrap;gap:6px;justify-content:flex-end}
+    header input.name{width:96px}
+    .channels{padding:6px 12px;gap:6px}
+    #laneBoxes{flex:1 1 100%}
+    .chan{flex:1 1 100%;min-width:0}
+    .lanes-ctl,.vol-ctl{flex:1 1 auto;justify-content:center}
+    .tabs{padding:8px 12px 0;flex-wrap:wrap}
+    .tabs-right{padding-right:12px}
+    .toolbar{padding:8px 12px}
+    .grid{padding:4px 12px 90px;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:8px}
+    .snd{min-height:46px}
+    /* feed becomes an off-canvas drawer instead of eating the screen */
+    .feed{position:fixed;top:0;right:0;height:100%;height:100dvh;width:min(88vw,360px);
+      z-index:61;transform:translateX(101%);transition:transform .25s ease;
+      box-shadow:-10px 0 34px rgba(0,0,0,.55)}
+    .feed.open{transform:translateX(0)}
+    .feed-toggle{display:flex;align-items:center;justify-content:center}
+    .feed.open ~ .feed-toggle, body.feed-open .feed-toggle{background:#444}
+    .composer .lookup{left:10px;right:10px}
+  }
 </style>
 </head>
 <body>
@@ -322,6 +350,8 @@
     </div>
   </div>
 </div>
+
+<button class="feed-toggle" id="feedToggle" title="chat / feed">💬</button>
 
 <!-- login modal -->
 <div class="modal-back" id="loginModal">
@@ -745,9 +775,13 @@ async function toggleFav(s){
 }
 
 // ---- firing ----
+const _lastFire = {};
 async function fireFile(file, lane){
   unlock();
   if(lane===undefined) lane=LANE;
+  const fkey = file+'|'+lane, fnow = Date.now();    // debounce accidental double-tap on the same zone
+  if(_lastFire[fkey] && fnow - _lastFire[fkey] < 250) return;
+  _lastFire[fkey] = fnow;
   if(SOLO){ playLocal(file, lane); return; }       // private: local only, no broadcast
   const r = await fetch('/api/fire',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({file, user:uname(), lane, color:ucolor()})});
@@ -1175,6 +1209,13 @@ function esc(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>'
 // ---- modal backdrop closes on outside click ----
 $('#loginModal').addEventListener('click', e=>{ if(e.target.id==='loginModal' && !WALL) $('#loginModal').classList.remove('show'); });
 $('#editModal').addEventListener('click', e=>{ if(e.target.id==='editModal') closeEdit(); });
+
+// ---- mobile feed drawer ----
+$('#feedToggle').onclick = () => {
+  const f = document.querySelector('.feed');
+  const open = f.classList.toggle('open');
+  $('#feedToggle').textContent = open ? '✕' : '💬';
+};
 
 // ---- boot ----
 let APP_STARTED = false;
