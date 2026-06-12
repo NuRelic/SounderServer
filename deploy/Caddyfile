@@ -1,0 +1,14 @@
+# /etc/caddy/Caddyfile
+# Caddy auto-provisions HTTPS (Let's Encrypt) and reverse-proxies to the app.
+# Tip: deploy with the Cloudflare record set to DNS-only (grey cloud) first so
+# Caddy can get its cert over HTTP-01; once https works, flip Cloudflare to
+# proxied (orange) with SSL/TLS mode = Full (strict).
+
+new.sounderserver.party {
+    reverse_proxy 127.0.0.1:5000
+}
+
+# When you cut over the apex, add:
+# sounderserver.party {
+#     reverse_proxy 127.0.0.1:5000
+# }
