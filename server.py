@@ -497,6 +497,7 @@ def api_sounds():
     out = [{**it, "fav": it["file"] in favs,
             "dur": round(_DUR.get(it["file"], 0), 1),
             "long": _DUR.get(it["file"], 0) > LONG_THRESHOLD,
+            "nsfw": it["file"] in _NSFW,
             "plays": _PLAYS.get(it["file"], 0)} for it in items]
     fav_order = [f for f in _FAV_ORDER if f in _LIBRARY]
     return jsonify({"count": len(out), "sounds": out, "fav_order": fav_order,
@@ -511,7 +512,7 @@ def api_top():
     with _LIB_LOCK:
         lib = dict(_LIBRARY)
     items = [{"file": f, "name": lib[f]["name"], "plays": p,
-              "long": _DUR.get(f, 0) > LONG_THRESHOLD}
+              "long": _DUR.get(f, 0) > LONG_THRESHOLD, "nsfw": f in _NSFW}
              for f, p in _PLAYS.items() if f in lib and p > 0]
     items.sort(key=lambda x: -x["plays"])
     return jsonify({"top": items[:n]})
@@ -821,6 +822,10 @@ if __name__ == "__main__":
     load_feed()
     threading.Thread(target=_persist_loop, daemon=True).start()
     threading.Thread(target=probe_all_durations, daemon=True).start()
-    print(f"Sound Server (staging) — {n} sounds from {SOUND_DIR}")
+    print(f"Sound Server — {n} sounds from {SOUND_DIR}")
     print(f"  http://localhost:{PORT}")
-    app.run(host="0.0.0.0", port=PORT, threaded=True)
+    try:
+        from waitress import serve            # production-grade, threaded, single-process
+        serve(app, host="0.0.0.0", port=PORT, threads=16, channel_timeout=30)
+    except ImportError:
+        app.run(host="0.0.0.0", port=PORT, threaded=True)   # dev fallback

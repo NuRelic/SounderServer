@@ -42,6 +42,9 @@
     border:1px solid var(--line);border-radius:14px;padding:2px 5px 2px 10px;font-size:12px;color:var(--txt)}
   .chip .cnm{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px}
   .chip .by{color:var(--dim)}
+  .chip .rem{color:var(--accent2);font-size:11px;font-variant-numeric:tabular-nums;margin-left:3px;font-weight:600}
+  .splitter{flex:0 0 6px;cursor:col-resize;background:var(--line);transition:background .15s}
+  .splitter:hover,.splitter.dragging{background:var(--accent)}
   .chip .kill{width:16px;height:16px;border-radius:50%;background:#ff5b5b;color:#fff;border:none;
     font-size:10px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center}
   .chan .cap{margin-left:auto;display:flex;align-items:center;gap:4px;color:var(--dim);flex:0 0 auto}
@@ -250,6 +253,7 @@
       z-index:61;transform:translateX(101%);transition:transform .25s ease;
       box-shadow:-10px 0 34px rgba(0,0,0,.55)}
     .feed.open{transform:translateX(0)}
+    .splitter{display:none}
     .feed-toggle{display:flex;align-items:center;justify-content:center}
     .feed.open ~ .feed-toggle, body.feed-open .feed-toggle{background:#444}
     .composer .lookup{left:10px;right:10px}
@@ -269,6 +273,9 @@
     </span>
     <button class="btn-edit" id="syncBtn" title="Sync: align playback with everyone on a shared timeline (~1s delay)">🔁 Sync</button>
     <button class="btn-edit" id="soloBtn" title="Solo: play only for you — you won't hear others and they won't hear you">🎧 Solo</button>
+    <span id="connWarn" style="display:none;align-items:center;gap:4px;background:rgba(255,165,58,.15);
+      border:1px solid var(--mp3);color:var(--mp3);border-radius:14px;padding:3px 9px;font-size:11px;font-weight:600"
+      title="Your connection is weak, so playback is running un-synced (snappy) to avoid skips">⚠ weak conn · sync paused</span>
   </div>
 </header>
 
@@ -305,6 +312,7 @@
         <button data-t="songs">🎵 Songs</button>
         <button data-t="sounds">Sounds</button>
       </div>
+      <button class="btn-edit" id="nsfwToggle" style="display:none">🔞 NSFW: off</button>
       <div class="allbar" id="allAlpha" style="display:none"></div>
     </div>
     <div class="editbar" id="editbar">
@@ -338,6 +346,7 @@
     </div>
   </div>
 
+  <div class="splitter" id="splitter" title="drag to resize"></div>
   <div class="feed">
     <div class="ftab">💬 Feed <span class="count" style="margin-left:auto">chat · commands · log</span></div>
     <div class="presence" id="presence"></div>
@@ -424,7 +433,7 @@ function applyMe(){
   $('#lanesCtl').style.display = ME.admin ? 'flex' : 'none';
   $('#songLanesCtl').style.display = ME.admin ? 'flex' : 'none';
   $('#syncBtn').style.display = ME.admin ? 'inline-block' : 'none';
-  if(!ME.can_edit && (TAB==='add')){ TAB='all'; document.querySelectorAll('.tabs button').forEach(x=>x.classList.toggle('on',x.dataset.tab==='all')); }
+  if(!ME.can_edit && (TAB==='add')){ TAB='all'; document.querySelectorAll('.tabs button[data-tab]').forEach(x=>x.classList.toggle('on',x.dataset.tab==='all')); }
   if(!ME.can_edit) CEDIT=false;
   render();
   if(ME.needs_login) showWall();
@@ -506,20 +515,21 @@ async function loadSounds(){
 function render(){
   const q = $('#search').value.trim().toLowerCase();
   const grid = $('#grid');
-  const editing  = (TAB==='fav' && EDITMODE);                 // layout reorder
-  const cediting = (TAB==='all' && CEDIT && ME.can_edit);     // content edit (trim/delete)
+  const editing  = (TAB==='fav' && EDITMODE);                              // layout reorder
+  const cediting = ((TAB==='all'||TAB==='fav') && CEDIT && ME.can_edit);   // content edit (trim/delete)
   const anyEdit  = editing || cediting;
   const showFilters = (TAB==='all' || TAB==='fav' || TAB==='top');
   $('#toolbar').style.display = (TAB==='add' || editing) ? 'none' : 'flex';
   grid.style.display = TAB==='add' ? 'none' : 'grid';
   $('#addwrap').style.display = TAB==='add' ? 'block' : 'none';
-  $('#editToggle').style.display  = (TAB==='fav' && !EDITMODE) ? 'inline-block' : 'none';
-  $('#ceditToggle').style.display = (TAB==='all' && ME.can_edit && !CEDIT) ? 'inline-block' : 'none';
+  $('#editToggle').style.display  = (TAB==='fav' && !EDITMODE && !CEDIT) ? 'inline-block' : 'none';
+  $('#ceditToggle').style.display = ((TAB==='all'||TAB==='fav') && ME.can_edit && !CEDIT && !EDITMODE) ? 'inline-block' : 'none';
   $('#editbar').classList.toggle('show', editing);
   $('#cbar').classList.toggle('show', cediting);
   grid.classList.toggle('editing', anyEdit);
   $('#allAlpha').style.display = showFilters ? 'flex' : 'none';
   $('#typeFilter').style.display = showFilters ? 'flex' : 'none';
+  $('#nsfwToggle').style.display = showFilters ? 'inline-block' : 'none';
   $('#shown').style.display = (TAB==='add') ? 'none' : 'inline';
   if(showFilters) buildAllAlpha();
   if(TAB==='add'){ renderEdit(); return; }
@@ -533,6 +543,7 @@ function render(){
   if(showFilters && ALLLETTER && !q) list = list.filter(s=>bucketOf(s.name)===ALLLETTER);
   if(showFilters && SONGFILTER==='songs')  list = list.filter(s=>s.long);
   if(showFilters && SONGFILTER==='sounds') list = list.filter(s=>!s.long);
+  if(!NSFW_ON) list = list.filter(s=>!s.nsfw);   // opt-in NSFW
   // per-tab ordering
   if(TAB==='top') list.sort((a,b)=> b.plays - a.plays);
   else if(TAB==='fav'){ const idx=f=>{const i=FAVORDER.indexOf(f);return i<0?1e9:i;}; list.sort((a,b)=> idx(a.file)-idx(b.file)); }
@@ -588,10 +599,10 @@ function render(){
   }
   grid.appendChild(frag);
 }
-function setEdit(on){ EDITMODE = on; render(); }
+function setEdit(on){ EDITMODE = on; if(on) CEDIT = false; render(); }
 $('#editToggle').onclick  = () => setEdit(true);
 $('#editDone').onclick    = () => setEdit(false);
-$('#ceditToggle').onclick = () => { CEDIT = true;  render(); };
+$('#ceditToggle').onclick = () => { CEDIT = true; EDITMODE = false; render(); };
 $('#ceditDone').onclick   = () => { CEDIT = false; render(); };
 
 // ---- favorites drag-to-reorder (pointer-based: works on desktop + touch) ----
@@ -759,9 +770,9 @@ function buildAllAlpha(){
   }
 }
 
-document.querySelectorAll('.tabs button').forEach(b=>{
+document.querySelectorAll('.tabs button[data-tab]').forEach(b=>{   // only real tabs, not the Edit buttons
   b.onclick = () => {
-    document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('on'));
+    document.querySelectorAll('.tabs button[data-tab]').forEach(x=>x.classList.remove('on'));
     b.classList.add('on'); TAB = b.dataset.tab; EDITMODE = false; CEDIT = false; render();
   };
 });
@@ -779,8 +790,8 @@ const _lastFire = {};
 async function fireFile(file, lane){
   unlock();
   if(lane===undefined) lane=LANE;
-  const fkey = file+'|'+lane, fnow = Date.now();    // debounce accidental double-tap on the same zone
-  if(_lastFire[fkey] && fnow - _lastFire[fkey] < 250) return;
+  const fkey = file+'|'+lane, fnow = Date.now();    // swallow only an accidental double-event on the same zone
+  if(_lastFire[fkey] && fnow - _lastFire[fkey] < 80) return;
   _lastFire[fkey] = fnow;
   if(SOLO){ playLocal(file, lane); return; }       // private: local only, no broadcast
   const r = await fetch('/api/fire',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -824,7 +835,7 @@ function startEntry(e){
   playing[e.token] = a;
   activeMeta[e.token] = {start:e.start, dur:e.dur||0};
   a.addEventListener('ended',()=>{ if(playing[e.token]===a){ delete playing[e.token]; delete activeMeta[e.token]; } });
-  if(SYNC){
+  if(SYNC && !connBad){
     // shared timeline: audio position 0 maps to wall-clock (start + buffer)
     const target = e.start + SYNC_BUFFER;
     const pos = serverNow() - target;
@@ -839,8 +850,13 @@ function startEntry(e){
   }
 }
 async function pollActive(){
+  const _t0 = performance.now();
   try{
-    const r = await fetch('/api/active?u='+encodeURIComponent(uname())+'&c='+encodeURIComponent(ucolor())); const d = await r.json();
+    const _ac = new AbortController(); const _to = setTimeout(()=>_ac.abort(), 5000);
+    const r = await fetch('/api/active?u='+encodeURIComponent(uname())+'&c='+encodeURIComponent(ucolor()), {signal:_ac.signal});
+    clearTimeout(_to);
+    const d = await r.json();
+    noteConn(performance.now()-_t0, true);
     paintPresence(d.online);
     if(typeof d.lanes==='number' && d.lanes!==LANES){   // admin changed lane count
       LANES=d.lanes; if(LANE>=LANES)LANE=0;
@@ -862,7 +878,7 @@ async function pollActive(){
       for(const a of d.active) startEntry(a);
     }
     paintChannels(d.active);
-  }catch(e){}
+  }catch(e){ noteConn(performance.now()-_t0, false); }
 }
 function paintChannels(active){
   const box=$('#laneBoxes');
@@ -897,16 +913,29 @@ function paintLane(key, occ){
     const canKill=ME.admin||(a.by===uname());   // owner or admin
     const chip=document.createElement('span'); chip.className='chip';
     chip.innerHTML=`<span class="cnm">${esc(a.name)}</span><span class="by"${a.color?' style="color:'+a.color+'"':''}>· ${esc(a.by||'')}</span>`+
+      `<span class="rem" data-end="${a.start+(a.dur||0)}"></span>`+
       (canKill?`<button class="kill" title="stop this sound">✕</button>`:'');
     if(canKill) chip.querySelector('.kill').onclick=()=>killActive(a.token);
     o.appendChild(chip);
   }
 }
+// live "time remaining" countdown on the channel chips
+setInterval(()=>{
+  document.querySelectorAll('.chip .rem').forEach(el=>{
+    let r = parseFloat(el.dataset.end) - serverNow();
+    if(!isFinite(r) || r < 0) r = 0;
+    el.textContent = r>=60 ? (Math.floor(r/60)+':'+String(Math.floor(r%60)).padStart(2,'0')) : (Math.ceil(r)+'s');
+  });
+}, 250);
 document.querySelectorAll('#typeFilter button').forEach(b=>{
   b.onclick=()=>{ SONGFILTER=b.dataset.t;
     document.querySelectorAll('#typeFilter button').forEach(x=>x.classList.toggle('on',x===b));
     render(); };
 });
+let NSFW_ON = localStorage.getItem('ss_nsfw')==='1';
+function paintNsfwBtn(){ $('#nsfwToggle').textContent='🔞 NSFW: '+(NSFW_ON?'on':'off'); $('#nsfwToggle').classList.toggle('on', NSFW_ON); }
+$('#nsfwToggle').onclick=()=>{ NSFW_ON=!NSFW_ON; localStorage.setItem('ss_nsfw', NSFW_ON?'1':'0'); paintNsfwBtn(); render(); };
+paintNsfwBtn();
 function paintPresence(online){
   const el=$('#presence');
   if(!online || !online.length){
@@ -979,9 +1008,19 @@ $('#syncBtn').onclick = () => {
   fetch('/api/sync',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({on:!SYNC})}).then(r=>r.json()).then(d=>{ SYNC=!!d.on; applySync(); });
 };
+// per-client connection health: on a weak/laggy connection, locally drop out of
+// sync (play snappy) so a user doesn't get the drift-seek "blip out / catch up".
+let connBad = false, _pollLat = [];
+function noteConn(ms, ok){
+  _pollLat.push(ok ? ms : 5000); if(_pollLat.length > 5) _pollLat.shift();
+  const avg = _pollLat.reduce((a,b)=>a+b,0) / _pollLat.length;
+  const was = connBad;
+  if(avg > 650) connBad = true; else if(avg < 300) connBad = false;
+  if(was !== connBad){ const w=$('#connWarn'); if(w) w.style.display = (connBad && SYNC) ? 'inline-flex' : 'none'; }
+}
 // drift correction: keep each synced sound near its shared-timeline position
 setInterval(()=>{
-  if(!SYNC) return;
+  if(!SYNC || connBad) return;
   for(const tok in playing){
     const m = activeMeta[tok], a = playing[tok];
     if(!m || !a || a.paused) continue;
@@ -1121,11 +1160,34 @@ msg.addEventListener('keydown', e=>{
   if(e.key==='Enter'){
     const v=msg.value.trim();
     if(!v) return;
+    msgHist.push(v); if(msgHist.length>50) msgHist.shift(); histIdx=msgHist.length;
+    localStorage.setItem('ss_msghist', JSON.stringify(msgHist));
     if(v.startsWith('!')){ fireCmd(v.slice(1)); }
     else { sendChat(v); }
     msg.value='';
+  } else if(e.key==='ArrowUp'){          // recall previous message (terminal-style)
+    if(histIdx>0){ histIdx--; msg.value=msgHist[histIdx]; e.preventDefault(); }
+  } else if(e.key==='ArrowDown'){
+    if(histIdx<msgHist.length-1){ histIdx++; msg.value=msgHist[histIdx]; }
+    else { histIdx=msgHist.length; msg.value=''; }
+    e.preventDefault();
   }
 });
+let msgHist = []; try{ msgHist = JSON.parse(localStorage.getItem('ss_msghist')||'[]'); }catch(_){}
+let histIdx = msgHist.length;
+
+// ---- desktop: drag the board↔feed splitter to resize ----
+(function(){
+  const sp=$('#splitter'), feed=document.querySelector('.feed');
+  const saved=localStorage.getItem('ss_feedw'); if(saved) feed.style.flexBasis=saved+'px';
+  let dragging=false;
+  sp.addEventListener('pointerdown', e=>{ dragging=true; sp.classList.add('dragging'); try{sp.setPointerCapture(e.pointerId);}catch(_){}; e.preventDefault(); });
+  sp.addEventListener('pointermove', e=>{ if(!dragging)return;
+    const w=Math.max(260, Math.min(680, window.innerWidth - e.clientX - 3));
+    feed.style.flexBasis=w+'px'; });
+  sp.addEventListener('pointerup', e=>{ if(!dragging)return; dragging=false; sp.classList.remove('dragging');
+    try{sp.releasePointerCapture(e.pointerId);}catch(_){}; localStorage.setItem('ss_feedw', parseInt(feed.style.flexBasis)||360); });
+})();
 async function sendChat(text){
   await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({text, user:uname(), color:ucolor()})});
