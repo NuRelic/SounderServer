@@ -13,11 +13,12 @@ as the thing that owns the audio device.
 Env: SS_SERVER, SS_PASSWORD, SS_AUDIODEV (default hw:3,0), SS_DRIVER (default alsa).
 Set SS_DRIVER=dummy to test login/polling with no real audio output.
 """
-import os, time, json, hashlib, urllib.request, urllib.parse, urllib.error, http.cookiejar
+import os, time, json, hashlib, shutil, urllib.request, urllib.parse, urllib.error, http.cookiejar
 
 SERVER   = os.environ.get("SS_SERVER", "https://sounderserver.party")
 PASSWORD = os.environ.get("SS_PASSWORD", "")   # set via env / the systemd unit
 CACHE    = os.path.expanduser("~/kitchen_cache")
+CACHE_CAP = 2 * 1024**3          # keep the SD-card cache under ~2 GB
 POLL     = 0.35
 os.makedirs(CACHE, exist_ok=True)
 
@@ -43,6 +44,33 @@ def get_active():
     r = _opener.open(SERVER + "/api/active?u=kitchen", timeout=10)
     return json.loads(r.read())
 
+def _evict_cache(keep):
+    """Keep the cache under CACHE_CAP, deleting least-recently-used files first.
+    Never deletes a path in `keep` (the song currently streamed by mixer.music,
+    which reads from disk on demand). Short sounds are fully decoded into RAM at
+    load, so their cache files are safe to drop even mid-play."""
+    try:
+        files, total = [], 0
+        for n in os.listdir(CACHE):
+            p = os.path.join(CACHE, n)
+            try: st = os.stat(p)
+            except OSError: continue
+            if not os.path.isfile(p): continue
+            total += st.st_size
+            files.append((st.st_atime, st.st_size, p))
+        if total <= CACHE_CAP:
+            return
+        files.sort()                         # oldest access first
+        for _at, size, p in files:
+            if total <= CACHE_CAP:
+                break
+            if p in keep:
+                continue
+            try: os.remove(p); total -= size
+            except OSError: pass
+    except Exception:
+        pass
+
 def fetch(fn, ver=0):
     ext = os.path.splitext(fn)[1] or ".wav"
     # ver (the file's mtime) is part of the cache key, so an edit on the server
@@ -51,9 +79,12 @@ def fetch(fn, ver=0):
     path = os.path.join(CACHE, hashlib.md5(key.encode()).hexdigest() + ext)
     if not os.path.exists(path):
         url = SERVER + "/api/audio?f=" + urllib.parse.quote(fn) + (("&v=%s" % ver) if ver else "")
-        data = _opener.open(url, timeout=120).read()
         tmp = path + ".tmp"
-        open(tmp, "wb").write(data); os.replace(tmp, path)
+        # stream straight to disk in 1 MB chunks — a 1 GB mix must not buffer in RAM
+        with _opener.open(url, timeout=120) as r, open(tmp, "wb") as f:
+            shutil.copyfileobj(r, f, 1 << 20)
+        os.replace(tmp, path)
+        _evict_cache({_song_path} if _song_path else set())
     return path
 
 def _is_song(entry):
@@ -81,29 +112,31 @@ def play_short(entry, vol):
 # min, ~1GB for the long mixes), which thrashed the Pi and went silent. music is
 # a single stream, so with >1 song lane only the most-recent song is audible. ---
 _song_tok = None
+_song_path = None      # disk path of the streaming song — protected from cache eviction
 
 def play_song(entry, vol):
-    global _song_tok
+    global _song_tok, _song_path
     v = max(0.0, min(1.0, vol))
     if entry["token"] == _song_tok:
         try: pygame.mixer.music.set_volume(v)
         except Exception: pass
         return
     try:
-        pygame.mixer.music.load(fetch(entry["file"], entry.get("ver", 0)))
+        p = fetch(entry["file"], entry.get("ver", 0))
+        pygame.mixer.music.load(p)
         pygame.mixer.music.set_volume(v)
         pygame.mixer.music.play()
-        _song_tok = entry["token"]
+        _song_tok = entry["token"]; _song_path = p
         print("▶ song", entry.get("name"), "by", entry.get("by"))
     except Exception as e:
         print("song play error:", entry.get("file"), e)
 
 def stop_song():
-    global _song_tok
+    global _song_tok, _song_path
     if _song_tok is not None:
         try: pygame.mixer.music.stop()
         except Exception: pass
-        _song_tok = None
+        _song_tok = None; _song_path = None
 
 def ensure_login():
     """Log in, retrying forever — the server may still be booting after a bounce."""

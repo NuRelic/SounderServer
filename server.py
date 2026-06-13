@@ -16,6 +16,7 @@ Local testing only. Not the production Pi code.
 
 import os
 import io
+import gzip
 import json
 import time
 import threading
@@ -71,6 +72,26 @@ else:
     with open(_SECRET_FILE, "wb") as _f:
         _f.write(app.secret_key)
 app.permanent_session_lifetime = timedelta(days=30)
+
+@app.after_request
+def _gzip_json(resp):
+    # gzip JSON bodies (highly compressible, ~85%) so /api/sounds (~0.5MB) and the
+    # constant /api/active + /api/feed polls ship a fraction of the bytes. Audio is
+    # already-compressed media (and uses send_file/range) so we never touch it.
+    try:
+        if (resp.mimetype == "application/json"
+                and "gzip" in request.headers.get("Accept-Encoding", "")
+                and resp.status_code == 200
+                and not resp.direct_passthrough
+                and "Content-Encoding" not in resp.headers):
+            data = resp.get_data()
+            if len(data) > 500:
+                resp.set_data(gzip.compress(data, 5))
+                resp.headers["Content-Encoding"] = "gzip"
+                resp.headers["Vary"] = "Accept-Encoding"
+    except Exception:
+        pass
+    return resp
 
 def can_edit():
     return bool(session.get("admin") or session.get("can_edit"))
@@ -167,7 +188,8 @@ def duration(fn):
         pass
     with _DUR_LOCK:
         _DUR[fn] = d
-        _save(DUR_FILE, _DUR)
+        snap = dict(_DUR)          # snapshot under the lock…
+    _save(DUR_FILE, snap)          # …but write to disk WITHOUT holding it
     return d
 
 _DUR_SCANNING = True   # background full-library duration probe in progress
@@ -532,7 +554,14 @@ def api_audio():
     full = os.path.join(SOUND_DIR, fn)
     if not os.path.isfile(full):
         abort(404)
-    return send_file(full, conditional=True)
+    resp = send_file(full, conditional=True)
+    # When the URL carries a version (v=mtime, set by audioUrl/active_snapshot), the
+    # content at that URL is immutable — an edit changes mtime → a new URL. So we can
+    # cache it hard and skip the per-fire revalidation round-trip every client + the
+    # Pi would otherwise make. Version-less requests keep the default revalidation.
+    if request.args.get("v"):
+        resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp
 
 # ----------------------------------------------------------------------------
 # Routes — firing / feed / chat
@@ -622,7 +651,8 @@ def api_chat():
         return jsonify({"ok": False}), 400
     set_color(user, body.get("color"))
     item = _feed_add("chat", user, text=text, color=_USER_COLOR.get(user))
-    save_feed()
+    # no synchronous save here — the 15s _persist_loop already flushes the feed,
+    # so the chat hot path skips a full-feed JSON serialize + disk write per message
     return jsonify({"ok": True, "item": item})
 
 @app.route("/api/feed")
