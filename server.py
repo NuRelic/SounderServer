@@ -136,7 +136,8 @@ def _save(path, obj):
 # ----------------------------------------------------------------------------
 # Keyed by the real filename (stable). cmd = filename without extension.
 _LIB_LOCK = threading.Lock()
-_LIBRARY = {}   # filename -> {"file","name","cmd","fmt"}
+_LIBRARY = {}   # filename -> {"file","name","cmd","fmt","ver"}
+_SOUNDS_SORTED = None   # cached name-sorted base list for /api/sounds; None = rebuild
 
 def scan_library():
     lib = {}
@@ -160,9 +161,11 @@ def scan_library():
             }
     except FileNotFoundError:
         pass
+    global _SOUNDS_SORTED
     with _LIB_LOCK:
         _LIBRARY.clear()
         _LIBRARY.update(lib)
+        _SOUNDS_SORTED = None        # library changed → drop the cached sort
     return lib
 
 # ----------------------------------------------------------------------------
@@ -519,16 +522,22 @@ def api_me():
 # ----------------------------------------------------------------------------
 @app.route("/api/sounds")
 def api_sounds():
-    with _LIB_LOCK:
-        items = list(_LIBRARY.values())
-    items.sort(key=lambda x: x["name"].lower())
-    favs = _FAVS
+    global _SOUNDS_SORTED
+    items = _SOUNDS_SORTED
+    if items is None:                      # rebuild the name-sort only when the library changed
+        with _LIB_LOCK:
+            items = sorted(_LIBRARY.values(), key=lambda x: x["name"].lower())
+        _SOUNDS_SORTED = items
+    with _DUR_LOCK:                         # snapshot under the lock to avoid races with the probe
+        dur = dict(_DUR)
+    favs, nsfw, plays = _FAVS, _NSFW, _PLAYS
     out = [{**it, "fav": it["file"] in favs,
-            "dur": round(_DUR.get(it["file"], 0), 1),
-            "long": _DUR.get(it["file"], 0) > LONG_THRESHOLD,
-            "nsfw": it["file"] in _NSFW,
-            "plays": _PLAYS.get(it["file"], 0)} for it in items]
-    fav_order = [f for f in _FAV_ORDER if f in _LIBRARY]
+            "dur": round(dur.get(it["file"], 0), 1),
+            "long": dur.get(it["file"], 0) > LONG_THRESHOLD,
+            "nsfw": it["file"] in nsfw,
+            "plays": plays.get(it["file"], 0)} for it in items]
+    with _LIB_LOCK:
+        fav_order = [f for f in _FAV_ORDER if f in _LIBRARY]
     return jsonify({"count": len(out), "sounds": out, "fav_order": fav_order,
                     "scanning": _DUR_SCANNING})
 

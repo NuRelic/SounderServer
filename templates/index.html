@@ -513,6 +513,9 @@ async function loadSounds(){
   const r = await fetch('/api/sounds'); const d = await r.json();
   SOUNDS = d.sounds; BYFILE = {}; SOUNDS.forEach(s=>BYFILE[s.file]=s);
   FAVORDER = d.fav_order || [];
+  // cache per-letter counts once per load (instead of an O(n) scan every keystroke)
+  _alphaCounts = {}; for(const s of SOUNDS){ const b=bucketOf(s.name); _alphaCounts[b]=(_alphaCounts[b]||0)+1; }
+  $('#allAlpha').dataset.built = '';   // counts changed → rebuild the bar lazily
   $('#libcount').textContent = d.count + ' sounds';
   render();
   if(d.scanning) setTimeout(loadSounds, 4000);   // refresh as song durations fill in
@@ -571,41 +574,38 @@ function render(){
       `<button class="star ${s.fav?'on':''}" title="favorite">★</button>`+
       `<button class="rm" title="${cediting?'delete clip':'remove from favorites'}">✕</button>`;
     el.dataset.file = s.file;
-    el.onclick = e => {
-      if(e.target.classList.contains('star') || e.target.classList.contains('rm')) return;
-      if(editing) return;                 // layout mode: no playback (drag only)
-      if(cediting){ openEdit(s); return; }// content mode: open editor
-      // play mode: colored zones (below) handle firing
-    };
-    el.querySelector('.star').onclick = e => { e.stopPropagation(); toggleFav(s); };
-    el.querySelector('.rm').onclick = e => {
-      e.stopPropagation();
-      if(cediting) deleteClip(s); else toggleFav(s);
-    };
+    // click behavior is handled by ONE delegated listener on #grid (see gridClick)
+    // — no per-tile/per-zone closures, which is ~11k fewer closures for the full list
     if(editing) favDnD(el, s.file);
     if(!anyEdit){
-      if(s.long){                         // songs → colored song-lane zones
-        for(let i=0;i<SONG_LANES;i++){
-          const z=document.createElement('div');
-          z.className='zone zsong'+i+' lane-song'+i;
-          z.style.left=(i*100/SONG_LANES)+'%'; z.style.width=(100/SONG_LANES)+'%';
-          z.onclick=()=>fireFile(s.file, 'song'+i);
-          el.appendChild(z);
-        }
-      } else {                            // short sounds → N colored lane zones
-        for(let i=0;i<LANES;i++){
-          const z=document.createElement('div');
-          z.className='zone z'+i+' lane-'+i;
-          z.style.left=(i*100/LANES)+'%'; z.style.width=(100/LANES)+'%';
-          z.onclick=()=>fireFile(s.file, i);
-          el.appendChild(z);
-        }
+      const lanes = s.long ? SONG_LANES : LANES;   // songs → song-lane zones, else N lane zones
+      for(let i=0;i<lanes;i++){
+        const z=document.createElement('div');
+        z.className = s.long ? ('zone zsong'+i+' lane-song'+i) : ('zone z'+i+' lane-'+i);
+        z.style.left=(i*100/lanes)+'%'; z.style.width=(100/lanes)+'%';
+        z.dataset.lane = s.long ? ('song'+i) : String(i);
+        el.appendChild(z);
       }
     }
     frag.appendChild(el);
   }
   grid.appendChild(frag);
 }
+// one delegated click handler for the whole grid (replaces per-tile/per-zone closures)
+$('#grid').addEventListener('click', e => {
+  const el = e.target.closest('.snd'); if(!el) return;
+  const s = BYFILE[el.dataset.file]; if(!s) return;
+  const cediting = ((TAB==='all'||TAB==='fav') && CEDIT && ME.can_edit);
+  if(e.target.classList.contains('star')){ e.stopPropagation(); toggleFav(s); return; }
+  if(e.target.classList.contains('rm')){ e.stopPropagation(); if(cediting) deleteClip(s); else toggleFav(s); return; }
+  if(TAB==='fav' && EDITMODE) return;        // layout mode: drag only, no play
+  if(cediting){ openEdit(s); return; }       // content mode: open the editor
+  const z = e.target.closest('.zone');       // play mode: colored lane zones fire
+  if(z && z.dataset.lane!==undefined){
+    const ln = z.dataset.lane;
+    fireFile(s.file, /^song/.test(ln) ? ln : +ln);
+  }
+});
 function setEdit(on){ EDITMODE = on; if(on) CEDIT = false; render(); }
 $('#editToggle').onclick  = () => setEdit(true);
 $('#editDone').onclick    = () => setEdit(false);
@@ -763,19 +763,25 @@ function reorderFav(src, target){
 }
 const _doSearch = debounce(() => { if(TAB!=='add') render(); }, 130);
 $('#search').oninput = () => { if($('#search').value.trim()) ALLLETTER=null; _doSearch(); };
+let _alphaCounts = {};
 function buildAllAlpha(){
-  const counts={}; for(const s of SOUNDS){ const b=bucketOf(s.name); counts[b]=(counts[b]||0)+1; }
-  const letters=['#'].concat([...'ABCDEFGHIJKLMNOPQRSTUVWXYZ']);
-  const bar=$('#allAlpha'); bar.innerHTML='';
-  const all=document.createElement('button'); all.textContent='All';
-  if(ALLLETTER===null) all.classList.add('on');
-  all.onclick=()=>{ ALLLETTER=null; render(); }; bar.appendChild(all);
-  for(const L of letters){
-    const b=document.createElement('button'); b.textContent=L; b.disabled=!counts[L];
-    if(L===ALLLETTER) b.classList.add('on');
-    b.onclick=()=>{ ALLLETTER=L; $('#search').value=''; render(); };
-    bar.appendChild(b);
+  const bar=$('#allAlpha');
+  if(bar.dataset.built !== '1'){          // build the 28 buttons once per library load
+    bar.innerHTML='';
+    const letters=['#'].concat([...'ABCDEFGHIJKLMNOPQRSTUVWXYZ']);
+    const all=document.createElement('button'); all.textContent='All'; all.dataset.l='';
+    all.onclick=()=>{ ALLLETTER=null; markAlpha(); render(); }; bar.appendChild(all);
+    for(const L of letters){
+      const b=document.createElement('button'); b.textContent=L; b.dataset.l=L; b.disabled=!_alphaCounts[L];
+      b.onclick=()=>{ if(b.disabled) return; ALLLETTER=L; $('#search').value=''; markAlpha(); render(); };
+      bar.appendChild(b);
+    }
+    bar.dataset.built='1';
   }
+  markAlpha();                            // selection-only update on every render
+}
+function markAlpha(){
+  for(const b of $('#allAlpha').children) b.classList.toggle('on', (b.dataset.l||'')===(ALLLETTER||''));
 }
 
 document.querySelectorAll('.tabs button[data-tab]').forEach(b=>{   // only real tabs, not the Edit buttons
@@ -786,11 +792,15 @@ document.querySelectorAll('.tabs button[data-tab]').forEach(b=>{   // only real 
 });
 
 // ---- favorites ----
-async function toggleFav(s){
+function toggleFav(s){
   s.fav = !s.fav;
-  await fetch('/api/favorite',{method:'POST',headers:{'Content-Type':'application/json'},
+  fetch('/api/favorite',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({file:s.file,on:s.fav})});
-  render();
+  if(TAB==='fav'){ render(); return; }        // membership changed → rebuild the fav list
+  // otherwise just repaint this one star instead of rebuilding ~1978 tiles
+  const sel = (window.CSS && CSS.escape) ? CSS.escape(s.file) : s.file.replace(/"/g,'\\"');
+  const el = $('#grid').querySelector('.snd[data-file="'+sel+'"]');
+  if(el){ const st = el.querySelector('.star'); if(st) st.classList.toggle('on', s.fav); }
 }
 
 // ---- firing ----
@@ -909,6 +919,7 @@ function paintChannels(active){
   }
   for(let i=0;i<SONG_LANES;i++) paintLane('song'+i, active.filter(a=>a.lane==='song'+i));
   for(let i=0;i<LANES;i++) paintLane(i, active.filter(a=>a.lane===i));
+  if(_remDirty){ _remNodes = Array.from(document.querySelectorAll('#laneBoxes .chip .rem')); _remDirty=false; }
 }
 function laneClass(lane){ return 'lane-'+lane; }   // 'lane-0'.. or 'lane-song0'/'lane-song1'
 function paintLane(key, occ){
@@ -919,7 +930,7 @@ function paintLane(key, occ){
   // countdown span gets wiped every poll, which flickers and reflows the UI
   const sig = occ.map(a=>a.token).join(',');
   if(o.dataset.sig === sig) return;
-  o.dataset.sig = sig;
+  o.dataset.sig = sig; _remDirty = true;   // occupants changed → recollect countdown nodes
   if(!occ.length){ o.innerHTML='<span class="none">—</span>'; return; }
   o.innerHTML='';
   for(const a of occ){
@@ -939,7 +950,8 @@ function updateRem(el){
   if(!isFinite(r) || r < 0) r = 0;
   el.textContent = r>=60 ? (Math.floor(r/60)+':'+String(Math.floor(r%60)).padStart(2,'0')) : (Math.ceil(r)+'s');
 }
-setInterval(()=>{ document.querySelectorAll('.chip .rem').forEach(updateRem); }, 250);
+let _remDirty = true, _remNodes = [];
+setInterval(()=>{ for(const el of _remNodes) updateRem(el); }, 250);
 document.querySelectorAll('#typeFilter button').forEach(b=>{
   b.onclick=()=>{ SONGFILTER=b.dataset.t;
     document.querySelectorAll('#typeFilter button').forEach(x=>x.classList.toggle('on',x===b));
