@@ -128,11 +128,14 @@ def scan_library():
             if not os.path.isfile(full):
                 continue
             stem = os.path.splitext(fn)[0]
+            try: ver = int(os.path.getmtime(full))
+            except OSError: ver = 0
             lib[fn] = {
                 "file": fn,
                 "name": stem,            # display
                 "cmd": stem.lower(),     # !cmd trigger (lowercased)
                 "fmt": ext.lstrip("."),  # wav | mp3
+                "ver": ver,              # mtime — cache-buster so edits take effect
             }
     except FileNotFoundError:
         pass
@@ -371,7 +374,11 @@ def active_snapshot():
     now = time.time()
     with _ACTIVE_LOCK:
         _prune_locked(now)
-        return [dict(a) for a in _ACTIVE]
+        snap = [dict(a) for a in _ACTIVE]
+    with _LIB_LOCK:
+        for a in snap:                       # carry the file version for cache-busting
+            a["ver"] = _LIBRARY.get(a["file"], {}).get("ver", 0)
+    return snap
 
 # ----------------------------------------------------------------------------
 # Unified feed (chat + commands + log)

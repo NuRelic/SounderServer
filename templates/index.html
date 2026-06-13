@@ -42,7 +42,7 @@
     border:1px solid var(--line);border-radius:14px;padding:2px 5px 2px 10px;font-size:12px;color:var(--txt)}
   .chip .cnm{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px}
   .chip .by{color:var(--dim)}
-  .chip .rem{color:var(--accent2);font-size:11px;font-variant-numeric:tabular-nums;margin-left:3px;font-weight:600}
+  .chip .rem{color:var(--accent2);font-size:11px;font-variant-numeric:tabular-nums;margin-left:3px;font-weight:600;display:inline-block;min-width:32px;text-align:right}
   .splitter{flex:0 0 6px;cursor:col-resize;background:var(--line);transition:background .15s}
   .splitter:hover,.splitter.dragging{background:var(--accent)}
   .chip .kill{width:16px;height:16px;border-radius:50%;background:#ff5b5b;color:#fff;border:none;
@@ -413,6 +413,11 @@
 <script>
 const $ = s => document.querySelector(s);
 let SOUNDS = [], BYFILE = {}, TAB = 'all', FAVORDER = [], EDITMODE = false;
+// audio URL with a version (file mtime) appended so edits bust the browser cache
+function audioUrl(file, ver){
+  if(ver===undefined && BYFILE[file]) ver = BYFILE[file].ver;
+  return '/api/audio?f='+encodeURIComponent(file)+(ver?('&v='+ver):'');
+}
 let LANES = 2, LANE = 0, SONG_LANES = 1, ALLLETTER = null, SONGFILTER = 'all';
 const LANE_COLORS = ['#3aa0ff','#ffa53a','#00d2a8','#ff6ec7'];
 const SONG_COLOR = '#c98bff';
@@ -658,7 +663,7 @@ async function openEdit(s){
   const g=cv.getContext('2d'); g.clearRect(0,0,cv.width,cv.height);
   g.fillStyle='#8b93a7'; g.font='12px sans-serif'; g.fillText('decoding…',12,24);
   try{
-    const ab = await (await fetch('/api/audio?f='+encodeURIComponent(s.file))).arrayBuffer();
+    const ab = await (await fetch(audioUrl(s.file, s.ver))).arrayBuffer();
     const actx = new (window.AudioContext||window.webkitAudioContext)();
     EDITBUF = await actx.decodeAudioData(ab);
     EDITDUR = EDITBUF.duration; regStart=0; regEnd=EDITDUR;
@@ -701,7 +706,7 @@ $('#selFull').onclick=()=>{ regStart=0; regEnd=EDITDUR; drawWave(); };
 $('#vol').oninput=()=>{ $('#volLbl').textContent=$('#vol').value+'%'; if(prevAudio) prevAudio.volume=Math.min(1,$('#vol').value/100); };
 $('#prevPlay').onclick=()=>{
   if(prevAudio){ prevAudio.pause(); prevAudio=null; $('#prevPlay').textContent='▶ Preview'; return; }
-  prevAudio=new Audio('/api/audio?f='+encodeURIComponent(EDITCUR.file));
+  prevAudio=new Audio(audioUrl(EDITCUR.file, EDITCUR.ver));
   prevAudio.volume=Math.min(1,$('#vol').value/100);
   prevAudio.currentTime=regStart;
   prevAudio.play().catch(()=>{});
@@ -830,7 +835,7 @@ const activeMeta = {};   // token -> {start, dur}  (for the drift loop)
 function startEntry(e){
   if(handled.has(e.token)) return;
   handled.add(e.token);
-  const a = new Audio('/api/audio?f='+encodeURIComponent(e.file));
+  const a = new Audio(audioUrl(e.file, e.ver));
   a.volume = effVol();
   playing[e.token] = a;
   activeMeta[e.token] = {start:e.start, dur:e.dur||0};
@@ -907,6 +912,11 @@ function paintLane(key, occ){
   const ch=$('#ch-lane'+key), o=$('#occ-lane'+key);
   if(!ch) return;
   ch.classList.toggle('live', occ.length>0);
+  // only rebuild when the occupants actually change — otherwise the running
+  // countdown span gets wiped every poll, which flickers and reflows the UI
+  const sig = occ.map(a=>a.token).join(',');
+  if(o.dataset.sig === sig) return;
+  o.dataset.sig = sig;
   if(!occ.length){ o.innerHTML='<span class="none">—</span>'; return; }
   o.innerHTML='';
   for(const a of occ){
@@ -916,17 +926,17 @@ function paintLane(key, occ){
       `<span class="rem" data-end="${a.start+(a.dur||0)}"></span>`+
       (canKill?`<button class="kill" title="stop this sound">✕</button>`:'');
     if(canKill) chip.querySelector('.kill').onclick=()=>killActive(a.token);
+    updateRem(chip.querySelector('.rem'));   // fill in immediately so it never starts blank
     o.appendChild(chip);
   }
 }
 // live "time remaining" countdown on the channel chips
-setInterval(()=>{
-  document.querySelectorAll('.chip .rem').forEach(el=>{
-    let r = parseFloat(el.dataset.end) - serverNow();
-    if(!isFinite(r) || r < 0) r = 0;
-    el.textContent = r>=60 ? (Math.floor(r/60)+':'+String(Math.floor(r%60)).padStart(2,'0')) : (Math.ceil(r)+'s');
-  });
-}, 250);
+function updateRem(el){
+  let r = parseFloat(el.dataset.end) - serverNow();
+  if(!isFinite(r) || r < 0) r = 0;
+  el.textContent = r>=60 ? (Math.floor(r/60)+':'+String(Math.floor(r%60)).padStart(2,'0')) : (Math.ceil(r)+'s');
+}
+setInterval(()=>{ document.querySelectorAll('.chip .rem').forEach(updateRem); }, 250);
 document.querySelectorAll('#typeFilter button').forEach(b=>{
   b.onclick=()=>{ SONGFILTER=b.dataset.t;
     document.querySelectorAll('#typeFilter button').forEach(x=>x.classList.toggle('on',x===b));
@@ -1048,7 +1058,7 @@ $('#soloBtn').onclick = () => { SOLO = !SOLO; localStorage.setItem('ss_solo', SO
 function playLocal(file, lane){
   unlock();
   if(soloPlaying[lane]){ try{ soloPlaying[lane].pause(); }catch(_){ } }
-  const a = new Audio('/api/audio?f='+encodeURIComponent(file));
+  const a = new Audio(audioUrl(file));
   a.volume = effVol(); a.play().catch(()=>{});
   a.addEventListener('ended', ()=>{ if(soloPlaying[lane]===a) delete soloPlaying[lane]; });
   soloPlaying[lane] = a;
