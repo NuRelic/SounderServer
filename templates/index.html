@@ -42,6 +42,12 @@
     border:1px solid var(--line);border-radius:14px;padding:2px 5px 2px 10px;font-size:12px;color:var(--txt)}
   .chip .cnm{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px}
   .chip .by{color:var(--dim)}
+  .chip .rem{color:var(--accent2);font-size:11px;font-variant-numeric:tabular-nums;margin-left:3px;font-weight:600;display:inline-block;min-width:32px;text-align:right}
+  .splitter{flex:0 0 6px;cursor:col-resize;background:var(--line);transition:background .15s}
+  .splitter:hover,.splitter.dragging{background:var(--accent)}
+  .chip .fav{background:none;border:none;color:#555;font-size:13px;line-height:1;cursor:pointer;
+    padding:0 1px;margin-left:2px}
+  .chip .fav.on{color:var(--fav)}
   .chip .kill{width:16px;height:16px;border-radius:50%;background:#ff5b5b;color:#fff;border:none;
     font-size:10px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center}
   .chan .cap{margin-left:auto;display:flex;align-items:center;gap:4px;color:var(--dim);flex:0 0 auto}
@@ -87,6 +93,8 @@
   .toolbar{display:flex;gap:8px;align-items:center;padding:8px 16px;flex:0 0 auto;flex-wrap:wrap}
   .toolbar input.search{flex:0 1 190px;background:var(--panel2);border:1px solid var(--line);
     color:var(--txt);border-radius:8px;padding:8px 12px}
+  .sortsel{flex:0 0 auto;background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+    border-radius:8px;padding:8px 10px;font-weight:600;font-size:12px;cursor:pointer}
   .allbar{display:flex;flex-wrap:wrap;gap:3px;flex:1 1 auto;min-width:0}
   .allbar button{min-width:22px;padding:3px 6px;font-size:11px;background:var(--panel2);
     border:1px solid var(--line);color:var(--dim);border-radius:6px;cursor:pointer;font-weight:600}
@@ -98,7 +106,7 @@
   .snd{position:relative;background:var(--panel2);border:1px solid var(--line);
     border-radius:9px;padding:7px 24px 9px 11px;cursor:pointer;text-align:left;
     color:var(--txt);overflow:hidden;transition:border-color .1s,transform .05s;
-    display:flex;flex-direction:column;justify-content:center;min-height:38px;user-select:none}
+    display:flex;flex-direction:column;justify-content:center;min-height:50px;user-select:none}
   .snd.drag{touch-action:none}
   .snd:hover{border-color:var(--accent)}
   .snd:active{transform:scale(.97)}
@@ -109,6 +117,10 @@
     position:relative;z-index:1;pointer-events:none}
   .snd .fmt{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;line-height:1;
     position:relative;z-index:1;pointer-events:none}
+  .snd .meta{display:flex;gap:6px;align-items:baseline;font-size:10px;line-height:1;margin-top:4px;
+    color:var(--dim);font-variant-numeric:tabular-nums;position:relative;z-index:1;pointer-events:none}
+  .snd .meta .pl{color:var(--accent2);font-weight:700}
+  .snd .meta .ln{margin-left:auto}
   /* per-lane click zones on a playable tile */
   .snd .zone{position:absolute;top:0;bottom:0;z-index:0}
   .snd .zone{border-left:1px solid rgba(255,255,255,.07)}
@@ -124,9 +136,6 @@
   .snd .zone.zsong0{border-left:none}
   .snd .zone.zsong0:hover{background:rgba(201,139,255,.22)}
   .snd .zone.zsong1:hover{background:rgba(255,206,77,.22)}
-  .grid.topmode .snd{padding-top:21px;min-height:52px;justify-content:flex-end;padding-bottom:11px}
-  .snd .pc{position:absolute;top:4px;left:6px;font-size:10px;color:#04201a;background:var(--accent2);
-    border-radius:8px;padding:1px 6px;font-weight:700;z-index:2;pointer-events:none}
   .typefilter{display:flex;gap:3px;flex:0 0 auto}
   .typefilter button{padding:4px 9px;font-size:11px;background:var(--panel2);border:1px solid var(--line);
     color:var(--dim);border-radius:6px;cursor:pointer;font-weight:600}
@@ -226,6 +235,52 @@
   .lk.wav .fmt{color:var(--wav)} .lk.mp3 .fmt{color:var(--mp3)}
   .lk.sel .fmt{color:#fff}
   .lk .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* mobile feed-drawer toggle */
+  .feed-toggle{display:none;position:fixed;bottom:16px;right:16px;z-index:62;
+    width:54px;height:54px;border-radius:50%;background:var(--accent);color:#fff;border:none;
+    font-size:22px;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.45)}
+  /* ---------- mobile ---------- */
+  @media (max-width:760px){
+    body{font-size:13px}
+    header{flex-wrap:wrap;gap:6px;padding:5px 10px}
+    header h1{font-size:13px}
+    .who{margin-left:auto;flex-wrap:wrap;gap:5px;justify-content:flex-end}
+    header input.name{width:88px;padding:4px 6px}
+    /* channels: one compact horizontal-scroll row, volume pinned at the end */
+    .channels{padding:4px 10px;gap:6px;flex-wrap:nowrap;align-items:center}
+    #laneBoxes{flex:1 1 auto !important;flex-wrap:nowrap !important;overflow-x:auto;gap:5px;min-width:0;-webkit-overflow-scrolling:touch}
+    .chan{flex:0 0 auto;min-width:112px;max-width:62vw;padding:4px 8px;border-radius:8px}
+    .chan .lab{font-size:10px}
+    .chan .occ{min-width:26px}
+    .chip{font-size:11px;padding:2px 4px 2px 7px}
+    .chip .cnm{max-width:110px}
+    .lanes-ctl{flex:0 0 auto;padding:4px 7px;font-size:11px}
+    .vol-ctl{flex:0 0 auto;padding:4px 7px;font-size:11px}
+    .vol-ctl span{display:none}              /* drop the "You" label, keep 🔊 + slider */
+    .vol-ctl input[type=range]{width:62px}
+    #libcount{display:none}                  /* hide the "1404 sounds" count on mobile */
+    .tabs{padding:5px 10px 0;flex-wrap:wrap}
+    .tabs button{padding:6px 11px;font-size:12px}
+    .tabs-right{padding-right:10px}
+    .toolbar{padding:5px 10px;gap:6px}
+    .sortsel{padding:6px 8px;font-size:11px}
+    /* alpha bar: one scrollable row instead of wrapping to 2-3 rows */
+    .allbar{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch}
+    .allbar button{flex:0 0 auto}
+    .grid{padding:4px 10px 90px;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:8px}
+    .snd{min-height:48px;padding:5px 19px 6px 9px}
+    .snd .nm{font-size:12px}
+    .snd .meta{font-size:9px;margin-top:3px}
+    /* feed becomes an off-canvas drawer instead of eating the screen */
+    .feed{position:fixed;top:0;right:0;height:100%;height:100dvh;width:min(88vw,360px);
+      z-index:61;transform:translateX(101%);transition:transform .25s ease;
+      box-shadow:-10px 0 34px rgba(0,0,0,.55)}
+    .feed.open{transform:translateX(0)}
+    .splitter{display:none}
+    .feed-toggle{display:flex;align-items:center;justify-content:center}
+    .feed.open ~ .feed-toggle, body.feed-open .feed-toggle{background:#444}
+    .composer .lookup{left:10px;right:10px}
+  }
 </style>
 </head>
 <body>
@@ -241,6 +296,9 @@
     </span>
     <button class="btn-edit" id="syncBtn" title="Sync: align playback with everyone on a shared timeline (~1s delay)">🔁 Sync</button>
     <button class="btn-edit" id="soloBtn" title="Solo: play only for you — you won't hear others and they won't hear you">🎧 Solo</button>
+    <span id="connWarn" style="display:none;align-items:center;gap:4px;background:rgba(255,165,58,.15);
+      border:1px solid var(--mp3);color:var(--mp3);border-radius:14px;padding:3px 9px;font-size:11px;font-weight:600"
+      title="Your connection is weak, so playback is running un-synced (snappy) to avoid skips">⚠ weak conn · sync paused</span>
   </div>
 </header>
 
@@ -262,7 +320,6 @@
     <div class="tabs">
       <button class="on" data-tab="all">All</button>
       <button data-tab="fav">★ Favorites</button>
-      <button data-tab="top">🔥 Top</button>
       <button data-tab="add" id="addTab" style="display:none">➕ Add / Edit</button>
       <span class="tabs-right">
         <span class="count" id="shown"></span>
@@ -272,11 +329,21 @@
     </div>
     <div class="toolbar" id="toolbar">
       <input class="search" id="search" placeholder="filter…">
+      <select class="sortsel" id="sortSel" style="display:none" title="sort order">
+        <option value="plays">🔥 Most played</option>
+        <option value="plays_asc">Least played</option>
+        <option value="name">A → Z</option>
+        <option value="name_desc">Z → A</option>
+        <option value="long">⏱ Longest</option>
+        <option value="short">⏱ Shortest</option>
+        <option value="default">★ Custom / fav order</option>
+      </select>
       <div class="typefilter" id="typeFilter" style="display:none">
         <button data-t="all" class="on">All</button>
         <button data-t="songs">🎵 Songs</button>
         <button data-t="sounds">Sounds</button>
       </div>
+      <button class="btn-edit" id="nsfwToggle" style="display:none">🔞 NSFW: off</button>
       <div class="allbar" id="allAlpha" style="display:none"></div>
     </div>
     <div class="editbar" id="editbar">
@@ -310,6 +377,7 @@
     </div>
   </div>
 
+  <div class="splitter" id="splitter" title="drag to resize"></div>
   <div class="feed">
     <div class="ftab">💬 Feed <span class="count" style="margin-left:auto">chat · commands · log</span></div>
     <div class="presence" id="presence"></div>
@@ -322,6 +390,8 @@
     </div>
   </div>
 </div>
+
+<button class="feed-toggle" id="feedToggle" title="chat / feed">💬</button>
 
 <!-- login modal -->
 <div class="modal-back" id="loginModal">
@@ -374,7 +444,16 @@
 <script>
 const $ = s => document.querySelector(s);
 let SOUNDS = [], BYFILE = {}, TAB = 'all', FAVORDER = [], EDITMODE = false;
-let LANES = 2, LANE = 0, SONG_LANES = 1, ALLLETTER = null, SONGFILTER = 'all';
+// audio URL with a version (file mtime) appended so edits bust the browser cache
+function audioUrl(file, ver){
+  if(ver===undefined && BYFILE[file]) ver = BYFILE[file].ver;
+  return '/api/audio?f='+encodeURIComponent(file)+(ver?('&v='+ver):'');
+}
+// debounce: coalesce rapid calls (typing) so we don't re-render ~1978 tiles per keystroke
+function debounce(fn, ms){ let t; return function(){ clearTimeout(t); t=setTimeout(fn, ms); }; }
+let LANES = 2, LANE = 0, SONG_LANES = 1, ALLLETTER = null, SONGFILTER = 'all', SORT = 'plays';
+// format a duration in seconds → compact label: "4s" / "1:23"
+function fmtDur(d){ d=Math.round(d||0); return d>=60 ? (Math.floor(d/60)+':'+String(d%60).padStart(2,'0')) : (d+'s'); }
 const LANE_COLORS = ['#3aa0ff','#ffa53a','#00d2a8','#ff6ec7'];
 const SONG_COLOR = '#c98bff';
 let ME = {admin:false, can_edit:false, email:null}, CEDIT = false;
@@ -394,7 +473,7 @@ function applyMe(){
   $('#lanesCtl').style.display = ME.admin ? 'flex' : 'none';
   $('#songLanesCtl').style.display = ME.admin ? 'flex' : 'none';
   $('#syncBtn').style.display = ME.admin ? 'inline-block' : 'none';
-  if(!ME.can_edit && (TAB==='add')){ TAB='all'; document.querySelectorAll('.tabs button').forEach(x=>x.classList.toggle('on',x.dataset.tab==='all')); }
+  if(!ME.can_edit && (TAB==='add')){ TAB='all'; document.querySelectorAll('.tabs button[data-tab]').forEach(x=>x.classList.toggle('on',x.dataset.tab==='all')); }
   if(!ME.can_edit) CEDIT=false;
   render();
   if(ME.needs_login) showWall();
@@ -437,7 +516,7 @@ async function doLogin(){
     body:JSON.stringify({password, email})});
   const d = await r.json();
   if(d.ok){
-    ME = d; applyMe();
+    ME = d; if(d.admin) assumeAdminIdentity(); applyMe();
     if(WALL && !ME.needs_login){ WALL = false; $('#loginModal').classList.remove('show'); startApp(); }
     else if(!WALL){ $('#loginModal').classList.remove('show'); }
   } else {
@@ -446,13 +525,27 @@ async function doLogin(){
 }
 
 // ---- identity ----
+const ADMIN_NAME = 'Banandon';   // admin password auto-assumes this identity
 function uname(){ return $('#name').value.trim() || 'someone'; }
 $('#name').value = localStorage.getItem('ss_name') ||
   'guest'+Math.floor(Math.random()*900+100);
 $('#name').onchange = () => localStorage.setItem('ss_name', $('#name').value.trim());
 function ucolor(){ return $('#nameColor').value; }
 $('#nameColor').value = localStorage.getItem('ss_color') || '#7c6cff';
-$('#nameColor').oninput = () => localStorage.setItem('ss_color', $('#nameColor').value);
+function saveColor(){
+  const c = $('#nameColor').value;
+  localStorage.setItem('ss_color', c);
+  // remember the color chosen per-name (so Banandon's color sticks across logins)
+  if(uname()) localStorage.setItem('ss_color_'+uname().toLowerCase(), c);
+}
+$('#nameColor').oninput = saveColor;
+// admin login → become Banandon and restore that name's saved color
+function assumeAdminIdentity(){
+  $('#name').value = ADMIN_NAME; localStorage.setItem('ss_name', ADMIN_NAME);
+  const saved = localStorage.getItem('ss_color_'+ADMIN_NAME.toLowerCase());
+  if(saved){ $('#nameColor').value = saved; localStorage.setItem('ss_color', saved); }
+  else saveColor();   // first time: claim the current color for Banandon
+}
 
 // ---- audio unlock (autoplay policy) ----
 function unlock(){
@@ -467,6 +560,9 @@ async function loadSounds(){
   const r = await fetch('/api/sounds'); const d = await r.json();
   SOUNDS = d.sounds; BYFILE = {}; SOUNDS.forEach(s=>BYFILE[s.file]=s);
   FAVORDER = d.fav_order || [];
+  // cache per-letter counts once per load (instead of an O(n) scan every keystroke)
+  _alphaCounts = {}; for(const s of SOUNDS){ const b=bucketOf(s.name); _alphaCounts[b]=(_alphaCounts[b]||0)+1; }
+  $('#allAlpha').dataset.built = '';   // counts changed → rebuild the bar lazily
   $('#libcount').textContent = d.count + ' sounds';
   render();
   if(d.scanning) setTimeout(loadSounds, 4000);   // refresh as song durations fill in
@@ -476,38 +572,47 @@ async function loadSounds(){
 function render(){
   const q = $('#search').value.trim().toLowerCase();
   const grid = $('#grid');
-  const editing  = (TAB==='fav' && EDITMODE);                 // layout reorder
-  const cediting = (TAB==='all' && CEDIT && ME.can_edit);     // content edit (trim/delete)
+  const editing  = (TAB==='fav' && EDITMODE);                              // layout reorder
+  const cediting = ((TAB==='all'||TAB==='fav') && CEDIT && ME.can_edit);   // content edit (trim/delete)
   const anyEdit  = editing || cediting;
-  $('#toolbar').style.display = (TAB==='add' || editing || TAB==='top') ? 'none' : 'flex';
+  const showFilters = (TAB==='all' || TAB==='fav');
+  $('#toolbar').style.display = (TAB==='add' || editing) ? 'none' : 'flex';
+  $('#sortSel').style.display = showFilters ? 'inline-block' : 'none';
   grid.style.display = TAB==='add' ? 'none' : 'grid';
   $('#addwrap').style.display = TAB==='add' ? 'block' : 'none';
-  $('#editToggle').style.display  = (TAB==='fav' && !EDITMODE) ? 'inline-block' : 'none';
-  $('#ceditToggle').style.display = (TAB==='all' && ME.can_edit && !CEDIT) ? 'inline-block' : 'none';
+  $('#editToggle').style.display  = (TAB==='fav' && !EDITMODE && !CEDIT) ? 'inline-block' : 'none';
+  $('#ceditToggle').style.display = ((TAB==='all'||TAB==='fav') && ME.can_edit && !CEDIT && !EDITMODE) ? 'inline-block' : 'none';
   $('#editbar').classList.toggle('show', editing);
   $('#cbar').classList.toggle('show', cediting);
   grid.classList.toggle('editing', anyEdit);
-  $('#allAlpha').style.display = (TAB==='all') ? 'flex' : 'none';
-  $('#typeFilter').style.display = (TAB==='all') ? 'flex' : 'none';
+  $('#allAlpha').style.display = showFilters ? 'flex' : 'none';
+  $('#typeFilter').style.display = showFilters ? 'flex' : 'none';
+  $('#nsfwToggle').style.display = showFilters ? 'inline-block' : 'none';
   $('#shown').style.display = (TAB==='add') ? 'none' : 'inline';
-  if(TAB==='all') buildAllAlpha();
+  if(showFilters) buildAllAlpha();
   if(TAB==='add'){ renderEdit(); return; }
-  let list = SOUNDS;
-  if(TAB==='fav') list = list.filter(s=>s.fav);
+  // base list per tab
+  let list;
+  if(TAB==='fav') list = SOUNDS.filter(s=>s.fav);
+  else list = SOUNDS.slice();
+  // shared filters: search / letter / song-type (work on every browse tab)
   if(q && !editing) list = list.filter(s=>s.name.toLowerCase().includes(q));
-  if(TAB==='all' && ALLLETTER && !q) list = list.filter(s=>bucketOf(s.name)===ALLLETTER);
-  if(TAB==='all' && SONGFILTER==='songs')  list = list.filter(s=>s.long);
-  if(TAB==='all' && SONGFILTER==='sounds') list = list.filter(s=>!s.long);
-  if(TAB==='top'){ list = SOUNDS.filter(s=>s.plays>0).slice().sort((a,b)=> b.plays - a.plays); }
-  grid.classList.toggle('topmode', TAB==='top');
-  if(TAB==='fav'){
-    const idx = f => { const i = FAVORDER.indexOf(f); return i<0 ? 1e9 : i; };
-    list = list.slice().sort((a,b)=> idx(a.file)-idx(b.file));
-  }
+  if(showFilters && ALLLETTER && !q) list = list.filter(s=>bucketOf(s.name)===ALLLETTER);
+  if(showFilters && SONGFILTER==='songs')  list = list.filter(s=>s.long);
+  if(showFilters && SONGFILTER==='sounds') list = list.filter(s=>!s.long);
+  if(!NSFW_ON) list = list.filter(s=>!s.nsfw);   // opt-in NSFW
+  // ordering: explicit sort wins; otherwise per-tab natural order
+  if(SORT==='plays')          list.sort((a,b)=> b.plays - a.plays);
+  else if(SORT==='plays_asc') list.sort((a,b)=> a.plays - b.plays);
+  else if(SORT==='name')      list.sort((a,b)=> a.name.localeCompare(b.name));
+  else if(SORT==='name_desc') list.sort((a,b)=> b.name.localeCompare(a.name));
+  else if(SORT==='long')      list.sort((a,b)=> b.dur - a.dur);
+  else if(SORT==='short')     list.sort((a,b)=> a.dur - b.dur);
+  else if(TAB==='fav'){ const idx=f=>{const i=FAVORDER.indexOf(f);return i<0?1e9:i;}; list.sort((a,b)=> idx(a.file)-idx(b.file)); }
+  // (default for 'all' keeps the server's name-sorted order)
   $('#shown').textContent =
     cediting ? (list.length + ' clips · click one to edit') :
-    TAB==='top' ? (list.length + ' most-played (all-time)') :
-    TAB==='fav' ? (list.length + ' favorites' + (editing ? '' : ' · ✏️ Edit layout to reorder')) :
+    TAB==='fav' ? (list.length + ' favorites' + (editing || SORT!=='default' ? '' : ' · ✏️ Edit layout to reorder')) :
     (list.length + ' shown');
   grid.innerHTML = '';
   const frag = document.createDocumentFragment();
@@ -515,50 +620,47 @@ function render(){
     const el = document.createElement('div');
     el.className = 'snd '+s.fmt+(anyEdit?' edit':'')+(s.long?' song':'');
     el.innerHTML =
-      `<div class="nm">${s.long?'🎵 ':''}${esc(s.name)}</div>`+
-      (TAB==='top' ? `<div class="pc">▶ ${s.plays}</div>` : '')+
+      `<div class="nm">${esc(s.name)}</div>`+
+      `<div class="meta"><span class="pl">▶ ${s.plays}</span>${s.dur>0?`<span class="ln">${fmtDur(s.dur)}</span>`:''}</div>`+
       `<button class="star ${s.fav?'on':''}" title="favorite">★</button>`+
       `<button class="rm" title="${cediting?'delete clip':'remove from favorites'}">✕</button>`;
     el.dataset.file = s.file;
-    el.onclick = e => {
-      if(e.target.classList.contains('star') || e.target.classList.contains('rm')) return;
-      if(editing) return;                 // layout mode: no playback (drag only)
-      if(cediting){ openEdit(s); return; }// content mode: open editor
-      // play mode: colored zones (below) handle firing
-    };
-    el.querySelector('.star').onclick = e => { e.stopPropagation(); toggleFav(s); };
-    el.querySelector('.rm').onclick = e => {
-      e.stopPropagation();
-      if(cediting) deleteClip(s); else toggleFav(s);
-    };
+    // click behavior is handled by ONE delegated listener on #grid (see gridClick)
+    // — no per-tile/per-zone closures, which is ~11k fewer closures for the full list
     if(editing) favDnD(el, s.file);
     if(!anyEdit){
-      if(s.long){                         // songs → colored song-lane zones
-        for(let i=0;i<SONG_LANES;i++){
-          const z=document.createElement('div');
-          z.className='zone zsong'+i+' lane-song'+i;
-          z.style.left=(i*100/SONG_LANES)+'%'; z.style.width=(100/SONG_LANES)+'%';
-          z.onclick=()=>fireFile(s.file, 'song'+i);
-          el.appendChild(z);
-        }
-      } else {                            // short sounds → N colored lane zones
-        for(let i=0;i<LANES;i++){
-          const z=document.createElement('div');
-          z.className='zone z'+i+' lane-'+i;
-          z.style.left=(i*100/LANES)+'%'; z.style.width=(100/LANES)+'%';
-          z.onclick=()=>fireFile(s.file, i);
-          el.appendChild(z);
-        }
+      const lanes = s.long ? SONG_LANES : LANES;   // songs → song-lane zones, else N lane zones
+      for(let i=0;i<lanes;i++){
+        const z=document.createElement('div');
+        z.className = s.long ? ('zone zsong'+i+' lane-song'+i) : ('zone z'+i+' lane-'+i);
+        z.style.left=(i*100/lanes)+'%'; z.style.width=(100/lanes)+'%';
+        z.dataset.lane = s.long ? ('song'+i) : String(i);
+        el.appendChild(z);
       }
     }
     frag.appendChild(el);
   }
   grid.appendChild(frag);
 }
-function setEdit(on){ EDITMODE = on; render(); }
+// one delegated click handler for the whole grid (replaces per-tile/per-zone closures)
+$('#grid').addEventListener('click', e => {
+  const el = e.target.closest('.snd'); if(!el) return;
+  const s = BYFILE[el.dataset.file]; if(!s) return;
+  const cediting = ((TAB==='all'||TAB==='fav') && CEDIT && ME.can_edit);
+  if(e.target.classList.contains('star')){ e.stopPropagation(); toggleFav(s); return; }
+  if(e.target.classList.contains('rm')){ e.stopPropagation(); if(cediting) deleteClip(s); else toggleFav(s); return; }
+  if(TAB==='fav' && EDITMODE) return;        // layout mode: drag only, no play
+  if(cediting){ openEdit(s); return; }       // content mode: open the editor
+  const z = e.target.closest('.zone');       // play mode: colored lane zones fire
+  if(z && z.dataset.lane!==undefined){
+    const ln = z.dataset.lane;
+    fireFile(s.file, /^song/.test(ln) ? ln : +ln);
+  }
+});
+function setEdit(on){ EDITMODE = on; if(on) CEDIT = false; render(); }
 $('#editToggle').onclick  = () => setEdit(true);
 $('#editDone').onclick    = () => setEdit(false);
-$('#ceditToggle').onclick = () => { CEDIT = true;  render(); };
+$('#ceditToggle').onclick = () => { CEDIT = true; EDITMODE = false; render(); };
 $('#ceditDone').onclick   = () => { CEDIT = false; render(); };
 
 // ---- favorites drag-to-reorder (pointer-based: works on desktop + touch) ----
@@ -614,7 +716,7 @@ async function openEdit(s){
   const g=cv.getContext('2d'); g.clearRect(0,0,cv.width,cv.height);
   g.fillStyle='#8b93a7'; g.font='12px sans-serif'; g.fillText('decoding…',12,24);
   try{
-    const ab = await (await fetch('/api/audio?f='+encodeURIComponent(s.file))).arrayBuffer();
+    const ab = await (await fetch(audioUrl(s.file, s.ver))).arrayBuffer();
     const actx = new (window.AudioContext||window.webkitAudioContext)();
     EDITBUF = await actx.decodeAudioData(ab);
     EDITDUR = EDITBUF.duration; regStart=0; regEnd=EDITDUR;
@@ -657,7 +759,7 @@ $('#selFull').onclick=()=>{ regStart=0; regEnd=EDITDUR; drawWave(); };
 $('#vol').oninput=()=>{ $('#volLbl').textContent=$('#vol').value+'%'; if(prevAudio) prevAudio.volume=Math.min(1,$('#vol').value/100); };
 $('#prevPlay').onclick=()=>{
   if(prevAudio){ prevAudio.pause(); prevAudio=null; $('#prevPlay').textContent='▶ Preview'; return; }
-  prevAudio=new Audio('/api/audio?f='+encodeURIComponent(EDITCUR.file));
+  prevAudio=new Audio(audioUrl(EDITCUR.file, EDITCUR.ver));
   prevAudio.volume=Math.min(1,$('#vol').value/100);
   prevAudio.currentTime=regStart;
   prevAudio.play().catch(()=>{});
@@ -710,41 +812,63 @@ function reorderFav(src, target){
   fetch('/api/favorites/order',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({order})});
 }
-$('#search').oninput = () => { if($('#search').value.trim()) ALLLETTER=null; if(TAB!=='add') render(); };
+const _doSearch = debounce(() => { if(TAB!=='add') render(); }, 130);
+$('#search').oninput = () => { if($('#search').value.trim()) ALLLETTER=null; _doSearch(); };
+let _alphaCounts = {};
 function buildAllAlpha(){
-  const counts={}; for(const s of SOUNDS){ const b=bucketOf(s.name); counts[b]=(counts[b]||0)+1; }
-  const letters=['#'].concat([...'ABCDEFGHIJKLMNOPQRSTUVWXYZ']);
-  const bar=$('#allAlpha'); bar.innerHTML='';
-  const all=document.createElement('button'); all.textContent='All';
-  if(ALLLETTER===null) all.classList.add('on');
-  all.onclick=()=>{ ALLLETTER=null; render(); }; bar.appendChild(all);
-  for(const L of letters){
-    const b=document.createElement('button'); b.textContent=L; b.disabled=!counts[L];
-    if(L===ALLLETTER) b.classList.add('on');
-    b.onclick=()=>{ ALLLETTER=L; $('#search').value=''; render(); };
-    bar.appendChild(b);
+  const bar=$('#allAlpha');
+  if(bar.dataset.built !== '1'){          // build the 28 buttons once per library load
+    bar.innerHTML='';
+    const letters=['#'].concat([...'ABCDEFGHIJKLMNOPQRSTUVWXYZ']);
+    const all=document.createElement('button'); all.textContent='All'; all.dataset.l='';
+    all.onclick=()=>{ ALLLETTER=null; markAlpha(); render(); }; bar.appendChild(all);
+    for(const L of letters){
+      const b=document.createElement('button'); b.textContent=L; b.dataset.l=L; b.disabled=!_alphaCounts[L];
+      b.onclick=()=>{ if(b.disabled) return; ALLLETTER=L; $('#search').value=''; markAlpha(); render(); };
+      bar.appendChild(b);
+    }
+    bar.dataset.built='1';
   }
+  markAlpha();                            // selection-only update on every render
+}
+function markAlpha(){
+  for(const b of $('#allAlpha').children) b.classList.toggle('on', (b.dataset.l||'')===(ALLLETTER||''));
 }
 
-document.querySelectorAll('.tabs button').forEach(b=>{
+// switching tabs resets filters/sort to defaults (not persisted across tabs)
+function resetFilters(){
+  SORT='plays'; $('#sortSel').value='plays';
+  SONGFILTER='all'; document.querySelectorAll('#typeFilter button').forEach(x=>x.classList.toggle('on',x.dataset.t==='all'));
+  ALLLETTER=null; $('#search').value=''; markAlpha();
+}
+document.querySelectorAll('.tabs button[data-tab]').forEach(b=>{   // only real tabs, not the Edit buttons
   b.onclick = () => {
-    document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('on'));
-    b.classList.add('on'); TAB = b.dataset.tab; EDITMODE = false; CEDIT = false; render();
+    document.querySelectorAll('.tabs button[data-tab]').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on'); TAB = b.dataset.tab; EDITMODE = false; CEDIT = false; resetFilters(); render();
   };
 });
+$('#sortSel').onchange = () => { SORT = $('#sortSel').value; render(); };
 
 // ---- favorites ----
-async function toggleFav(s){
+function toggleFav(s){
   s.fav = !s.fav;
-  await fetch('/api/favorite',{method:'POST',headers:{'Content-Type':'application/json'},
+  fetch('/api/favorite',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({file:s.file,on:s.fav})});
-  render();
+  if(TAB==='fav'){ render(); return; }        // membership changed → rebuild the fav list
+  // otherwise just repaint this one star instead of rebuilding ~1978 tiles
+  const sel = (window.CSS && CSS.escape) ? CSS.escape(s.file) : s.file.replace(/"/g,'\\"');
+  const el = $('#grid').querySelector('.snd[data-file="'+sel+'"]');
+  if(el){ const st = el.querySelector('.star'); if(st) st.classList.toggle('on', s.fav); }
 }
 
 // ---- firing ----
+const _lastFire = {};
 async function fireFile(file, lane){
   unlock();
   if(lane===undefined) lane=LANE;
+  const fkey = file+'|'+lane, fnow = Date.now();    // swallow only an accidental double-event on the same zone
+  if(_lastFire[fkey] && fnow - _lastFire[fkey] < 80) return;
+  _lastFire[fkey] = fnow;
   if(SOLO){ playLocal(file, lane); return; }       // private: local only, no broadcast
   const r = await fetch('/api/fire',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({file, user:uname(), lane, color:ucolor()})});
@@ -782,12 +906,12 @@ const activeMeta = {};   // token -> {start, dur}  (for the drift loop)
 function startEntry(e){
   if(handled.has(e.token)) return;
   handled.add(e.token);
-  const a = new Audio('/api/audio?f='+encodeURIComponent(e.file));
+  const a = new Audio(audioUrl(e.file, e.ver));
   a.volume = effVol();
   playing[e.token] = a;
   activeMeta[e.token] = {start:e.start, dur:e.dur||0};
   a.addEventListener('ended',()=>{ if(playing[e.token]===a){ delete playing[e.token]; delete activeMeta[e.token]; } });
-  if(SYNC){
+  if(SYNC && !connBad){
     // shared timeline: audio position 0 maps to wall-clock (start + buffer)
     const target = e.start + SYNC_BUFFER;
     const pos = serverNow() - target;
@@ -802,8 +926,13 @@ function startEntry(e){
   }
 }
 async function pollActive(){
+  const _t0 = performance.now();
   try{
-    const r = await fetch('/api/active?u='+encodeURIComponent(uname())+'&c='+encodeURIComponent(ucolor())); const d = await r.json();
+    const _ac = new AbortController(); const _to = setTimeout(()=>_ac.abort(), 5000);
+    const r = await fetch('/api/active?u='+encodeURIComponent(uname())+'&c='+encodeURIComponent(ucolor()), {signal:_ac.signal});
+    clearTimeout(_to);
+    const d = await r.json();
+    noteConn(performance.now()-_t0, true);
     paintPresence(d.online);
     if(typeof d.lanes==='number' && d.lanes!==LANES){   // admin changed lane count
       LANES=d.lanes; if(LANE>=LANES)LANE=0;
@@ -825,7 +954,7 @@ async function pollActive(){
       for(const a of d.active) startEntry(a);
     }
     paintChannels(d.active);
-  }catch(e){}
+  }catch(e){ noteConn(performance.now()-_t0, false); }
 }
 function paintChannels(active){
   const box=$('#laneBoxes');
@@ -848,28 +977,51 @@ function paintChannels(active){
   }
   for(let i=0;i<SONG_LANES;i++) paintLane('song'+i, active.filter(a=>a.lane==='song'+i));
   for(let i=0;i<LANES;i++) paintLane(i, active.filter(a=>a.lane===i));
+  if(_remDirty){ _remNodes = Array.from(document.querySelectorAll('#laneBoxes .chip .rem')); _remDirty=false; }
 }
 function laneClass(lane){ return 'lane-'+lane; }   // 'lane-0'.. or 'lane-song0'/'lane-song1'
 function paintLane(key, occ){
   const ch=$('#ch-lane'+key), o=$('#occ-lane'+key);
   if(!ch) return;
   ch.classList.toggle('live', occ.length>0);
+  // only rebuild when the occupants actually change — otherwise the running
+  // countdown span gets wiped every poll, which flickers and reflows the UI
+  const sig = occ.map(a=>a.token).join(',');
+  if(o.dataset.sig === sig) return;
+  o.dataset.sig = sig; _remDirty = true;   // occupants changed → recollect countdown nodes
   if(!occ.length){ o.innerHTML='<span class="none">—</span>'; return; }
   o.innerHTML='';
   for(const a of occ){
     const canKill=ME.admin||(a.by===uname());   // owner or admin
+    const src=BYFILE[a.file];                    // library entry (for favoriting)
     const chip=document.createElement('span'); chip.className='chip';
     chip.innerHTML=`<span class="cnm">${esc(a.name)}</span><span class="by"${a.color?' style="color:'+a.color+'"':''}>· ${esc(a.by||'')}</span>`+
+      `<span class="rem" data-end="${a.start+(a.dur||0)}"></span>`+
+      (src?`<button class="fav ${src.fav?'on':''}" title="favorite this sound">★</button>`:'')+
       (canKill?`<button class="kill" title="stop this sound">✕</button>`:'');
     if(canKill) chip.querySelector('.kill').onclick=()=>killActive(a.token);
+    if(src){ const fb=chip.querySelector('.fav'); fb.onclick=()=>{ toggleFav(src); fb.classList.toggle('on', src.fav); }; }
+    updateRem(chip.querySelector('.rem'));   // fill in immediately so it never starts blank
     o.appendChild(chip);
   }
 }
+// live "time remaining" countdown on the channel chips
+function updateRem(el){
+  let r = parseFloat(el.dataset.end) - serverNow();
+  if(!isFinite(r) || r < 0) r = 0;
+  el.textContent = r>=60 ? (Math.floor(r/60)+':'+String(Math.floor(r%60)).padStart(2,'0')) : (Math.ceil(r)+'s');
+}
+let _remDirty = true, _remNodes = [];
+setInterval(()=>{ for(const el of _remNodes) updateRem(el); }, 250);
 document.querySelectorAll('#typeFilter button').forEach(b=>{
   b.onclick=()=>{ SONGFILTER=b.dataset.t;
     document.querySelectorAll('#typeFilter button').forEach(x=>x.classList.toggle('on',x===b));
     render(); };
 });
+let NSFW_ON = localStorage.getItem('ss_nsfw')==='1';
+function paintNsfwBtn(){ $('#nsfwToggle').textContent='🔞 NSFW: '+(NSFW_ON?'on':'off'); $('#nsfwToggle').classList.toggle('on', NSFW_ON); }
+$('#nsfwToggle').onclick=()=>{ NSFW_ON=!NSFW_ON; localStorage.setItem('ss_nsfw', NSFW_ON?'1':'0'); paintNsfwBtn(); render(); };
+paintNsfwBtn();
 function paintPresence(online){
   const el=$('#presence');
   if(!online || !online.length){
@@ -942,16 +1094,36 @@ $('#syncBtn').onclick = () => {
   fetch('/api/sync',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({on:!SYNC})}).then(r=>r.json()).then(d=>{ SYNC=!!d.on; applySync(); });
 };
+// per-client connection health: on a weak/laggy connection, locally drop out of
+// sync (play snappy) so a user doesn't get the drift-seek "blip out / catch up".
+let connBad = false, _pollLat = [];
+function noteConn(ms, ok){
+  _pollLat.push(ok ? ms : 5000); if(_pollLat.length > 5) _pollLat.shift();
+  const avg = _pollLat.reduce((a,b)=>a+b,0) / _pollLat.length;
+  const was = connBad;
+  if(avg > 650) connBad = true; else if(avg < 300) connBad = false;
+  if(was !== connBad){ const w=$('#connWarn'); if(w) w.style.display = (connBad && SYNC) ? 'inline-flex' : 'none'; }
+}
+// Mobile browsers (iOS Safari, Android Firefox/Chrome) glitch/rebuffer when you
+// change an <audio>'s playbackRate or seek currentTime mid-stream — desktop does
+// it seamlessly. So on mobile we DON'T micro-correct (that caused audio to "cut
+// in and out every ~second"); we keep rate at 1 and only hard-resync on a big
+// drift (a real stall), trading a little drift for smooth playback.
+const IS_MOBILE = (typeof matchMedia==='function' && matchMedia('(pointer: coarse)').matches)
+                  || /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
 // drift correction: keep each synced sound near its shared-timeline position
 setInterval(()=>{
-  if(!SYNC) return;
+  if(!SYNC || connBad) return;
   for(const tok in playing){
     const m = activeMeta[tok], a = playing[tok];
     if(!m || !a || a.paused) continue;
     const expected = serverNow() - (m.start + SYNC_BUFFER);
     if(expected < 0 || (m.dur && expected > m.dur)) continue;
     const drift = a.currentTime - expected;
-    if(Math.abs(drift) > 0.35){ try{ a.currentTime = expected; }catch(_){} a.playbackRate = 1; }
+    if(IS_MOBILE){
+      // no playbackRate nudging on mobile; only resync after a real desync
+      if(Math.abs(drift) > 1.5){ try{ a.currentTime = expected; }catch(_){} }
+    } else if(Math.abs(drift) > 0.35){ try{ a.currentTime = expected; }catch(_){} a.playbackRate = 1; }
     else if(Math.abs(drift) > 0.06){ a.playbackRate = drift > 0 ? 0.96 : 1.04; }
     else a.playbackRate = 1;
   }
@@ -972,7 +1144,7 @@ $('#soloBtn').onclick = () => { SOLO = !SOLO; localStorage.setItem('ss_solo', SO
 function playLocal(file, lane){
   unlock();
   if(soloPlaying[lane]){ try{ soloPlaying[lane].pause(); }catch(_){ } }
-  const a = new Audio('/api/audio?f='+encodeURIComponent(file));
+  const a = new Audio(audioUrl(file));
   a.volume = effVol(); a.play().catch(()=>{});
   a.addEventListener('ended', ()=>{ if(soloPlaying[lane]===a) delete soloPlaying[lane]; });
   soloPlaying[lane] = a;
@@ -1040,7 +1212,7 @@ function feedItem(it){
 // ---- composer w/ live lookup ----
 const msg = $('#msg'), lookup = $('#lookup');
 let lkItems = [], lkSel = 0;
-msg.addEventListener('input', refreshLookup);
+msg.addEventListener('input', debounce(refreshLookup, 90));
 function refreshLookup(){
   const v = msg.value;
   if(!v.startsWith('!')){ hideLookup(); return; }
@@ -1084,11 +1256,34 @@ msg.addEventListener('keydown', e=>{
   if(e.key==='Enter'){
     const v=msg.value.trim();
     if(!v) return;
+    msgHist.push(v); if(msgHist.length>50) msgHist.shift(); histIdx=msgHist.length;
+    localStorage.setItem('ss_msghist', JSON.stringify(msgHist));
     if(v.startsWith('!')){ fireCmd(v.slice(1)); }
     else { sendChat(v); }
     msg.value='';
+  } else if(e.key==='ArrowUp'){          // recall previous message (terminal-style)
+    if(histIdx>0){ histIdx--; msg.value=msgHist[histIdx]; e.preventDefault(); }
+  } else if(e.key==='ArrowDown'){
+    if(histIdx<msgHist.length-1){ histIdx++; msg.value=msgHist[histIdx]; }
+    else { histIdx=msgHist.length; msg.value=''; }
+    e.preventDefault();
   }
 });
+let msgHist = []; try{ msgHist = JSON.parse(localStorage.getItem('ss_msghist')||'[]'); }catch(_){}
+let histIdx = msgHist.length;
+
+// ---- desktop: drag the board↔feed splitter to resize ----
+(function(){
+  const sp=$('#splitter'), feed=document.querySelector('.feed');
+  const saved=localStorage.getItem('ss_feedw'); if(saved) feed.style.flexBasis=saved+'px';
+  let dragging=false;
+  sp.addEventListener('pointerdown', e=>{ dragging=true; sp.classList.add('dragging'); try{sp.setPointerCapture(e.pointerId);}catch(_){}; e.preventDefault(); });
+  sp.addEventListener('pointermove', e=>{ if(!dragging)return;
+    const w=Math.max(260, Math.min(680, window.innerWidth - e.clientX - 3));
+    feed.style.flexBasis=w+'px'; });
+  sp.addEventListener('pointerup', e=>{ if(!dragging)return; dragging=false; sp.classList.remove('dragging');
+    try{sp.releasePointerCapture(e.pointerId);}catch(_){}; localStorage.setItem('ss_feedw', parseInt(feed.style.flexBasis)||360); });
+})();
 async function sendChat(text){
   await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({text, user:uname(), color:ucolor()})});
@@ -1135,7 +1330,8 @@ function buildAlphabar(){
     bar.appendChild(b);
   }
 }
-$('#editsearch').oninput = ()=>{ if($('#editsearch').value.trim()) EDITLETTER=null; renderEdit(); };
+const _doEditSearch = debounce(renderEdit, 130);
+$('#editsearch').oninput = ()=>{ if($('#editsearch').value.trim()) EDITLETTER=null; _doEditSearch(); };
 function renderEdit(){
   buildAlphabar();
   const q=$('#editsearch').value.trim().toLowerCase();
@@ -1172,6 +1368,13 @@ function esc(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>'
 // ---- modal backdrop closes on outside click ----
 $('#loginModal').addEventListener('click', e=>{ if(e.target.id==='loginModal' && !WALL) $('#loginModal').classList.remove('show'); });
 $('#editModal').addEventListener('click', e=>{ if(e.target.id==='editModal') closeEdit(); });
+
+// ---- mobile feed drawer ----
+$('#feedToggle').onclick = () => {
+  const f = document.querySelector('.feed');
+  const open = f.classList.toggle('open');
+  $('#feedToggle').textContent = open ? '✕' : '💬';
+};
 
 // ---- boot ----
 let APP_STARTED = false;

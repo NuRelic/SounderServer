@@ -16,6 +16,7 @@ Local testing only. Not the production Pi code.
 
 import os
 import io
+import gzip
 import json
 import time
 import threading
@@ -72,6 +73,26 @@ else:
         _f.write(app.secret_key)
 app.permanent_session_lifetime = timedelta(days=30)
 
+@app.after_request
+def _gzip_json(resp):
+    # gzip JSON bodies (highly compressible, ~85%) so /api/sounds (~0.5MB) and the
+    # constant /api/active + /api/feed polls ship a fraction of the bytes. Audio is
+    # already-compressed media (and uses send_file/range) so we never touch it.
+    try:
+        if (resp.mimetype == "application/json"
+                and "gzip" in request.headers.get("Accept-Encoding", "")
+                and resp.status_code == 200
+                and not resp.direct_passthrough
+                and "Content-Encoding" not in resp.headers):
+            data = resp.get_data()
+            if len(data) > 500:
+                resp.set_data(gzip.compress(data, 5))
+                resp.headers["Content-Encoding"] = "gzip"
+                resp.headers["Vary"] = "Accept-Encoding"
+    except Exception:
+        pass
+    return resp
+
 def can_edit():
     return bool(session.get("admin") or session.get("can_edit"))
 
@@ -115,7 +136,8 @@ def _save(path, obj):
 # ----------------------------------------------------------------------------
 # Keyed by the real filename (stable). cmd = filename without extension.
 _LIB_LOCK = threading.Lock()
-_LIBRARY = {}   # filename -> {"file","name","cmd","fmt"}
+_LIBRARY = {}   # filename -> {"file","name","cmd","fmt","ver"}
+_SOUNDS_SORTED = None   # cached name-sorted base list for /api/sounds; None = rebuild
 
 def scan_library():
     lib = {}
@@ -128,17 +150,22 @@ def scan_library():
             if not os.path.isfile(full):
                 continue
             stem = os.path.splitext(fn)[0]
+            try: ver = int(os.path.getmtime(full))
+            except OSError: ver = 0
             lib[fn] = {
                 "file": fn,
                 "name": stem,            # display
                 "cmd": stem.lower(),     # !cmd trigger (lowercased)
                 "fmt": ext.lstrip("."),  # wav | mp3
+                "ver": ver,              # mtime — cache-buster so edits take effect
             }
     except FileNotFoundError:
         pass
+    global _SOUNDS_SORTED
     with _LIB_LOCK:
         _LIBRARY.clear()
         _LIBRARY.update(lib)
+        _SOUNDS_SORTED = None        # library changed → drop the cached sort
     return lib
 
 # ----------------------------------------------------------------------------
@@ -164,7 +191,8 @@ def duration(fn):
         pass
     with _DUR_LOCK:
         _DUR[fn] = d
-        _save(DUR_FILE, _DUR)
+        snap = dict(_DUR)          # snapshot under the lock…
+    _save(DUR_FILE, snap)          # …but write to disk WITHOUT holding it
     return d
 
 _DUR_SCANNING = True   # background full-library duration probe in progress
@@ -371,7 +399,11 @@ def active_snapshot():
     now = time.time()
     with _ACTIVE_LOCK:
         _prune_locked(now)
-        return [dict(a) for a in _ACTIVE]
+        snap = [dict(a) for a in _ACTIVE]
+    with _LIB_LOCK:
+        for a in snap:                       # carry the file version for cache-busting
+            a["ver"] = _LIBRARY.get(a["file"], {}).get("ver", 0)
+    return snap
 
 # ----------------------------------------------------------------------------
 # Unified feed (chat + commands + log)
@@ -490,15 +522,22 @@ def api_me():
 # ----------------------------------------------------------------------------
 @app.route("/api/sounds")
 def api_sounds():
-    with _LIB_LOCK:
-        items = list(_LIBRARY.values())
-    items.sort(key=lambda x: x["name"].lower())
-    favs = _FAVS
+    global _SOUNDS_SORTED
+    items = _SOUNDS_SORTED
+    if items is None:                      # rebuild the name-sort only when the library changed
+        with _LIB_LOCK:
+            items = sorted(_LIBRARY.values(), key=lambda x: x["name"].lower())
+        _SOUNDS_SORTED = items
+    with _DUR_LOCK:                         # snapshot under the lock to avoid races with the probe
+        dur = dict(_DUR)
+    favs, nsfw, plays = _FAVS, _NSFW, _PLAYS
     out = [{**it, "fav": it["file"] in favs,
-            "dur": round(_DUR.get(it["file"], 0), 1),
-            "long": _DUR.get(it["file"], 0) > LONG_THRESHOLD,
-            "plays": _PLAYS.get(it["file"], 0)} for it in items]
-    fav_order = [f for f in _FAV_ORDER if f in _LIBRARY]
+            "dur": round(dur.get(it["file"], 0), 1),
+            "long": dur.get(it["file"], 0) > LONG_THRESHOLD,
+            "nsfw": it["file"] in nsfw,
+            "plays": plays.get(it["file"], 0)} for it in items]
+    with _LIB_LOCK:
+        fav_order = [f for f in _FAV_ORDER if f in _LIBRARY]
     return jsonify({"count": len(out), "sounds": out, "fav_order": fav_order,
                     "scanning": _DUR_SCANNING})
 
@@ -511,7 +550,7 @@ def api_top():
     with _LIB_LOCK:
         lib = dict(_LIBRARY)
     items = [{"file": f, "name": lib[f]["name"], "plays": p,
-              "long": _DUR.get(f, 0) > LONG_THRESHOLD}
+              "long": _DUR.get(f, 0) > LONG_THRESHOLD, "nsfw": f in _NSFW}
              for f, p in _PLAYS.items() if f in lib and p > 0]
     items.sort(key=lambda x: -x["plays"])
     return jsonify({"top": items[:n]})
@@ -524,7 +563,14 @@ def api_audio():
     full = os.path.join(SOUND_DIR, fn)
     if not os.path.isfile(full):
         abort(404)
-    return send_file(full, conditional=True)
+    resp = send_file(full, conditional=True)
+    # When the URL carries a version (v=mtime, set by audioUrl/active_snapshot), the
+    # content at that URL is immutable — an edit changes mtime → a new URL. So we can
+    # cache it hard and skip the per-fire revalidation round-trip every client + the
+    # Pi would otherwise make. Version-less requests keep the default revalidation.
+    if request.args.get("v"):
+        resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp
 
 # ----------------------------------------------------------------------------
 # Routes — firing / feed / chat
@@ -614,7 +660,8 @@ def api_chat():
         return jsonify({"ok": False}), 400
     set_color(user, body.get("color"))
     item = _feed_add("chat", user, text=text, color=_USER_COLOR.get(user))
-    save_feed()
+    # no synchronous save here — the 15s _persist_loop already flushes the feed,
+    # so the chat hot path skips a full-feed JSON serialize + disk write per message
     return jsonify({"ok": True, "item": item})
 
 @app.route("/api/feed")
@@ -821,6 +868,10 @@ if __name__ == "__main__":
     load_feed()
     threading.Thread(target=_persist_loop, daemon=True).start()
     threading.Thread(target=probe_all_durations, daemon=True).start()
-    print(f"Sound Server (staging) — {n} sounds from {SOUND_DIR}")
+    print(f"Sound Server — {n} sounds from {SOUND_DIR}")
     print(f"  http://localhost:{PORT}")
-    app.run(host="0.0.0.0", port=PORT, threaded=True)
+    try:
+        from waitress import serve            # production-grade, threaded, single-process
+        serve(app, host="0.0.0.0", port=PORT, threads=16, channel_timeout=30)
+    except ImportError:
+        app.run(host="0.0.0.0", port=PORT, threaded=True)   # dev fallback
