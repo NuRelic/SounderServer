@@ -788,10 +788,14 @@ def _check_worker():
     tok = request.headers.get("X-Worker-Token", "")
     return bool(WORKER_TOKEN) and _secrets.compare_digest(tok, WORKER_TOKEN)
 
+DENO_PATH = os.path.expanduser("~/.deno/bin/deno")   # JS runtime for full YouTube extraction (x86_64 VPS)
+
 def _ytdlp_cmd(url, fmt, name):
     out = os.path.join(SOUND_DIR, (name + ".%(ext)s") if name else "%(title).70s.%(ext)s")
     cmd = [YTDLP, "--no-playlist", "--restrict-filenames", "-x", "--audio-format", fmt,
            "--extractor-args", "youtube:player_client=default,tv", "-o", out]
+    if os.path.isfile(DENO_PATH):                    # use the JS runtime when present (web client)
+        cmd += ["--js-runtimes", "deno:" + DENO_PATH]
     ck = os.path.join(DATA_DIR, "yt_cookies.txt")
     if os.path.isfile(ck): cmd += ["--cookies", ck]
     cmd.append(url)
@@ -902,7 +906,10 @@ def api_worker_result(jid):
 def api_worker_fail(jid):
     if not _check_worker(): return jsonify({"error": "forbidden"}), 403
     body = request.get_json(silent=True) or {}
-    _set_job(jid, status="error", error=_gate_msg(body.get("error", "")))
+    # the Pi (residential) couldn't get it (often: needs a JS runtime it can't run) —
+    # retry on the VPS, which has Deno, before giving up. _run_local sets the final state.
+    _set_job(jid, error=_gate_msg(body.get("error", "")))   # interim: stash the worker's reason
+    threading.Thread(target=_run_local, args=(jid,), daemon=True).start()
     return jsonify({"ok": True})
 
 @app.route("/api/rename", methods=["POST"])
