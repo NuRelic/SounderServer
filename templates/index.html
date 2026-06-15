@@ -362,7 +362,6 @@
       <h3>Add from a link (YouTube, TikTok, SoundCloud…)</h3>
       <div class="urlrow">
         <input type="text" id="urlInput" placeholder="paste a link…">
-        <input type="text" id="urlName" placeholder="name (optional)" style="flex:0 0 180px">
         <button class="mbtn primary" id="urlGo">⬇ Download &amp; add</button>
       </div>
       <div class="merr" id="urlStatus"></div>
@@ -1304,13 +1303,12 @@ $('#file').onchange = e=>{ if(e.target.files[0]) upload(e.target.files[0]); };
 async function safeJson(r){ const t=await r.text(); try{ return JSON.parse(t); }catch(_){ return null; } }
 $('#urlGo').onclick = async () => {
   const url=$('#urlInput').value.trim(); if(!url) return;
-  const name=$('#urlName').value.trim();
   const st=$('#urlStatus'); st.style.color='var(--dim)'; st.textContent='⏳ Starting download…';
   $('#urlGo').disabled=true;
   const done = m => { $('#urlGo').disabled=false; if(m){ st.style.color='#ff8a8a'; st.textContent='✕ '+m; } };
   try{
     const r=await fetch('/api/fetch_url',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({url,name})});
+      body:JSON.stringify({url})});
     const d=await safeJson(r);
     if(!d){ return done('server error — try again'); }
     if(!d.ok){ return done(d.error||'failed'); }
@@ -1321,7 +1319,7 @@ $('#urlGo').onclick = async () => {
       let s=null; try{ s=await safeJson(await fetch('/api/fetch_status?id='+jid)); }catch(_){}
       if(!s || s.status==='running' || s.status==='unknown'){ setTimeout(poll, 2500); return; }
       if(s.status==='done'){ st.style.color='var(--accent2)'; st.textContent='✓ Added';
-        $('#urlInput').value=''; $('#urlName').value=''; await loadSounds(); renderEdit(); $('#urlGo').disabled=false; }
+        $('#urlInput').value=''; await loadSounds(); renderEdit(); $('#urlGo').disabled=false; }
       else { done(s.error||'download failed'); }
     };
     poll();
