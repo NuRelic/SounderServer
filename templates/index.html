@@ -1317,8 +1317,10 @@ $('#urlGo').onclick = async () => {
     const jid=d.job;
     const poll=async ()=>{
       let s=null; try{ s=await safeJson(await fetch('/api/fetch_status?id='+jid)); }catch(_){}
-      if(s && s.status==='done'){ st.style.color='var(--accent2)'; st.textContent='✓ Added';
-        $('#urlInput').value=''; await loadSounds(); renderEdit(); $('#urlGo').disabled=false; }
+      if(s && s.status==='done'){ st.style.color='var(--accent2)'; st.textContent='✓ Added — trim & name it';
+        $('#urlInput').value=''; await loadSounds(); renderEdit(); $('#urlGo').disabled=false;
+        const ns = s.file && BYFILE[s.file]; if(ns) openEdit(ns);   // jump into the editor to trim + rename
+      }
       else if(s && s.status==='error'){ done(s.error||'download failed'); }
       else { setTimeout(poll, 2500); }   // pending/claimed/local/unknown → keep waiting
     };

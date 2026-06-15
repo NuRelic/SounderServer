@@ -817,13 +817,15 @@ def _run_local(jid):
     if not YTDLP:
         _set_job(jid, status="error", error="no downloader available"); return
     try:
+        before = set(os.listdir(SOUND_DIR))
         r = subprocess.run(_ytdlp_cmd(url, fmt, name), capture_output=True, text=True, timeout=600)
     except Exception as e:
         _set_job(jid, status="error", error=str(e)); return
     if r.returncode != 0:
         _set_job(jid, status="error", error=_gate_msg(r.stderr)); return
+    new = [f for f in (set(os.listdir(SOUND_DIR)) - before) if f.lower().endswith((".mp3", ".wav"))]
     scan_library()
-    _set_job(jid, status="done")
+    _set_job(jid, status="done", file=(new[0] if new else None))
 
 def _fallback_loop():
     while True:
