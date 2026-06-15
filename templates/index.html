@@ -157,6 +157,7 @@
     background:#ff5b5b;color:#fff;border:none;font-size:13px;line-height:1;cursor:pointer;
     align-items:center;justify-content:center;z-index:3}
   .snd.edit .rm{display:flex}
+  .grid.nodelete .snd.edit .rm{display:none}   /* editors can trim/rename; only admin can delete */
   .snd.edit .star{display:none}
   .btn-edit{background:var(--panel2);border:1px solid var(--line);color:var(--txt);
     border-radius:8px;padding:7px 13px;cursor:pointer;font-weight:600;white-space:nowrap}
@@ -396,15 +397,10 @@
 <!-- login modal -->
 <div class="modal-back" id="loginModal">
   <div class="modal" style="width:min(420px,94vw)">
-    <h2 id="loginTitle">🔐 Log in to edit</h2>
-    <p class="sub" id="loginSub">Adding & editing clips (trim, volume, delete) is limited to admins and logged-in accounts. Playing sounds needs no login.</p>
+    <h2 id="loginTitle">🔐 Log in to add / edit</h2>
+    <p class="sub" id="loginSub">Enter the editor password to add &amp; edit clips, or the admin password to also remove them. Playing &amp; listening needs no login.</p>
     <label>Password</label>
     <input type="password" id="loginPass" placeholder="password">
-    <div id="loginEmailWrap">
-      <div class="orline">— or —</div>
-      <label>Account email</label>
-      <input type="email" id="loginEmail" placeholder="you@example.com">
-    </div>
     <div class="mrow"><span class="sp"></span>
       <button class="mbtn" id="loginCancel">Cancel</button>
       <button class="mbtn primary" id="loginGo">Log in</button>
@@ -456,17 +452,18 @@ let LANES = 2, LANE = 0, SONG_LANES = 1, ALLLETTER = null, SONGFILTER = 'all', S
 function fmtDur(d){ d=Math.round(d||0); return d>=60 ? (Math.floor(d/60)+':'+String(d%60).padStart(2,'0')) : (d+'s'); }
 const LANE_COLORS = ['#3aa0ff','#ffa53a','#00d2a8','#ff6ec7'];
 const SONG_COLOR = '#c98bff';
-let ME = {admin:false, can_edit:false, email:null}, CEDIT = false;
+let ME = {admin:false, can_edit:false}, CEDIT = false;
 
 // ---- identity / auth ----
+// tiers: anyone can play/listen · itsover9000 → add/edit · itsover9001 → add/edit + remove
 async function fetchMe(){
-  try{ ME = await (await fetch('/api/me')).json(); }catch(e){ ME={admin:false,can_edit:false,email:null}; }
+  try{ ME = await (await fetch('/api/me')).json(); }catch(e){ ME={admin:false,can_edit:false}; }
   applyMe();
 }
 function applyMe(){
   const badge = $('#meBadge'), btn = $('#loginBtn');
   if(ME.admin){ badge.style.display='inline-block'; badge.className='badge admin'; badge.textContent='🛡 admin'; btn.textContent='Log out'; }
-  else if(ME.can_edit){ badge.style.display='inline-block'; badge.className='badge editor'; badge.textContent='✉ '+(ME.email||'editor'); btn.textContent='Log out'; }
+  else if(ME.can_edit){ badge.style.display='inline-block'; badge.className='badge editor'; badge.textContent='✏️ editor'; btn.textContent='Log out'; }
   else { badge.style.display='none'; btn.textContent='🔓 Log in'; }
   $('#addTab').style.display = ME.can_edit ? 'inline-block' : 'none';
   $('#boxVolCtl').style.display = ME.admin ? 'flex' : 'none';
@@ -476,30 +473,18 @@ function applyMe(){
   if(!ME.can_edit && (TAB==='add')){ TAB='all'; document.querySelectorAll('.tabs button[data-tab]').forEach(x=>x.classList.toggle('on',x.dataset.tab==='all')); }
   if(!ME.can_edit) CEDIT=false;
   render();
-  if(ME.needs_login) showWall();
 }
 let audioUnlocked = false;
 const playing = {};      // token -> Audio (shared/room sounds)
 const soloPlaying = {};  // lane -> Audio (private solo sounds)
 const handled = new Set();// tokens we've already started
 
-// ---- login modal / access wall ----
-let WALL = false;
-function showWall(){
-  if(WALL) return;
-  WALL = true;
-  $('#loginTitle').textContent = '🔊 Enter the access password';
-  $('#loginSub').textContent = 'This soundboard is private — enter the password to come in.';
-  $('#loginEmailWrap').style.display = 'none';
-  $('#loginCancel').style.display = 'none';
-  $('#loginErr').textContent = ''; $('#loginPass').value = '';
-  $('#loginModal').classList.add('show'); setTimeout(()=>$('#loginPass').focus(), 50);
-}
-function openEditLogin(){                 // header button → edit/admin login
-  $('#loginTitle').textContent = '🔐 Log in to edit';
-  $('#loginSub').textContent = 'Adding & editing clips is limited to admins and logged-in accounts.';
-  $('#loginEmailWrap').style.display = ''; $('#loginCancel').style.display = '';
-  $('#loginErr').textContent=''; $('#loginPass').value=''; $('#loginEmail').value='';
+// ---- login modal (add/edit/remove only — playing needs no login) ----
+function openEditLogin(){
+  $('#loginTitle').textContent = '🔐 Log in to add / edit';
+  $('#loginSub').textContent = 'Enter the editor password to add & edit clips, or the admin password to also remove them. Playing & listening needs no login.';
+  $('#loginCancel').style.display = '';
+  $('#loginErr').textContent=''; $('#loginPass').value='';
   $('#loginModal').classList.add('show'); $('#loginPass').focus();
 }
 $('#loginBtn').onclick = async () => {
@@ -509,16 +494,14 @@ $('#loginBtn').onclick = async () => {
 $('#loginCancel').onclick = () => $('#loginModal').classList.remove('show');
 $('#loginGo').onclick = doLogin;
 $('#loginPass').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
-$('#loginEmail').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
 async function doLogin(){
-  const password = $('#loginPass').value, email = $('#loginEmail').value.trim();
+  const password = $('#loginPass').value;
   const r = await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({password, email})});
+    body:JSON.stringify({password})});
   const d = await r.json();
   if(d.ok){
     ME = d; if(d.admin) assumeAdminIdentity(); applyMe();
-    if(WALL && !ME.needs_login){ WALL = false; $('#loginModal').classList.remove('show'); startApp(); }
-    else if(!WALL){ $('#loginModal').classList.remove('show'); }
+    $('#loginModal').classList.remove('show');
   } else {
     $('#loginErr').textContent = d.error || 'login failed';
   }
@@ -585,6 +568,7 @@ function render(){
   $('#editbar').classList.toggle('show', editing);
   $('#cbar').classList.toggle('show', cediting);
   grid.classList.toggle('editing', anyEdit);
+  grid.classList.toggle('nodelete', cediting && !ME.admin);   // editors (itsover9000) can trim/rename but not delete
   $('#allAlpha').style.display = showFilters ? 'flex' : 'none';
   $('#typeFilter').style.display = showFilters ? 'flex' : 'none';
   $('#nsfwToggle').style.display = showFilters ? 'inline-block' : 'none';
@@ -648,7 +632,7 @@ $('#grid').addEventListener('click', e => {
   const s = BYFILE[el.dataset.file]; if(!s) return;
   const cediting = ((TAB==='all'||TAB==='fav') && CEDIT && ME.can_edit);
   if(e.target.classList.contains('star')){ e.stopPropagation(); toggleFav(s); return; }
-  if(e.target.classList.contains('rm')){ e.stopPropagation(); if(cediting) deleteClip(s); else toggleFav(s); return; }
+  if(e.target.classList.contains('rm')){ e.stopPropagation(); if(cediting){ if(ME.admin) deleteClip(s); } else toggleFav(s); return; }
   if(TAB==='fav' && EDITMODE) return;        // layout mode: drag only, no play
   if(cediting){ openEdit(s); return; }       // content mode: open the editor
   const z = e.target.closest('.zone');       // play mode: colored lane zones fire
@@ -708,6 +692,7 @@ let EDITCUR=null, EDITBUF=null, EDITDUR=0, regStart=0, regEnd=0, prevAudio=null;
 async function openEdit(s){
   EDITCUR=s; $('#editErr').textContent=''; $('#editTitle').textContent='Edit · '+s.name;
   $('#editName').value=s.name; $('#vol').value=100; $('#volLbl').textContent='100%';
+  $('#editDelete').style.display = ME.admin ? '' : 'none';   // removing clips is admin-only (itsover9001)
   $('#editModal').classList.add('show');
   EDITBUF=null; EDITDUR=0; regStart=0; regEnd=0;
   const cv=$('#wave');
@@ -793,6 +778,7 @@ $('#editDelete').onclick=async()=>{
   closeEdit(); await loadSounds();
 };
 async function deleteClip(s){
+  if(!ME.admin){ alert('Removing clips requires the admin password.'); return; }
   if(!confirm('Delete '+s.name+'? This removes the file.')) return;
   const r=await fetch('/api/delete',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({file:s.file})});
@@ -1366,7 +1352,7 @@ function renderEdit(){
 function esc(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 
 // ---- modal backdrop closes on outside click ----
-$('#loginModal').addEventListener('click', e=>{ if(e.target.id==='loginModal' && !WALL) $('#loginModal').classList.remove('show'); });
+$('#loginModal').addEventListener('click', e=>{ if(e.target.id==='loginModal') $('#loginModal').classList.remove('show'); });
 $('#editModal').addEventListener('click', e=>{ if(e.target.id==='editModal') closeEdit(); });
 
 // ---- mobile feed drawer ----
@@ -1386,8 +1372,8 @@ function startApp(){
   pollActive(); setInterval(pollActive, 400);
 }
 (async function init(){
-  await fetchMe();                 // applyMe() shows the wall if REQUIRE_LOGIN and not authed
-  if(!ME.needs_login) startApp();
+  await fetchMe();                 // no access wall — anyone can play; login only gates add/edit/remove
+  startApp();
 })();
 </script>
 </body>

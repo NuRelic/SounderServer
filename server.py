@@ -63,7 +63,7 @@ app = Flask(__name__)
 # ----------------------------------------------------------------------------
 ADMIN_PASS = os.environ.get("ADMIN_PASS", "admin")          # admin (play + edit)
 USER_PASS  = os.environ.get("USER_PASS", "")                # shared play-access password (set via env)
-REQUIRE_LOGIN = os.environ.get("REQUIRE_LOGIN", "0") == "1" # public deploy → gate access behind the wall
+REQUIRE_LOGIN = False   # no access wall — anyone can play/listen; login is only for add/edit (itsover9000) and remove (itsover9001)
 _SECRET_FILE = os.path.join(DATA_DIR, ".flask_secret")
 if os.path.exists(_SECRET_FILE):
     app.secret_key = open(_SECRET_FILE, "rb").read()
@@ -100,11 +100,12 @@ def has_access():
     return (not REQUIRE_LOGIN) or bool(session.get("play") or session.get("admin") or session.get("can_edit"))
 
 def me_dict():
+    # tiers: anonymous = play/listen; can_edit (itsover9000) = add/edit; admin (itsover9001) = add/edit + remove
     return {"admin": bool(session.get("admin")),
-            "email": session.get("email"),
             "can_edit": can_edit(),
-            "play": has_access(),
-            "needs_login": REQUIRE_LOGIN and not has_access()}
+            "can_delete": bool(session.get("admin")),
+            "play": True,
+            "needs_login": False}
 
 @app.before_request
 def _gate_access():
@@ -490,22 +491,16 @@ def index():
 def api_login():
     body = request.get_json(silent=True) or {}
     pw = body.get("password") or ""
-    email = (body.get("email") or "").strip()
-    if pw:
-        if pw == ADMIN_PASS:
-            session.permanent = True
-            session["admin"] = True; session["can_edit"] = True; session["play"] = True
-            return jsonify({"ok": True, **me_dict()})
-        if USER_PASS and pw == USER_PASS:                  # shared play-access password
-            session.permanent = True
-            session["play"] = True
-            return jsonify({"ok": True, **me_dict()})
-        return jsonify({"ok": False, "error": "wrong password"}), 401
-    if email:
+    if pw == ADMIN_PASS:                       # itsover9001 → full admin (add/edit + remove)
         session.permanent = True
-        session["email"] = email[:80]; session["can_edit"] = True; session["play"] = True
+        session["admin"] = True; session["can_edit"] = True; session["play"] = True
         return jsonify({"ok": True, **me_dict()})
-    return jsonify({"ok": False, "error": "enter a password or email"}), 400
+    if USER_PASS and pw == USER_PASS:          # itsover9000 → add/edit (cannot remove)
+        session.permanent = True
+        session["can_edit"] = True; session["play"] = True
+        session.pop("admin", None)
+        return jsonify({"ok": True, **me_dict()})
+    return jsonify({"ok": False, "error": "wrong password"}), 401
 
 @app.route("/api/logout", methods=["POST"])
 def api_logout():
@@ -804,8 +799,8 @@ def api_rename():
 
 @app.route("/api/delete", methods=["POST"])
 def api_delete():
-    if not can_edit():
-        return jsonify({"ok": False, "error": "forbidden"}), 403
+    if not session.get("admin"):              # removing clips is admin-only (itsover9001)
+        return jsonify({"ok": False, "error": "forbidden — admin only"}), 403
     body = request.get_json(silent=True) or {}
     fn = body.get("file")
     if fn not in _LIBRARY:
