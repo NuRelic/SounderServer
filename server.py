@@ -761,62 +761,103 @@ def api_upload():
     scan_library()
     return jsonify({"ok": True, "file": name})
 
-# background URL downloads — long fetches must NOT block the HTTP request, or they
-# hit Cloudflare's ~100s proxy timeout (524 HTML page → client JSON.parse error).
-_FETCH_JOBS = {}            # id -> {"status": running|done|error, "error": str}
+# ---------------------------------------------------------------------------
+# URL downloads via a job queue. A worker (the Pi — residential IP, not
+# bot-gated) polls /api/worker/claim, downloads, and POSTs the file back. If no
+# worker claims a job in time, the VPS downloads it locally (best-effort).
+# Fetches must never block the HTTP request (Cloudflare kills it at ~100s).
+# ---------------------------------------------------------------------------
+_FETCH_JOBS = {}            # id -> {id,url,fmt,name,status,error,file,ts,claim_ts}
 _FETCH_LOCK = threading.Lock()
 _FETCH_NEXT = [1]
+FALLBACK_PENDING_SECS = 25  # no worker claimed it → VPS tries locally
+FALLBACK_CLAIM_SECS   = 200 # worker claimed but never finished → VPS tries locally
 
-def _run_fetch(job_id, cmd):
+WORKER_TOKEN_FILE = os.path.join(DATA_DIR, "worker_token")
+WORKER_TOKEN = (os.environ.get("WORKER_TOKEN") or "").strip()
+if not WORKER_TOKEN:
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        WORKER_TOKEN = open(WORKER_TOKEN_FILE).read().strip()
+    except OSError:
+        WORKER_TOKEN = _secrets.token_hex(24)
+        try:
+            with open(WORKER_TOKEN_FILE, "w") as _f: _f.write(WORKER_TOKEN)
+        except OSError: pass
+
+def _check_worker():
+    tok = request.headers.get("X-Worker-Token", "")
+    return bool(WORKER_TOKEN) and _secrets.compare_digest(tok, WORKER_TOKEN)
+
+def _ytdlp_cmd(url, fmt, name):
+    out = os.path.join(SOUND_DIR, (name + ".%(ext)s") if name else "%(title).70s.%(ext)s")
+    cmd = [YTDLP, "--no-playlist", "--restrict-filenames", "-x", "--audio-format", fmt,
+           "--extractor-args", "youtube:player_client=default,tv", "-o", out]
+    ck = os.path.join(DATA_DIR, "yt_cookies.txt")
+    if os.path.isfile(ck): cmd += ["--cookies", ck]
+    cmd.append(url)
+    return cmd
+
+def _gate_msg(stderr):
+    err = (stderr or "download failed"); low = err.lower()
+    if any(s in low for s in ("sign in to confirm", "confirm you", "not a bot", "cookies")):
+        return ("This video is sign-in gated by YouTube. Try again shortly — if it keeps "
+                "failing it may need a cookies file (data/yt_cookies.txt).")
+    return err[-300:]
+
+def _set_job(jid, **kw):
+    with _FETCH_LOCK:
+        if jid in _FETCH_JOBS: _FETCH_JOBS[jid].update(**kw)
+
+def _run_local(jid):
+    with _FETCH_LOCK:
+        j = _FETCH_JOBS.get(jid)
+        if not j or j["status"] in ("done", "error", "local"): return
+        j["status"] = "local"; j["claim_ts"] = time.time()
+        url, fmt, name = j["url"], j["fmt"], j["name"]
+    if not YTDLP:
+        _set_job(jid, status="error", error="no downloader available"); return
+    try:
+        r = subprocess.run(_ytdlp_cmd(url, fmt, name), capture_output=True, text=True, timeout=600)
     except Exception as e:
-        with _FETCH_LOCK: _FETCH_JOBS[job_id] = {"status": "error", "error": str(e)}
-        return
+        _set_job(jid, status="error", error=str(e)); return
     if r.returncode != 0:
-        err = r.stderr or "download failed"; low = err.lower()
-        if any(s in low for s in ("sign in to confirm", "confirm you", "not a bot", "cookies")):
-            err = ("YouTube is gating this video behind sign-in. Most videos work without it; "
-                   "to fetch this one, add a cookies file at data/yt_cookies.txt on the server.")
-        else:
-            err = err[-300:]
-        with _FETCH_LOCK: _FETCH_JOBS[job_id] = {"status": "error", "error": err}
-        return
+        _set_job(jid, status="error", error=_gate_msg(r.stderr)); return
     scan_library()
-    with _FETCH_LOCK: _FETCH_JOBS[job_id] = {"status": "done"}
+    _set_job(jid, status="done")
+
+def _fallback_loop():
+    while True:
+        time.sleep(5)
+        now = time.time(); due = []
+        with _FETCH_LOCK:
+            for jid, j in _FETCH_JOBS.items():
+                if j["status"] == "pending" and now - j["ts"] > FALLBACK_PENDING_SECS:
+                    due.append(jid)
+                elif j["status"] == "claimed" and now - j.get("claim_ts", now) > FALLBACK_CLAIM_SECS:
+                    due.append(jid)
+        for jid in due:
+            threading.Thread(target=_run_local, args=(jid,), daemon=True).start()
+threading.Thread(target=_fallback_loop, daemon=True).start()
 
 @app.route("/api/fetch_url", methods=["POST"])
 def api_fetch_url():
-    """Start a background yt-dlp download into the library; client polls /api/fetch_status."""
+    """Enqueue a URL download (Pi worker, or VPS fallback). Client polls /api/fetch_status."""
     if not can_edit():
         return jsonify({"ok": False, "error": "forbidden"}), 403
-    if not YTDLP:
-        return jsonify({"ok": False, "error": "yt-dlp not installed"}), 500
     body = request.get_json(silent=True) or {}
     url = (body.get("url") or "").strip()
     if not url:
         return jsonify({"ok": False, "error": "no url"}), 400
     name = secure_filename((body.get("name") or "").strip())
     fmt = (body.get("format") or "mp3").lower()
-    if fmt not in ("mp3", "wav"):
-        fmt = "mp3"
-    out = os.path.join(SOUND_DIR, (name + ".%(ext)s") if name else "%(title).70s.%(ext)s")
-    cmd = [YTDLP, "--no-playlist", "--restrict-filenames",
-           "-x", "--audio-format", fmt,
-           # extra YouTube player clients help bypass datacenter bot-gating on some videos
-           "--extractor-args", "youtube:player_client=default,tv",
-           "-o", out]
-    # optional cookies: drop a Netscape cookies.txt here to fetch sign-in-gated videos
-    cookies = os.path.join(DATA_DIR, "yt_cookies.txt")
-    if os.path.isfile(cookies):
-        cmd += ["--cookies", cookies]
-    cmd.append(url)
+    if fmt not in ("mp3", "wav"): fmt = "mp3"
     with _FETCH_LOCK:
         jid = _FETCH_NEXT[0]; _FETCH_NEXT[0] += 1
-        _FETCH_JOBS[jid] = {"status": "running"}
-        if len(_FETCH_JOBS) > 50:                      # keep the map small
-            for k in sorted(_FETCH_JOBS)[:-50]: _FETCH_JOBS.pop(k, None)
-    threading.Thread(target=_run_fetch, args=(jid, cmd), daemon=True).start()
+        _FETCH_JOBS[jid] = {"id": jid, "url": url, "fmt": fmt, "name": name,
+                            "status": "pending", "error": None, "file": None,
+                            "ts": time.time(), "claim_ts": 0}
+        if len(_FETCH_JOBS) > 60:                       # keep the map small
+            for k in sorted(_FETCH_JOBS)[:-60]: _FETCH_JOBS.pop(k, None)
     return jsonify({"ok": True, "job": jid})
 
 @app.route("/api/fetch_status")
@@ -824,7 +865,43 @@ def api_fetch_status():
     try: jid = int(request.args.get("id", "0"))
     except (TypeError, ValueError): jid = 0
     with _FETCH_LOCK:
-        return jsonify(_FETCH_JOBS.get(jid, {"status": "unknown"}))
+        j = _FETCH_JOBS.get(jid)
+        if not j: return jsonify({"status": "unknown"})
+        return jsonify({"status": j["status"], "error": j["error"], "file": j["file"]})
+
+# ---- worker (Pi) endpoints — shared-token auth, all worker-initiated ----
+@app.route("/api/worker/claim")
+def api_worker_claim():
+    if not _check_worker(): return jsonify({"error": "forbidden"}), 403
+    with _FETCH_LOCK:
+        cand = sorted([j for j in _FETCH_JOBS.values() if j["status"] == "pending"], key=lambda j: j["ts"])
+        if not cand: return jsonify({"job": None})
+        j = cand[0]; j["status"] = "claimed"; j["claim_ts"] = time.time()
+        return jsonify({"job": {"id": j["id"], "url": j["url"], "fmt": j["fmt"], "name": j["name"]}})
+
+@app.route("/api/worker/result/<int:jid>", methods=["POST"])
+def api_worker_result(jid):
+    if not _check_worker(): return jsonify({"error": "forbidden"}), 403
+    f = request.files.get("file")
+    if not f: return jsonify({"ok": False, "error": "no file"}), 400
+    fn = secure_filename(f.filename or "")
+    base, ext = os.path.splitext(fn)
+    if ext.lower() not in (".mp3", ".wav") or not base:
+        return jsonify({"ok": False, "error": "bad file"}), 400
+    dest = os.path.join(SOUND_DIR, fn); n = 1
+    while os.path.exists(dest):
+        dest = os.path.join(SOUND_DIR, "%s_%d%s" % (base, n, ext)); n += 1
+    f.save(dest)
+    scan_library()
+    _set_job(jid, status="done", file=os.path.basename(dest))
+    return jsonify({"ok": True, "file": os.path.basename(dest)})
+
+@app.route("/api/worker/fail/<int:jid>", methods=["POST"])
+def api_worker_fail(jid):
+    if not _check_worker(): return jsonify({"error": "forbidden"}), 403
+    body = request.get_json(silent=True) or {}
+    _set_job(jid, status="error", error=_gate_msg(body.get("error", "")))
+    return jsonify({"ok": True})
 
 @app.route("/api/rename", methods=["POST"])
 def api_rename():

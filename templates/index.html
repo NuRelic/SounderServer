@@ -1317,10 +1317,10 @@ $('#urlGo').onclick = async () => {
     const jid=d.job;
     const poll=async ()=>{
       let s=null; try{ s=await safeJson(await fetch('/api/fetch_status?id='+jid)); }catch(_){}
-      if(!s || s.status==='running' || s.status==='unknown'){ setTimeout(poll, 2500); return; }
-      if(s.status==='done'){ st.style.color='var(--accent2)'; st.textContent='✓ Added';
+      if(s && s.status==='done'){ st.style.color='var(--accent2)'; st.textContent='✓ Added';
         $('#urlInput').value=''; await loadSounds(); renderEdit(); $('#urlGo').disabled=false; }
-      else { done(s.error||'download failed'); }
+      else if(s && s.status==='error'){ done(s.error||'download failed'); }
+      else { setTimeout(poll, 2500); }   // pending/claimed/local/unknown → keep waiting
     };
     poll();
   }catch(e){ done(''+e); }
