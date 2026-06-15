@@ -335,6 +335,8 @@
         <option value="plays_asc">Least played</option>
         <option value="name">A → Z</option>
         <option value="name_desc">Z → A</option>
+        <option value="newest">🆕 Newest added</option>
+        <option value="oldest">🕰 Oldest added</option>
         <option value="long">⏱ Longest</option>
         <option value="short">⏱ Shortest</option>
         <option value="default">★ Custom / fav order</option>
@@ -605,6 +607,8 @@ function render(){
   else if(SORT==='plays_asc') list.sort((a,b)=> a.plays - b.plays);
   else if(SORT==='name')      list.sort((a,b)=> a.name.localeCompare(b.name));
   else if(SORT==='name_desc') list.sort((a,b)=> b.name.localeCompare(a.name));
+  else if(SORT==='newest')    list.sort((a,b)=> (b.ver||0) - (a.ver||0));   // ver = file mtime (added date)
+  else if(SORT==='oldest')    list.sort((a,b)=> (a.ver||0) - (b.ver||0));
   else if(SORT==='long')      list.sort((a,b)=> b.dur - a.dur);
   else if(SORT==='short')     list.sort((a,b)=> a.dur - b.dur);
   else if(TAB==='fav'){ const idx=f=>{const i=FAVORDER.indexOf(f);return i<0?1e9:i;}; list.sort((a,b)=> idx(a.file)-idx(b.file)); }
