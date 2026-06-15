@@ -761,9 +761,33 @@ def api_upload():
     scan_library()
     return jsonify({"ok": True, "file": name})
 
+# background URL downloads — long fetches must NOT block the HTTP request, or they
+# hit Cloudflare's ~100s proxy timeout (524 HTML page → client JSON.parse error).
+_FETCH_JOBS = {}            # id -> {"status": running|done|error, "error": str}
+_FETCH_LOCK = threading.Lock()
+_FETCH_NEXT = [1]
+
+def _run_fetch(job_id, cmd):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    except Exception as e:
+        with _FETCH_LOCK: _FETCH_JOBS[job_id] = {"status": "error", "error": str(e)}
+        return
+    if r.returncode != 0:
+        err = r.stderr or "download failed"; low = err.lower()
+        if any(s in low for s in ("sign in to confirm", "confirm you", "not a bot", "cookies")):
+            err = ("YouTube is gating this video behind sign-in. Most videos work without it; "
+                   "to fetch this one, add a cookies file at data/yt_cookies.txt on the server.")
+        else:
+            err = err[-300:]
+        with _FETCH_LOCK: _FETCH_JOBS[job_id] = {"status": "error", "error": err}
+        return
+    scan_library()
+    with _FETCH_LOCK: _FETCH_JOBS[job_id] = {"status": "done"}
+
 @app.route("/api/fetch_url", methods=["POST"])
 def api_fetch_url():
-    """Download audio from a link (yt-dlp) into the library. Same gate as Add."""
+    """Start a background yt-dlp download into the library; client polls /api/fetch_status."""
     if not can_edit():
         return jsonify({"ok": False, "error": "forbidden"}), 403
     if not YTDLP:
@@ -787,20 +811,20 @@ def api_fetch_url():
     if os.path.isfile(cookies):
         cmd += ["--cookies", cookies]
     cmd.append(url)
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=240)
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-    if r.returncode != 0:
-        err = r.stderr or "download failed"
-        low = err.lower()
-        if any(s in low for s in ("sign in to confirm", "confirm you", "not a bot", "cookies")):
-            msg = ("YouTube is gating this video behind sign-in. Most videos work without it; "
-                   "to fetch this one, add a cookies file at data/yt_cookies.txt on the server.")
-            return jsonify({"ok": False, "error": msg}), 502
-        return jsonify({"ok": False, "error": err[-300:]}), 500
-    scan_library()
-    return jsonify({"ok": True})
+    with _FETCH_LOCK:
+        jid = _FETCH_NEXT[0]; _FETCH_NEXT[0] += 1
+        _FETCH_JOBS[jid] = {"status": "running"}
+        if len(_FETCH_JOBS) > 50:                      # keep the map small
+            for k in sorted(_FETCH_JOBS)[:-50]: _FETCH_JOBS.pop(k, None)
+    threading.Thread(target=_run_fetch, args=(jid, cmd), daemon=True).start()
+    return jsonify({"ok": True, "job": jid})
+
+@app.route("/api/fetch_status")
+def api_fetch_status():
+    try: jid = int(request.args.get("id", "0"))
+    except (TypeError, ValueError): jid = 0
+    with _FETCH_LOCK:
+        return jsonify(_FETCH_JOBS.get(jid, {"status": "unknown"}))
 
 @app.route("/api/rename", methods=["POST"])
 def api_rename():

@@ -1300,20 +1300,32 @@ $('#drop').addEventListener('dragleave', ()=> $('#drop').classList.remove('drag'
 $('#drop').addEventListener('drop', e=>{e.preventDefault(); $('#drop').classList.remove('drag');
   if(e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]);});
 $('#file').onchange = e=>{ if(e.target.files[0]) upload(e.target.files[0]); };
+// parse a response as JSON but never throw on an HTML error/timeout page
+async function safeJson(r){ const t=await r.text(); try{ return JSON.parse(t); }catch(_){ return null; } }
 $('#urlGo').onclick = async () => {
   const url=$('#urlInput').value.trim(); if(!url) return;
   const name=$('#urlName').value.trim();
-  const st=$('#urlStatus'); st.style.color='var(--dim)'; st.textContent='⏳ Downloading… this can take a bit';
+  const st=$('#urlStatus'); st.style.color='var(--dim)'; st.textContent='⏳ Starting download…';
   $('#urlGo').disabled=true;
+  const done = m => { $('#urlGo').disabled=false; if(m){ st.style.color='#ff8a8a'; st.textContent='✕ '+m; } };
   try{
     const r=await fetch('/api/fetch_url',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({url,name})});
-    const d=await r.json();
-    if(d.ok){ st.style.color='var(--accent2)'; st.textContent='✓ Added';
-      $('#urlInput').value=''; $('#urlName').value=''; await loadSounds(); renderEdit(); }
-    else { st.style.color='#ff8a8a'; st.textContent='✕ '+(d.error||'failed'); }
-  }catch(e){ st.style.color='#ff8a8a'; st.textContent='✕ '+e; }
-  $('#urlGo').disabled=false;
+    const d=await safeJson(r);
+    if(!d){ return done('server error — try again'); }
+    if(!d.ok){ return done(d.error||'failed'); }
+    // download runs in the background — poll its status so we never hit a proxy timeout
+    st.textContent='⏳ Downloading on the server… (you can keep using the board)';
+    const jid=d.job;
+    const poll=async ()=>{
+      let s=null; try{ s=await safeJson(await fetch('/api/fetch_status?id='+jid)); }catch(_){}
+      if(!s || s.status==='running' || s.status==='unknown'){ setTimeout(poll, 2500); return; }
+      if(s.status==='done'){ st.style.color='var(--accent2)'; st.textContent='✓ Added';
+        $('#urlInput').value=''; $('#urlName').value=''; await loadSounds(); renderEdit(); $('#urlGo').disabled=false; }
+      else { done(s.error||'download failed'); }
+    };
+    poll();
+  }catch(e){ done(''+e); }
 };
 async function upload(f){
   const fd=new FormData(); fd.append('file', f);
