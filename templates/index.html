@@ -439,7 +439,22 @@
 
 <script>
 const $ = s => document.querySelector(s);
-let SOUNDS = [], BYFILE = {}, TAB = 'all', FAVORDER = [], EDITMODE = false;
+let SOUNDS = [], BYFILE = {}, TAB = 'all', FAVORDER = [], FAVSET = new Set(), EDITMODE = false;
+// favorites are per-username, with a localStorage cache as offline fallback
+function favKey(u){ return ((u||'').trim().toLowerCase().slice(0,40)) || 'anon'; }
+function cacheFavs(){ try{ localStorage.setItem('ss_favs_'+favKey(uname()), JSON.stringify(FAVORDER)); }catch(_){} }
+async function loadFavs(){
+  const u = uname(), key = favKey(u);
+  try{
+    const d = await (await fetch('/api/favorites?user='+encodeURIComponent(u))).json();
+    FAVORDER = d.order || [];
+    try{ localStorage.setItem('ss_favs_'+key, JSON.stringify(FAVORDER)); }catch(_){}
+  }catch(e){                                   // server unreachable → fall back to cache
+    try{ FAVORDER = JSON.parse(localStorage.getItem('ss_favs_'+key) || '[]'); }catch(_){ FAVORDER = []; }
+  }
+  FAVSET = new Set(FAVORDER);
+  render();
+}
 // audio URL with a version (file mtime) appended so edits bust the browser cache
 function audioUrl(file, ver){
   if(ver===undefined && BYFILE[file]) ver = BYFILE[file].ver;
@@ -512,7 +527,7 @@ const ADMIN_NAME = 'Banandon';   // admin password auto-assumes this identity
 function uname(){ return $('#name').value.trim() || 'someone'; }
 $('#name').value = localStorage.getItem('ss_name') ||
   'guest'+Math.floor(Math.random()*900+100);
-$('#name').onchange = () => localStorage.setItem('ss_name', $('#name').value.trim());
+$('#name').onchange = () => { localStorage.setItem('ss_name', $('#name').value.trim()); loadFavs(); };
 function ucolor(){ return $('#nameColor').value; }
 $('#nameColor').value = localStorage.getItem('ss_color') || '#7c6cff';
 function saveColor(){
@@ -528,6 +543,7 @@ function assumeAdminIdentity(){
   const saved = localStorage.getItem('ss_color_'+ADMIN_NAME.toLowerCase());
   if(saved){ $('#nameColor').value = saved; localStorage.setItem('ss_color', saved); }
   else saveColor();   // first time: claim the current color for Banandon
+  loadFavs();         // load Banandon's favorites
 }
 
 // ---- audio unlock (autoplay policy) ----
@@ -542,7 +558,7 @@ document.addEventListener('click', unlock, {once:false});
 async function loadSounds(){
   const r = await fetch('/api/sounds'); const d = await r.json();
   SOUNDS = d.sounds; BYFILE = {}; SOUNDS.forEach(s=>BYFILE[s.file]=s);
-  FAVORDER = d.fav_order || [];
+  // favorites come from /api/favorites (per-user) via loadFavs(), not here
   // cache per-letter counts once per load (instead of an O(n) scan every keystroke)
   _alphaCounts = {}; for(const s of SOUNDS){ const b=bucketOf(s.name); _alphaCounts[b]=(_alphaCounts[b]||0)+1; }
   $('#allAlpha').dataset.built = '';   // counts changed → rebuild the bar lazily
@@ -577,7 +593,7 @@ function render(){
   if(TAB==='add'){ renderEdit(); return; }
   // base list per tab
   let list;
-  if(TAB==='fav') list = SOUNDS.filter(s=>s.fav);
+  if(TAB==='fav') list = SOUNDS.filter(s=>FAVSET.has(s.file));
   else list = SOUNDS.slice();
   // shared filters: search / letter / song-type (work on every browse tab)
   if(q && !editing) list = list.filter(s=>s.name.toLowerCase().includes(q));
@@ -606,7 +622,7 @@ function render(){
     el.innerHTML =
       `<div class="nm">${esc(s.name)}</div>`+
       `<div class="meta"><span class="pl">▶ ${s.plays}</span>${s.dur>0?`<span class="ln">${fmtDur(s.dur)}</span>`:''}</div>`+
-      `<button class="star ${s.fav?'on':''}" title="favorite">★</button>`+
+      `<button class="star ${FAVSET.has(s.file)?'on':''}" title="favorite">★</button>`+
       `<button class="rm" title="${cediting?'delete clip':'remove from favorites'}">✕</button>`;
     el.dataset.file = s.file;
     // click behavior is handled by ONE delegated listener on #grid (see gridClick)
@@ -787,16 +803,16 @@ async function deleteClip(s){
 }
 
 function reorderFav(src, target){
-  let order = SOUNDS.filter(s=>s.fav).map(s=>s.file);
+  let order = SOUNDS.filter(s=>FAVSET.has(s.file)).map(s=>s.file);
   const idx = f => { const i = FAVORDER.indexOf(f); return i<0 ? 1e9 : i; };
   order.sort((a,b)=> idx(a)-idx(b));
   order = order.filter(f=>f!==src);
   const ti = order.indexOf(target);
   order.splice(ti < 0 ? order.length : ti, 0, src);   // insert before target
-  FAVORDER = order;
+  FAVORDER = order; cacheFavs();
   render();
   fetch('/api/favorites/order',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({order})});
+    body:JSON.stringify({order, user:uname()})});
 }
 const _doSearch = debounce(() => { if(TAB!=='add') render(); }, 130);
 $('#search').oninput = () => { if($('#search').value.trim()) ALLLETTER=null; _doSearch(); };
@@ -837,14 +853,17 @@ $('#sortSel').onchange = () => { SORT = $('#sortSel').value; render(); };
 
 // ---- favorites ----
 function toggleFav(s){
-  s.fav = !s.fav;
+  const on = !FAVSET.has(s.file);
+  if(on){ FAVSET.add(s.file); if(!FAVORDER.includes(s.file)) FAVORDER.push(s.file); }
+  else  { FAVSET.delete(s.file); FAVORDER = FAVORDER.filter(f=>f!==s.file); }
+  cacheFavs();
   fetch('/api/favorite',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({file:s.file,on:s.fav})});
+    body:JSON.stringify({file:s.file, on, user:uname()})});
   if(TAB==='fav'){ render(); return; }        // membership changed → rebuild the fav list
   // otherwise just repaint this one star instead of rebuilding ~1978 tiles
   const sel = (window.CSS && CSS.escape) ? CSS.escape(s.file) : s.file.replace(/"/g,'\\"');
   const el = $('#grid').querySelector('.snd[data-file="'+sel+'"]');
-  if(el){ const st = el.querySelector('.star'); if(st) st.classList.toggle('on', s.fav); }
+  if(el){ const st = el.querySelector('.star'); if(st) st.classList.toggle('on', on); }
 }
 
 // ---- firing ----
@@ -983,10 +1002,10 @@ function paintLane(key, occ){
     const chip=document.createElement('span'); chip.className='chip';
     chip.innerHTML=`<span class="cnm">${esc(a.name)}</span><span class="by"${a.color?' style="color:'+a.color+'"':''}>· ${esc(a.by||'')}</span>`+
       `<span class="rem" data-end="${a.start+(a.dur||0)}"></span>`+
-      (src?`<button class="fav ${src.fav?'on':''}" title="favorite this sound">★</button>`:'')+
+      (src?`<button class="fav ${FAVSET.has(src.file)?'on':''}" title="favorite this sound">★</button>`:'')+
       (canKill?`<button class="kill" title="stop this sound">✕</button>`:'');
     if(canKill) chip.querySelector('.kill').onclick=()=>killActive(a.token);
-    if(src){ const fb=chip.querySelector('.fav'); fb.onclick=()=>{ toggleFav(src); fb.classList.toggle('on', src.fav); }; }
+    if(src){ const fb=chip.querySelector('.fav'); fb.onclick=()=>{ toggleFav(src); fb.classList.toggle('on', FAVSET.has(src.file)); }; }
     updateRem(chip.querySelector('.rem'));   // fill in immediately so it never starts blank
     o.appendChild(chip);
   }
@@ -1140,7 +1159,7 @@ function resolveCmd(cmd){
   if(!c) return null;
   let m = SOUNDS.find(s=>s.cmd===c);
   if(!m){ const cand = SOUNDS.filter(s=>s.cmd.includes(c));
-    cand.sort((a,b)=> a.fav===b.fav ? a.name.length-b.name.length : (a.fav?-1:1)); m = cand[0]; }
+    cand.sort((a,b)=>{ const af=FAVSET.has(a.file), bf=FAVSET.has(b.file); return af===bf ? a.name.length-b.name.length : (af?-1:1); }); m = cand[0]; }
   return m ? m.file : null;
 }
 
@@ -1208,7 +1227,7 @@ function refreshLookup(){
   list.sort((a,b)=>{
     const ax=a.cmd===q?0:a.cmd.startsWith(q)?1:2, bx=b.cmd===q?0:b.cmd.startsWith(q)?1:2;
     if(ax!==bx) return ax-bx;
-    if(a.fav!==b.fav) return a.fav?-1:1;
+    const af=FAVSET.has(a.file), bf=FAVSET.has(b.file); if(af!==bf) return af?-1:1;
     return a.name.localeCompare(b.name);
   });
   lkItems = list.slice(0,12); lkSel = 0; paintLookup();
@@ -1220,7 +1239,7 @@ function paintLookup(){
     const d=document.createElement('div');
     d.className='lk '+s.fmt+(i===lkSel?' sel':'');
     d.innerHTML=`<span class="nm">${esc(s.name)}</span><span class="fmt">${s.fmt}</span>`+
-      (s.fav?'<span style="color:var(--fav)">★</span>':'');
+      (FAVSET.has(s.file)?'<span style="color:var(--fav)">★</span>':'');
     d.onmousedown=e=>{e.preventDefault(); pickLookup(i);};
     lookup.appendChild(d);
   });
@@ -1367,7 +1386,7 @@ let APP_STARTED = false;
 function startApp(){
   if(APP_STARTED) return; APP_STARTED = true;
   buildLanePicker(); applySolo(); applySync(); syncClock();
-  loadSounds();
+  loadSounds(); loadFavs();
   pollFeed(); setInterval(pollFeed, 900);
   pollActive(); setInterval(pollActive, 400);
 }

@@ -319,15 +319,24 @@ def _dedup(seq):
             seen.add(x); out.append(x)
     return out
 
-_FAV_ORDER = _dedup(_load(FAVS_FILE, []))          # ordered list of filenames
-_FAVS = set(_FAV_ORDER)                            # fast membership
+# per-user favorites: {key(username): [ordered filenames]}. Migrate an old
+# global list (single shared favorites) → the admin (Banandon) identity.
+_raw_favs = _load(FAVS_FILE, {})
+if isinstance(_raw_favs, list):
+    _raw_favs = {"banandon": _raw_favs}
+_FAVS_BY_USER = {k: _dedup(v) for k, v in (_raw_favs or {}).items() if isinstance(v, list)}
+
+def fav_key(user):
+    return ((user or "").strip().lower()[:40]) or "anon"
+def user_fav_list(user):
+    return _FAVS_BY_USER.setdefault(fav_key(user), [])
 _lanes_cfg  = _load(LIMITS_FILE, {"lanes": 2, "song_lanes": 1})
 _LANES      = max(1, min(4, int(_lanes_cfg.get("lanes", 2))))        # 1-4 short (sound) lanes
 _SONG_LANES = max(1, min(2, int(_lanes_cfg.get("song_lanes", 1))))  # 1-2 long (song) lanes
 _BOX_VOL = int(_load(BOXVOL_FILE, {"v": 50}).get("v", 50))  # kitchen box vol (admin)
 _SYNC = bool(_load(SYNC_FILE, {"on": True}).get("on", True))  # global sync (admin), default on
 
-def save_favs():    _save(FAVS_FILE, _FAV_ORDER)
+def save_favs():    _save(FAVS_FILE, _FAVS_BY_USER)
 def save_lanes():   _save(LIMITS_FILE, {"lanes": _LANES, "song_lanes": _SONG_LANES})
 def save_boxvol():  _save(BOXVOL_FILE, {"v": _BOX_VOL})
 def save_sync():    _save(SYNC_FILE, {"on": _SYNC})
@@ -525,16 +534,14 @@ def api_sounds():
         _SOUNDS_SORTED = items
     with _DUR_LOCK:                         # snapshot under the lock to avoid races with the probe
         dur = dict(_DUR)
-    favs, nsfw, plays = _FAVS, _NSFW, _PLAYS
-    out = [{**it, "fav": it["file"] in favs,
+    nsfw, plays = _NSFW, _PLAYS
+    # favorites are per-user now — the client fetches them from /api/favorites?user=
+    out = [{**it,
             "dur": round(dur.get(it["file"], 0), 1),
             "long": dur.get(it["file"], 0) > LONG_THRESHOLD,
             "nsfw": it["file"] in nsfw,
             "plays": plays.get(it["file"], 0)} for it in items]
-    with _LIB_LOCK:
-        fav_order = [f for f in _FAV_ORDER if f in _LIBRARY]
-    return jsonify({"count": len(out), "sounds": out, "fav_order": fav_order,
-                    "scanning": _DUR_SCANNING})
+    return jsonify({"count": len(out), "sounds": out, "scanning": _DUR_SCANNING})
 
 @app.route("/api/top")
 def api_top():
@@ -585,7 +592,7 @@ def api_fire():
         matches = [] if fn else [f for f, i in _LIBRARY.items() if i["cmd"] == c]
         if not fn and not matches:
             matches = [f for f, i in _LIBRARY.items() if c in i["cmd"]]
-            matches.sort(key=lambda f: (f not in _FAVS, len(f)))
+            matches.sort(key=len)        # shortest cmd match wins (favorites are per-user now)
         if not fn:
             fn = matches[0] if matches else None
     if not fn:
@@ -669,33 +676,40 @@ def api_feed():
 # ----------------------------------------------------------------------------
 # Routes — favorites & limits
 # ----------------------------------------------------------------------------
+@app.route("/api/favorites")
+def api_favorites_get():
+    """Return one user's favorites (ordered), filtered to files still in the library."""
+    with _LIB_LOCK:
+        lst = [f for f in _FAVS_BY_USER.get(fav_key(request.args.get("user", "")), []) if f in _LIBRARY]
+    return jsonify({"order": lst, "favs": lst})
+
 @app.route("/api/favorite", methods=["POST"])
 def api_favorite():
     body = request.get_json(silent=True) or {}
     fn = body.get("file")
     if fn not in _LIBRARY:
         return jsonify({"ok": False}), 404
+    lst = user_fav_list(body.get("user"))
     if body.get("on"):
-        if fn not in _FAVS:
-            _FAVS.add(fn); _FAV_ORDER.append(fn)
+        if fn not in lst: lst.append(fn)
     else:
-        _FAVS.discard(fn)
-        if fn in _FAV_ORDER:
-            _FAV_ORDER.remove(fn)
+        if fn in lst: lst.remove(fn)
     save_favs()
-    return jsonify({"ok": True, "fav": fn in _FAVS})
+    return jsonify({"ok": True, "fav": fn in lst})
 
 @app.route("/api/favorites/order", methods=["POST"])
 def api_fav_order():
     body = request.get_json(silent=True) or {}
+    key = fav_key(body.get("user"))
+    cur = _FAVS_BY_USER.setdefault(key, [])
     order = _dedup(body.get("order") or [])
-    new = [f for f in order if f in _FAVS]          # only real favorites
-    for f in _FAV_ORDER:                            # keep any not mentioned
+    new = [f for f in order if f in cur]            # only this user's real favorites
+    for f in cur:                                   # keep any not mentioned
         if f not in new:
             new.append(f)
-    _FAV_ORDER[:] = new
+    _FAVS_BY_USER[key] = new
     save_favs()
-    return jsonify({"ok": True, "order": _FAV_ORDER})
+    return jsonify({"ok": True, "order": new})
 
 @app.route("/api/lanes", methods=["GET", "POST"])
 def api_lanes():
@@ -764,13 +778,27 @@ def api_fetch_url():
         fmt = "mp3"
     out = os.path.join(SOUND_DIR, (name + ".%(ext)s") if name else "%(title).70s.%(ext)s")
     cmd = [YTDLP, "--no-playlist", "--restrict-filenames",
-           "-x", "--audio-format", fmt, "-o", out, url]
+           "-x", "--audio-format", fmt,
+           # extra YouTube player clients help bypass datacenter bot-gating on some videos
+           "--extractor-args", "youtube:player_client=default,tv",
+           "-o", out]
+    # optional cookies: drop a Netscape cookies.txt here to fetch sign-in-gated videos
+    cookies = os.path.join(DATA_DIR, "yt_cookies.txt")
+    if os.path.isfile(cookies):
+        cmd += ["--cookies", cookies]
+    cmd.append(url)
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=240)
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
     if r.returncode != 0:
-        return jsonify({"ok": False, "error": (r.stderr or "download failed")[-300:]}), 500
+        err = r.stderr or "download failed"
+        low = err.lower()
+        if any(s in low for s in ("sign in to confirm", "confirm you", "not a bot", "cookies")):
+            msg = ("YouTube is gating this video behind sign-in. Most videos work without it; "
+                   "to fetch this one, add a cookies file at data/yt_cookies.txt on the server.")
+            return jsonify({"ok": False, "error": msg}), 502
+        return jsonify({"ok": False, "error": err[-300:]}), 500
     scan_library()
     return jsonify({"ok": True})
 
@@ -790,10 +818,11 @@ def api_rename():
     if os.path.exists(dst):
         return jsonify({"ok": False, "error": "name exists"}), 409
     os.rename(src, dst)
-    if old in _FAVS:
-        _FAVS.discard(old); _FAVS.add(new)
-        _FAV_ORDER[:] = [new if f == old else f for f in _FAV_ORDER]
-        save_favs()
+    changed = False                       # repoint this file in every user's favorites
+    for lst in _FAVS_BY_USER.values():
+        if old in lst:
+            lst[:] = [new if f == old else f for f in lst]; changed = True
+    if changed: save_favs()
     scan_library()
     return jsonify({"ok": True, "file": new})
 
@@ -809,10 +838,11 @@ def api_delete():
         os.remove(os.path.join(SOUND_DIR, fn))
     except OSError:
         return jsonify({"ok": False}), 500
-    _FAVS.discard(fn)
-    if fn in _FAV_ORDER:
-        _FAV_ORDER.remove(fn)
-    save_favs()
+    changed = False                       # drop the deleted file from every user's favorites
+    for lst in _FAVS_BY_USER.values():
+        if fn in lst:
+            lst.remove(fn); changed = True
+    if changed: save_favs()
     scan_library()
     return jsonify({"ok": True})
 
