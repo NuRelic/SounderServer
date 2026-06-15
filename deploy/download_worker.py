@@ -16,6 +16,7 @@ import requests
 SERVER = os.environ.get("SS_SERVER", "https://sounderserver.party").rstrip("/")
 TOKEN  = os.environ.get("SS_WORKER_TOKEN", "").strip()
 YTDLP  = os.environ.get("SS_YTDLP") or shutil.which("yt-dlp") or "/usr/local/bin/yt-dlp"
+DENO   = os.environ.get("SS_DENO", "/usr/local/bin/deno64")   # JS runtime wrapper (full YT extraction)
 HEAD   = {"X-Worker-Token": TOKEN}
 POLL_IDLE = 3.0     # seconds between polls when there's no work
 
@@ -36,8 +37,10 @@ def handle(job):
     jid = job["id"]; fmt = job.get("fmt", "mp3"); name = job.get("name") or ""
     with tempfile.TemporaryDirectory() as d:
         out = os.path.join(d, (name + ".%(ext)s") if name else "%(title).70s.%(ext)s")
-        cmd = [YTDLP, "--no-playlist", "--restrict-filenames", "-x",
-               "--audio-format", fmt, "-o", out, job["url"]]
+        cmd = [YTDLP, "--no-playlist", "--restrict-filenames", "-x", "--audio-format", fmt]
+        if os.path.isfile(DENO):                       # full YouTube extraction needs a JS runtime
+            cmd += ["--js-runtimes", "deno:" + DENO]
+        cmd += ["-o", out, job["url"]]
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
         except Exception as e:
