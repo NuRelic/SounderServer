@@ -962,6 +962,7 @@ async function pollActive(){
       for(const a of d.active) startEntry(a);
     }
     paintChannels(d.active);
+    _roomLive = (d.active || []).length > 0;   // drives the adaptive poll cadence below
   }catch(e){ noteConn(performance.now()-_t0, false); }
 }
 function paintChannels(active){
@@ -1399,12 +1400,27 @@ $('#feedToggle').onclick = () => {
 
 // ---- boot ----
 let APP_STARTED = false;
+// Adaptive, visibility-gated polling: snappy (400ms) while sounds are live so
+// countdowns/kills feel instant, relaxed (1s) when the board is idle, and slow
+// (2.5s/4s) when the tab is hidden. Cuts server load (every client polled
+// /api/active 2.5×/s round the clock) and mobile battery, with no felt latency.
+let _roomLive = false, _activeTimer = null, _feedTimer = null;
+function activeInterval(){ return document.hidden ? 2500 : (_roomLive ? 400 : 1000); }
+function feedInterval(){ return document.hidden ? 4000 : 900; }
+function scheduleActive(){ clearTimeout(_activeTimer);
+  _activeTimer = setTimeout(async ()=>{ await pollActive(); scheduleActive(); }, activeInterval()); }
+function scheduleFeed(){ clearTimeout(_feedTimer);
+  _feedTimer = setTimeout(async ()=>{ await pollFeed(); scheduleFeed(); }, feedInterval()); }
+document.addEventListener('visibilitychange', ()=>{   // back to the tab → refresh now, then resume the right cadence
+  if(!document.hidden){ pollActive(); pollFeed(); }
+  scheduleActive(); scheduleFeed();
+});
 function startApp(){
   if(APP_STARTED) return; APP_STARTED = true;
   buildLanePicker(); applySolo(); applySync(); syncClock();
   loadSounds(); loadFavs();
-  pollFeed(); setInterval(pollFeed, 900);
-  pollActive(); setInterval(pollActive, 400);
+  pollFeed(); scheduleFeed();
+  pollActive(); scheduleActive();
 }
 (async function init(){
   await fetchMe();                 // no access wall — anyone can play; login only gates add/edit/remove
