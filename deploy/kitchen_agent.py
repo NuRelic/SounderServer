@@ -20,6 +20,12 @@ PASSWORD = os.environ.get("SS_PASSWORD", "")   # set via env / the systemd unit
 CACHE    = os.path.expanduser("~/kitchen_cache")
 CACHE_CAP = 2 * 1024**3          # keep the SD-card cache under ~2 GB
 POLL     = 0.35
+# Songs (loudness-normalized music) overpower the short clips (often quiet) on the
+# box. Short sounds already play at max (Sound.set_volume can't amplify past 1.0),
+# so we tame the song instead: a baseline reduction, and DUCK it while any short
+# sound is firing so the sound cuts through. Both env-tunable (0..1).
+SONG_GAIN = float(os.environ.get("SS_SONG_GAIN", "0.7"))   # song level when no sound is firing
+SONG_DUCK = float(os.environ.get("SS_SONG_DUCK", "0.3"))   # song level while a sound is firing
 os.makedirs(CACHE, exist_ok=True)
 
 os.environ.setdefault("SDL_AUDIODRIVER", os.environ.get("SS_DRIVER", "alsa"))
@@ -170,10 +176,12 @@ def run():
                     ch, _ = _playing.pop(tok)
                     try: ch.stop()
                     except Exception: pass
-            # song — single streamed lane (most-recent wins if >1 song is active)
+            # song — single streamed lane (most-recent wins if >1 song is active).
+            # Duck it while any short sound is playing so the sound cuts through.
             cur = songs[-1] if songs else None
             if cur:
-                play_song(cur, vol)
+                song_vol = vol * (SONG_DUCK if shorts else SONG_GAIN)
+                play_song(cur, song_vol)
             if _song_tok is not None and _song_tok not in live:
                 stop_song()
         except urllib.error.HTTPError as e:
