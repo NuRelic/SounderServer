@@ -1,0 +1,4 @@
+# Pi-side agents (run on the Raspberry Pi, not the VPS).
+# Install with: pip3 install -r requirements-pi.txt
+requests>=2.28      # download_worker.py — claims/uploads URL-download jobs
+pygame>=2.5         # kitchen_agent.py — mixes/plays sounds on the kitchen speakers

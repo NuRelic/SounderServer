@@ -49,6 +49,7 @@ DUR_FILE   = os.path.join(DATA_DIR, "durations.json")
 BOXVOL_FILE= os.path.join(DATA_DIR, "box_volume.json")
 FEED_FILE  = os.path.join(DATA_DIR, "feed_store.json")
 SYNC_FILE  = os.path.join(DATA_DIR, "sync.json")
+COLOR_FILE = os.path.join(DATA_DIR, "user_colors.json")
 _FEED_TTL  = 3 * 86400                              # keep feed 3 days
 YTDLP      = shutil.which("yt-dlp")
 
@@ -58,12 +59,12 @@ app = Flask(__name__)
 
 # ----------------------------------------------------------------------------
 # Sessions / auth (staging)
-#   edit rights = admin password OR an email login (stands in for the Pi's
-#   "approved account" model). Both set can_edit; gated endpoints check it.
+#   Listening is always open — there is no access wall. Login only grants edit
+#   tiers: USER_PASS -> can_edit (add / edit clips); ADMIN_PASS -> can_edit +
+#   admin (also remove clips and change lanes / sync / box volume).
 # ----------------------------------------------------------------------------
-ADMIN_PASS = os.environ.get("ADMIN_PASS", "admin")          # admin (play + edit)
-USER_PASS  = os.environ.get("USER_PASS", "")                # shared play-access password (set via env)
-REQUIRE_LOGIN = False   # no access wall — anyone can play/listen; login is only for add/edit (itsover9000) and remove (itsover9001)
+ADMIN_PASS = os.environ.get("ADMIN_PASS", "admin")   # add/edit + remove
+USER_PASS  = os.environ.get("USER_PASS", "")          # add/edit only (set via env)
 _SECRET_FILE = os.path.join(DATA_DIR, ".flask_secret")
 if os.path.exists(_SECRET_FILE):
     app.secret_key = open(_SECRET_FILE, "rb").read()
@@ -96,25 +97,10 @@ def _gzip_json(resp):
 def can_edit():
     return bool(session.get("admin") or session.get("can_edit"))
 
-def has_access():
-    return (not REQUIRE_LOGIN) or bool(session.get("play") or session.get("admin") or session.get("can_edit"))
-
 def me_dict():
-    # tiers: anonymous = play/listen; can_edit (itsover9000) = add/edit; admin (itsover9001) = add/edit + remove
+    # listening is open to everyone; these two tiers gate add/edit and remove
     return {"admin": bool(session.get("admin")),
-            "can_edit": can_edit(),
-            "can_delete": bool(session.get("admin")),
-            "play": True,
-            "needs_login": False}
-
-@app.before_request
-def _gate_access():
-    if not REQUIRE_LOGIN or has_access():
-        return
-    p = request.path
-    if p == "/" or p.startswith("/static") or p in ("/api/login", "/api/logout", "/api/me"):
-        return
-    return jsonify({"ok": False, "error": "login required"}), 401
+            "can_edit": can_edit()}
 
 # ----------------------------------------------------------------------------
 # Small JSON helpers
@@ -456,6 +442,7 @@ def _persist_loop():
     while True:
         time.sleep(15)
         save_feed()
+        save_colors()
 
 # ----------------------------------------------------------------------------
 # Presence (who's online) — keyed by display name, refreshed via /api/active
@@ -478,20 +465,25 @@ def presence_list():
     with _PRESENCE_LOCK:
         return sorted(n for n, v in _PRESENCE.items() if now - v <= _PRESENCE_TTL)
 
-_USER_COLOR = {}                  # name -> "#rrggbb"
+_USER_COLOR = _load(COLOR_FILE, {})   # name -> "#rrggbb" (persisted across restarts)
+if not isinstance(_USER_COLOR, dict):
+    _USER_COLOR = {}
 def _valid_color(c):
     return (isinstance(c, str) and len(c) == 7 and c[0] == "#"
             and all(ch in "0123456789abcdefABCDEF" for ch in c[1:]))
 def set_color(name, color):
     if name and _valid_color(color):
         _USER_COLOR[name] = color
+def save_colors():
+    try: _save(COLOR_FILE, dict(_USER_COLOR))
+    except Exception: pass
 
 # ----------------------------------------------------------------------------
 # Routes — pages
 # ----------------------------------------------------------------------------
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", sync_buffer=SYNC_BUFFER)
 
 # ----------------------------------------------------------------------------
 # Routes — auth
@@ -500,20 +492,20 @@ def index():
 def api_login():
     body = request.get_json(silent=True) or {}
     pw = body.get("password") or ""
-    if pw == ADMIN_PASS:                       # itsover9001 → full admin (add/edit + remove)
+    if pw == ADMIN_PASS:                        # admin: add/edit + remove
         session.permanent = True
-        session["admin"] = True; session["can_edit"] = True; session["play"] = True
+        session["admin"] = True; session["can_edit"] = True
         return jsonify({"ok": True, **me_dict()})
-    if USER_PASS and pw == USER_PASS:          # itsover9000 → add/edit (cannot remove)
+    if USER_PASS and pw == USER_PASS:          # editor: add/edit (cannot remove)
         session.permanent = True
-        session["can_edit"] = True; session["play"] = True
+        session["can_edit"] = True
         session.pop("admin", None)
         return jsonify({"ok": True, **me_dict()})
     return jsonify({"ok": False, "error": "wrong password"}), 401
 
 @app.route("/api/logout", methods=["POST"])
 def api_logout():
-    for k in ("admin", "can_edit", "email", "play"):
+    for k in ("admin", "can_edit"):
         session.pop(k, None)
     return jsonify({"ok": True, **me_dict()})
 
@@ -542,20 +534,6 @@ def api_sounds():
             "nsfw": it["file"] in nsfw,
             "plays": plays.get(it["file"], 0)} for it in items]
     return jsonify({"count": len(out), "sounds": out, "scanning": _DUR_SCANNING})
-
-@app.route("/api/top")
-def api_top():
-    try:
-        n = max(1, min(200, int(request.args.get("n", 50))))
-    except (TypeError, ValueError):
-        n = 50
-    with _LIB_LOCK:
-        lib = dict(_LIBRARY)
-    items = [{"file": f, "name": lib[f]["name"], "plays": p,
-              "long": _DUR.get(f, 0) > LONG_THRESHOLD, "nsfw": f in _NSFW}
-             for f, p in _PLAYS.items() if f in lib and p > 0]
-    items.sort(key=lambda x: -x["plays"])
-    return jsonify({"top": items[:n]})
 
 @app.route("/api/audio")
 def api_audio():
@@ -938,7 +916,7 @@ def api_rename():
 
 @app.route("/api/delete", methods=["POST"])
 def api_delete():
-    if not session.get("admin"):              # removing clips is admin-only (itsover9001)
+    if not session.get("admin"):              # removing clips is admin-only
         return jsonify({"ok": False, "error": "forbidden — admin only"}), 403
     body = request.get_json(silent=True) or {}
     fn = body.get("file")

@@ -471,7 +471,7 @@ const SONG_COLOR = '#c98bff';
 let ME = {admin:false, can_edit:false}, CEDIT = false;
 
 // ---- identity / auth ----
-// tiers: anyone can play/listen · itsover9000 → add/edit · itsover9001 → add/edit + remove
+// tiers: anyone can play/listen · editor password → add/edit · admin password → add/edit + remove
 async function fetchMe(){
   try{ ME = await (await fetch('/api/me')).json(); }catch(e){ ME={admin:false,can_edit:false}; }
   applyMe();
@@ -585,7 +585,7 @@ function render(){
   $('#editbar').classList.toggle('show', editing);
   $('#cbar').classList.toggle('show', cediting);
   grid.classList.toggle('editing', anyEdit);
-  grid.classList.toggle('nodelete', cediting && !ME.admin);   // editors (itsover9000) can trim/rename but not delete
+  grid.classList.toggle('nodelete', cediting && !ME.admin);   // editors can trim/rename but not delete
   $('#allAlpha').style.display = showFilters ? 'flex' : 'none';
   $('#typeFilter').style.display = showFilters ? 'flex' : 'none';
   $('#nsfwToggle').style.display = showFilters ? 'inline-block' : 'none';
@@ -711,7 +711,7 @@ let EDITCUR=null, EDITBUF=null, EDITDUR=0, regStart=0, regEnd=0, prevAudio=null;
 async function openEdit(s){
   EDITCUR=s; $('#editErr').textContent=''; $('#editTitle').textContent='Edit · '+s.name;
   $('#editName').value=s.name; $('#vol').value=100; $('#volLbl').textContent='100%';
-  $('#editDelete').style.display = ME.admin ? '' : 'none';   // removing clips is admin-only (itsover9001)
+  $('#editDelete').style.display = ME.admin ? '' : 'none';   // removing clips is admin-only
   $('#editModal').classList.add('show');
   EDITBUF=null; EDITDUR=0; regStart=0; regEnd=0;
   const cv=$('#wave');
@@ -1076,7 +1076,7 @@ $('#boxVol').oninput = e => {
 
 // ---- sync (shared timeline) — GLOBAL setting, admin-toggled, default on ----
 let SYNC = true;
-const SYNC_BUFFER = 1.0;          // seconds of lead so all listeners can align
+const SYNC_BUFFER = {{ sync_buffer|default(1.0) }};   // seconds of lead so all listeners align (injected from the server, must match)
 let clockOffset = 0;              // serverTime - clientTime (seconds)
 function serverNow(){ return Date.now()/1000 + clockOffset; }
 async function syncClock(){

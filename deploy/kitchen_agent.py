@@ -144,17 +144,20 @@ def stop_song():
         except Exception: pass
         _song_tok = None; _song_path = None
 
-def ensure_login():
-    """Log in, retrying forever — the server may still be booting after a bounce."""
-    while True:
-        try:
-            print("  ->", login()); return
-        except Exception as e:
-            print("login failed (%s) — retrying in 2s" % e); time.sleep(2)
+def try_login():
+    """Best-effort login. Listening no longer requires auth, so a failure here
+    must NOT block the play loop (the kitchen only reads the public /api/active).
+    A password is only useful if a future build re-gates the public endpoints."""
+    if not PASSWORD:
+        return False
+    try:
+        print("  ->", login()); return True
+    except Exception as e:
+        print("login skipped (%s) — listening is open, continuing" % e); return False
 
 def run():
-    print("logging in to", SERVER, "...")
-    ensure_login()
+    print("connecting to", SERVER, "...")
+    try_login()
     print("kitchen agent running. Ctrl-C to stop.")
     while True:
         try:
@@ -188,8 +191,8 @@ def run():
             # 401/403 = our session was dropped (e.g. a server bounce) -> re-login so
             # the kitchen self-heals without anyone restarting the Pi. Other codes
             # (502 while the backend reboots) just retry.
-            if e.code in (401, 403):
-                print("auth lost (%s) — re-logging in" % e.code); ensure_login()
+            if e.code in (401, 403):                # only if a future build re-gates /api/active
+                print("auth lost (%s) — re-logging in" % e.code); try_login()
             else:
                 print("loop error:", e); time.sleep(1.5)
         except Exception as e:
