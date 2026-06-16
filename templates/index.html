@@ -56,6 +56,12 @@
   .vol-ctl{display:flex;align-items:center;gap:7px;background:var(--panel2);border:1px solid var(--line);
     border-radius:10px;padding:6px 11px;font-size:12px;color:var(--dim);flex:0 0 auto;white-space:nowrap}
   .vol-ctl input[type=range]{width:88px}
+  .vstep{width:22px;height:22px;border-radius:6px;border:1px solid var(--line);background:var(--bg);
+    color:var(--txt);cursor:pointer;font-weight:700;font-size:14px;line-height:1;flex:0 0 auto;
+    display:flex;align-items:center;justify-content:center;-webkit-user-select:none;user-select:none;touch-action:none}
+  .vstep:active{background:var(--accent);color:#fff}
+  .volrow{display:flex;align-items:center;gap:8px;margin:2px 0 4px}
+  .volrow input[type=range]{flex:1}
   .lanes-ctl{display:flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--line);
     border-radius:10px;padding:6px 10px;font-size:12px;color:var(--dim);flex:0 0 auto;white-space:nowrap}
   .lanes-ctl button{width:22px;height:22px;border-radius:6px;border:1px solid var(--line);
@@ -311,8 +317,8 @@
   <div class="lanes-ctl" id="lanesCtl" style="display:none">
     <span>🔊 Lanes</span><button id="lanesDn">−</button><b id="lanesN">2</b><button id="lanesUp">+</button>
   </div>
-  <div class="vol-ctl"><button class="spk" id="muteBtn" title="mute / unmute">🔊</button><span>You</span><input type="range" id="browserVol" min="0" max="100" value="100"></div>
-  <div class="vol-ctl" id="boxVolCtl" style="display:none"><span>🏠 Box</span><input type="range" id="boxVol" min="0" max="100" value="50"></div>
+  <div class="vol-ctl"><button class="spk" id="muteBtn" title="mute / unmute">🔊</button><span>You</span><button class="vstep" id="bvolDn" title="quieter">−</button><input type="range" id="browserVol" min="0" max="100" value="100"><button class="vstep" id="bvolUp" title="louder">+</button></div>
+  <div class="vol-ctl" id="boxVolCtl" style="display:none"><span>🏠 Box</span><button class="vstep" id="boxVolDn" title="quieter">−</button><input type="range" id="boxVol" min="0" max="100" value="50"><button class="vstep" id="boxVolUp" title="louder">+</button></div>
   <span class="count" id="libcount"></span>
 </div>
 
@@ -425,7 +431,7 @@
       <button class="mbtn" id="selFull">⤢ Full</button>
     </div>
     <label>Volume <b id="volLbl">100%</b></label>
-    <input type="range" id="vol" min="0" max="300" value="100">
+    <div class="volrow"><button class="vstep" id="volDn" title="quieter">−</button><input type="range" id="vol" min="0" max="300" value="100"><button class="vstep" id="volUp" title="louder">+</button></div>
     <label>Name</label>
     <input type="text" id="editName">
     <div class="mrow">
@@ -1074,6 +1080,21 @@ $('#boxVol').oninput = e => {
   fetch('/api/box_volume',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({v:+e.target.value})});
 };
+
+// ---- +/- steppers for the volume sliders (tap = 1%, hold to repeat) ----
+function wireStep(btnSel, sliderSel, delta){
+  const b=$(btnSel), s=$(sliderSel); if(!b||!s) return;
+  let hold=null, rep=null;
+  const step=()=>{ const v=Math.max(+s.min,Math.min(+s.max,+s.value+delta));
+    if(v!==+s.value){ s.value=v; s.dispatchEvent(new Event('input',{bubbles:true})); } };
+  const stop=()=>{ clearTimeout(hold); clearInterval(rep); hold=rep=null; };
+  b.addEventListener('pointerdown',e=>{ e.preventDefault(); step();
+    hold=setTimeout(()=>{ rep=setInterval(step,80); },400); });
+  ['pointerup','pointerleave','pointercancel'].forEach(ev=>b.addEventListener(ev,stop));
+}
+wireStep('#bvolDn','#browserVol',-1);  wireStep('#bvolUp','#browserVol',1);
+wireStep('#boxVolDn','#boxVol',-1);    wireStep('#boxVolUp','#boxVol',1);
+wireStep('#volDn','#vol',-1);          wireStep('#volUp','#vol',1);
 
 // ---- sync (shared timeline) — GLOBAL setting, admin-toggled, default on ----
 let SYNC = true;
