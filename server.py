@@ -322,17 +322,27 @@ def _dedup(seq):
             seen.add(x); out.append(x)
     return out
 
-# per-user favorites: {key(username): [ordered filenames]}. Migrate an old
-# global list (single shared favorites) → the admin (Banandon) identity.
+# per-user favorites: {key(username): {"favs":[...], "deck":[...]}}. Migrate an
+# old global list (single shared favorites) → the admin (Banandon) identity.
+def _norm_fav(v):
+    """Normalize stored favorites to {'favs':[...], 'deck':[...]} (list = legacy migration)."""
+    if isinstance(v, list):
+        return {"favs": _dedup([f for f in v if isinstance(f, str)]), "deck": []}
+    if isinstance(v, dict):
+        favs = _dedup([f for f in v.get("favs", []) if isinstance(f, str)])
+        deck = _dedup([f for f in v.get("deck", []) if isinstance(f, str) and f in favs])
+        return {"favs": favs, "deck": deck}
+    return {"favs": [], "deck": []}
+
 _raw_favs = _load(FAVS_FILE, {})
 if isinstance(_raw_favs, list):
     _raw_favs = {"banandon": _raw_favs}
-_FAVS_BY_USER = {k: _dedup(v) for k, v in (_raw_favs or {}).items() if isinstance(v, list)}
+_FAVS_BY_USER = {k: _norm_fav(v) for k, v in (_raw_favs or {}).items()}
 
 def fav_key(user):
     return ((user or "").strip().lower()[:40]) or "anon"
-def user_fav_list(user):
-    return _FAVS_BY_USER.setdefault(fav_key(user), [])
+def user_fav_rec(user):
+    return _FAVS_BY_USER.setdefault(fav_key(user), {"favs": [], "deck": []})
 _lanes_cfg  = _load(LIMITS_FILE, {"lanes": 2, "song_lanes": 1})
 _LANES      = max(1, min(4, int(_lanes_cfg.get("lanes", 2))))        # 1-4 short (sound) lanes
 _SONG_LANES = max(1, min(2, int(_lanes_cfg.get("song_lanes", 1))))  # 1-2 long (song) lanes
@@ -673,10 +683,12 @@ def api_feed():
 # ----------------------------------------------------------------------------
 @app.route("/api/favorites")
 def api_favorites_get():
-    """Return one user's favorites (ordered), filtered to files still in the library."""
+    """Return one user's favorites + deck, filtered to files still in the library."""
+    rec = user_fav_rec(request.args.get("user", ""))
     with _LIB_LOCK:
-        lst = [f for f in _FAVS_BY_USER.get(fav_key(request.args.get("user", "")), []) if f in _LIBRARY]
-    return jsonify({"order": lst, "favs": lst})
+        favs = [f for f in rec["favs"] if f in _LIBRARY]
+        deck = [f for f in rec["deck"] if f in _LIBRARY and f in rec["favs"]]
+    return jsonify({"favs": favs, "deck": deck})
 
 @app.route("/api/favorite", methods=["POST"])
 def api_favorite():
@@ -684,27 +696,25 @@ def api_favorite():
     fn = body.get("file")
     if fn not in _LIBRARY:
         return jsonify({"ok": False}), 404
-    lst = user_fav_list(body.get("user"))
+    rec = user_fav_rec(body.get("user"))
     if body.get("on"):
-        if fn not in lst: lst.append(fn)
+        if fn not in rec["favs"]:
+            rec["favs"].append(fn)              # new favorites land in the "rest", not the deck
     else:
-        if fn in lst: lst.remove(fn)
+        rec["favs"] = [f for f in rec["favs"] if f != fn]
+        rec["deck"] = [f for f in rec["deck"] if f != fn]
     save_favs()
-    return jsonify({"ok": True, "fav": fn in lst})
+    return jsonify({"ok": True, "fav": fn in rec["favs"]})
 
 @app.route("/api/favorites/order", methods=["POST"])
 def api_fav_order():
+    """Set the user's deck: an ordered subset of their favorites."""
     body = request.get_json(silent=True) or {}
-    key = fav_key(body.get("user"))
-    cur = _FAVS_BY_USER.setdefault(key, [])
+    rec = user_fav_rec(body.get("user"))
     order = _dedup(body.get("order") or [])
-    new = [f for f in order if f in cur]            # only this user's real favorites
-    for f in cur:                                   # keep any not mentioned
-        if f not in new:
-            new.append(f)
-    _FAVS_BY_USER[key] = new
+    rec["deck"] = [f for f in order if f in rec["favs"]]
     save_favs()
-    return jsonify({"ok": True, "order": new})
+    return jsonify({"ok": True, "deck": rec["deck"]})
 
 @app.route("/api/lanes", methods=["GET", "POST"])
 def api_lanes():
@@ -923,10 +933,11 @@ def api_rename():
     if os.path.exists(dst):
         return jsonify({"ok": False, "error": "name exists"}), 409
     os.rename(src, dst)
-    changed = False                       # repoint this file in every user's favorites
-    for lst in _FAVS_BY_USER.values():
-        if old in lst:
-            lst[:] = [new if f == old else f for f in lst]; changed = True
+    changed = False                       # repoint this file in every user's favorites + deck
+    for rec in _FAVS_BY_USER.values():
+        for k in ("favs", "deck"):
+            if old in rec[k]:
+                rec[k] = [new if f == old else f for f in rec[k]]; changed = True
     if changed: save_favs()
     catalog_rename(old, new)              # carry the soundid (and its play stats) to the new name
     with _DUR_LOCK:                       # move the cached duration so song/sound stays stable
@@ -947,10 +958,11 @@ def api_delete():
         os.remove(os.path.join(SOUND_DIR, fn))
     except OSError:
         return jsonify({"ok": False}), 500
-    changed = False                       # drop the deleted file from every user's favorites
-    for lst in _FAVS_BY_USER.values():
-        if fn in lst:
-            lst.remove(fn); changed = True
+    changed = False                       # drop the deleted file from every user's favorites + deck
+    for rec in _FAVS_BY_USER.values():
+        for k in ("favs", "deck"):
+            if fn in rec[k]:
+                rec[k] = [f for f in rec[k] if f != fn]; changed = True
     if changed: save_favs()
     scan_library()
     return jsonify({"ok": True})
