@@ -288,39 +288,115 @@
     .feed.open ~ .feed-toggle, body.feed-open .feed-toggle{background:#444}
     .composer .lookup{left:10px;right:10px}
   }
+
+  /* ---- combined header: now-playing grid | controls ---- */
+  header.combo{align-items:stretch;gap:12px;padding:8px 14px}
+  /* now-playing eats ALL width the right controls don't need */
+  .nowplay{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:4px}
+  .nowplay .np-lab{font-size:10px;font-weight:700;letter-spacing:.6px;color:var(--dim);text-transform:uppercase}
+  /* 2-up grid: two boxes fill the row; a lone box is one column (half), not stretched */
+  .np-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+  .np-slot{display:flex;align-items:center;gap:6px;background:var(--panel2);min-width:0;
+           border:1px solid var(--line);border-radius:8px;padding:4px 9px;font-size:12px}
+  .np-slot.song{border-color:var(--song)}
+  .np-slot .tg{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;flex:0 0 auto}
+  .np-slot.song .tg{color:var(--song)} .np-slot .tg.snd{color:var(--wav)}
+  .np-slot .cnm{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+  .np-slot .by{color:var(--dim);flex:0 0 auto}
+  .np-slot .rem{color:var(--accent2);font-weight:700;font-variant-numeric:tabular-nums;flex:0 0 auto}
+  .np-slot .fav{background:none;border:none;color:#555;font-size:13px;line-height:1;cursor:pointer;padding:0 1px;flex:0 0 auto}
+  .np-slot .fav.on{color:var(--fav)}
+  .np-slot .kill{width:16px;height:16px;border-radius:50%;background:#ff5b5b;color:#fff;border:none;
+    font-size:10px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .np-slot.idle{color:var(--dim);justify-content:center;font-size:11px;border-style:dashed}
+  /* controls size to their content and never wrap; now-playing yields the width */
+  .hdctrls{flex:0 0 auto;display:flex;align-items:center;gap:6px;justify-content:flex-end;
+           border-left:1px solid var(--line);padding-left:12px;flex-wrap:nowrap}
+  .hdctrls .name{width:84px;flex:0 1 auto}
+  .iconbtn{width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;
+           background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:8px;
+           cursor:pointer;font-size:14px;flex:0 0 auto}
+  .iconbtn.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  .iconbtn.solo-on{background:var(--accent2);border-color:var(--accent2);color:#04201a}
+  .iconbtn.sync-on{background:var(--accent);border-color:var(--accent);color:#fff}
+  .namecolor.admin{border:2px solid var(--accent2);box-shadow:0 0 0 2px rgba(0,210,168,.35)}
+  .hdctrls .vol-ctl{padding:4px 8px;gap:4px}
+  .hdctrls .vol-ctl input[type=range]{width:54px}
+  /* gear popover holding lane/box-volume controls */
+  .gearpop{position:absolute;top:52px;right:14px;z-index:55;display:none;flex-direction:column;gap:8px;
+           background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;
+           box-shadow:0 10px 34px rgba(0,0,0,.5);min-width:230px}
+  .gearpop.show{display:flex}
+  .gearpop .lanes-ctl,.gearpop .vol-ctl{width:100%;justify-content:space-between}
+
+  /* ---- grouping boxes in the tabs row ---- */
+  .tabs{gap:8px;padding:10px 14px 0;align-items:stretch}
+  .grp{display:flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:10px;
+       padding:4px 7px;background:var(--bg)}
+  .grp.tabsgrp button{border-radius:7px;padding:6px 12px}
+  .grp.tabsgrp button.on{background:var(--panel2);color:var(--txt)}
+  .grp.rightgrp{margin-left:auto}
+  .sorters .slab{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin-right:2px}
+  .sortbtn{display:inline-flex;align-items:center;gap:5px;background:var(--panel2);border:1px solid var(--line);
+           color:var(--dim);border-radius:7px;padding:5px 9px;font-size:12px;font-weight:600;cursor:pointer}
+  .sortbtn .arw{font-size:10px;width:8px;display:inline-block}
+  .sortbtn.on{background:var(--accent);border-color:var(--accent);color:#fff}
+
+  /* ---- filters row separation + duration slider ---- */
+  .toolbar.filters{border-top:1px solid var(--line);background:var(--panel)}
+  .toolbar .flab{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;font-weight:700}
+  .durfilter{display:flex;align-items:center;gap:9px;flex:0 0 auto;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:5px 11px}
+  .durfilter .lbl{font-size:11px;color:var(--dim);font-weight:600;white-space:nowrap}
+  .durfilter .rng{position:relative;width:140px;height:20px}
+  .durfilter .rng input{position:absolute;top:0;left:0;width:100%;margin:0;-webkit-appearance:none;appearance:none;background:none;pointer-events:none;height:20px}
+  .durfilter .rng input::-webkit-slider-thumb{-webkit-appearance:none;pointer-events:auto;height:14px;width:14px;border-radius:50%;background:var(--accent);border:2px solid var(--bg);cursor:pointer}
+  .durfilter .rng .track{position:absolute;top:9px;left:0;right:0;height:3px;border-radius:3px;background:var(--line)}
+  .durfilter .rng .fill{position:absolute;top:9px;height:3px;border-radius:3px;background:var(--accent)}
+  .durfilter .read{font-size:11px;color:var(--txt);font-variant-numeric:tabular-nums;font-weight:600;min-width:58px;text-align:right}
+
+  /* ---- deck divider + song/sound seg ---- */
+  .deckhead{display:flex;align-items:center;gap:10px;color:var(--dim);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;padding:8px 16px 2px}
+  .deckhead::after{content:"";flex:1;height:1px;background:var(--line)}
+  .deckhead.rest{color:var(--song)}
+  .deckdiv{height:0;border-top:2px dashed var(--accent);margin:10px 16px}
+  .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;width:fit-content}
+  .seg button{background:var(--panel2);border:none;color:var(--dim);padding:7px 16px;cursor:pointer;font-weight:600;font-size:12px;border-right:1px solid var(--line)}
+  .seg button:last-child{border-right:none}
+  .seg button.on{background:var(--song);color:#1a0e2e}
 </style>
 </head>
 <body>
-<header>
-  <h1>🔊 Sound&nbsp;Server</h1>
-  <div class="who">
-    <span>you:</span>
+<header class="combo">
+  <div class="nowplay">
+    <span class="np-lab">▶ Now playing</span>
+    <div id="laneBoxes" class="np-grid"></div>
+  </div>
+  <div class="hdctrls">
     <input class="name" id="name" placeholder="name">
     <input type="color" id="nameColor" class="namecolor" title="your name color">
     <span class="me" id="me">
       <span class="badge" id="meBadge" style="display:none"></span>
       <button class="btn-edit" id="loginBtn">🔓 Log in</button>
     </span>
-    <button class="btn-edit" id="syncBtn" title="Sync: align playback with everyone on a shared timeline (~1s delay)">🔁 Sync</button>
-    <button class="btn-edit" id="soloBtn" title="Solo: play only for you — you won't hear others and they won't hear you">🎧 Solo</button>
+    <button class="iconbtn" id="syncBtn" style="display:none" title="Sync: align playback with everyone on a shared timeline (~1s delay)">🔁</button>
+    <button class="iconbtn" id="soloBtn" title="Solo: play only for you — you won't hear others and they won't hear you">🎧</button>
+    <div class="vol-ctl"><button class="spk" id="muteBtn" title="mute / unmute">🔊</button><button class="vstep" id="bvolDn" title="quieter">−</button><input type="range" id="browserVol" min="0" max="100" value="100"><button class="vstep" id="bvolUp" title="louder">+</button></div>
+    <button class="iconbtn" id="adminGear" style="display:none" title="Admin — lane counts, box volume">⚙</button>
     <span id="connWarn" style="display:none;align-items:center;gap:4px;background:rgba(255,165,58,.15);
       border:1px solid var(--mp3);color:var(--mp3);border-radius:14px;padding:3px 9px;font-size:11px;font-weight:600"
       title="Your connection is weak, so playback is running un-synced (snappy) to avoid skips">⚠ weak conn · sync paused</span>
   </div>
+  <div class="gearpop" id="gearPop">
+    <div class="lanes-ctl" id="songLanesCtl">
+      <span>🎵 Songs</span><button id="songLanesDn">−</button><b id="songLanesN">1</b><button id="songLanesUp">+</button>
+    </div>
+    <div class="lanes-ctl" id="lanesCtl">
+      <span>🔊 Lanes</span><button id="lanesDn">−</button><b id="lanesN">2</b><button id="lanesUp">+</button>
+    </div>
+    <div class="vol-ctl" id="boxVolCtl"><span>🏠 Box</span><button class="vstep" id="boxVolDn" title="quieter">−</button><input type="range" id="boxVol" min="0" max="100" value="50"><button class="vstep" id="boxVolUp" title="louder">+</button></div>
+  </div>
+  <span class="count" id="libcount" style="display:none"></span>
 </header>
-
-<div class="channels">
-  <div id="laneBoxes" style="display:flex;gap:10px;flex:1;flex-wrap:wrap;min-width:0"></div>
-  <div class="lanes-ctl" id="songLanesCtl" style="display:none">
-    <span>🎵 Songs</span><button id="songLanesDn">−</button><b id="songLanesN">1</b><button id="songLanesUp">+</button>
-  </div>
-  <div class="lanes-ctl" id="lanesCtl" style="display:none">
-    <span>🔊 Lanes</span><button id="lanesDn">−</button><b id="lanesN">2</b><button id="lanesUp">+</button>
-  </div>
-  <div class="vol-ctl"><button class="spk" id="muteBtn" title="mute / unmute">🔊</button><span>You</span><button class="vstep" id="bvolDn" title="quieter">−</button><input type="range" id="browserVol" min="0" max="100" value="100"><button class="vstep" id="bvolUp" title="louder">+</button></div>
-  <div class="vol-ctl" id="boxVolCtl" style="display:none"><span>🏠 Box</span><button class="vstep" id="boxVolDn" title="quieter">−</button><input type="range" id="boxVol" min="0" max="100" value="50"><button class="vstep" id="boxVolUp" title="louder">+</button></div>
-  <span class="count" id="libcount"></span>
-</div>
 
 <div class="main">
   <div class="board">
@@ -491,11 +567,21 @@ function applyMe(){
   $('#boxVolCtl').style.display = ME.admin ? 'flex' : 'none';
   $('#lanesCtl').style.display = ME.admin ? 'flex' : 'none';
   $('#songLanesCtl').style.display = ME.admin ? 'flex' : 'none';
-  $('#syncBtn').style.display = ME.admin ? 'inline-block' : 'none';
+  $('#syncBtn').style.display = ME.admin ? 'inline-flex' : 'none';
+  $('#adminGear').style.display = ME.admin ? 'inline-flex' : 'none';
+  if(!ME.admin){ $('#gearPop').classList.remove('show'); }
+  $('#nameColor').classList.toggle('admin', !!ME.admin);   // green border when admin
   if(!ME.can_edit && (TAB==='add')){ TAB='all'; document.querySelectorAll('.tabs button[data-tab]').forEach(x=>x.classList.toggle('on',x.dataset.tab==='all')); }
   if(!ME.can_edit) CEDIT=false;
   render();
 }
+// ---- admin gear popover (holds lane-count + box-volume controls) ----
+$('#adminGear').onclick = (e) => { e.stopPropagation(); $('#gearPop').classList.toggle('show'); };
+document.addEventListener('click', (e) => {
+  if($('#gearPop').classList.contains('show') && !$('#gearPop').contains(e.target) && e.target!==$('#adminGear')){
+    $('#gearPop').classList.remove('show');
+  }
+});
 let audioUnlocked = false;
 const playing = {};      // token -> Audio (shared/room sounds)
 const soloPlaying = {};  // lane -> Audio (private solo sounds)
@@ -971,55 +1057,51 @@ async function pollActive(){
     _roomLive = (d.active || []).length > 0;   // drives the adaptive poll cadence below
   }catch(e){ noteConn(performance.now()-_t0, false); }
 }
+// now-playing grid: one .np-slot per lane occupant; idle lanes show a "free" slot.
+// Order: song lanes first, then sound lanes (matches the lane model).
 function paintChannels(active){
   const box=$('#laneBoxes');
-  if(box.childElementCount!==SONG_LANES+LANES){     // song lanes + N short lanes
-    box.innerHTML='';
-    for(let i=0;i<SONG_LANES;i++){
-      const c=document.createElement('div');
-      c.className='chan lane-song'+i; c.id='ch-lanesong'+i;
-      c.innerHTML=`<span class="dot"></span><span class="lab">${SONG_LANES<=1?'🎵 Song':'🎵 Song '+(i+1)}</span>`+
-        `<span class="occ" id="occ-lanesong${i}"><span class="none">—</span></span>`;
-      box.appendChild(c);
-    }
-    for(let i=0;i<LANES;i++){
-      const c=document.createElement('div');
-      c.className='chan lane-'+i; c.id='ch-lane'+i;
-      c.innerHTML=`<span class="dot"></span><span class="lab">${LANES<=1?'Sound':'L'+(i+1)}</span>`+
-        `<span class="occ" id="occ-lane${i}"><span class="none">—</span></span>`;
-      box.appendChild(c);
-    }
+  // build a flat list of slots (one per occupant; one idle slot per empty lane)
+  const slots=[];
+  for(let i=0;i<SONG_LANES;i++){
+    const occ=active.filter(a=>a.lane==='song'+i);
+    if(occ.length) for(const a of occ) slots.push({a, song:true});
+    else slots.push({idle:true, song:true});
   }
-  for(let i=0;i<SONG_LANES;i++) paintLane('song'+i, active.filter(a=>a.lane==='song'+i));
-  for(let i=0;i<LANES;i++) paintLane(i, active.filter(a=>a.lane===i));
-  if(_remDirty){ _remNodes = Array.from(document.querySelectorAll('#laneBoxes .chip .rem')); _remDirty=false; }
-}
-function laneClass(lane){ return 'lane-'+lane; }   // 'lane-0'.. or 'lane-song0'/'lane-song1'
-function paintLane(key, occ){
-  const ch=$('#ch-lane'+key), o=$('#occ-lane'+key);
-  if(!ch) return;
-  ch.classList.toggle('live', occ.length>0);
-  // only rebuild when the occupants actually change — otherwise the running
-  // countdown span gets wiped every poll, which flickers and reflows the UI
-  const sig = occ.map(a=>a.token).join(',');
-  if(o.dataset.sig === sig) return;
-  o.dataset.sig = sig; _remDirty = true;   // occupants changed → recollect countdown nodes
-  if(!occ.length){ o.innerHTML='<span class="none">—</span>'; return; }
-  o.innerHTML='';
-  for(const a of occ){
-    const canKill=ME.admin||(a.by===uname());   // owner or admin
-    const src=BYFILE[a.file];                    // library entry (for favoriting)
-    const chip=document.createElement('span'); chip.className='chip';
-    chip.innerHTML=`<span class="cnm">${esc(a.name)}</span><span class="by"${a.color?' style="color:'+a.color+'"':''}>· ${esc(a.by||'')}</span>`+
+  for(let i=0;i<LANES;i++){
+    const occ=active.filter(a=>a.lane===i);
+    if(occ.length) for(const a of occ) slots.push({a, song:false});
+    else slots.push({idle:true, song:false});
+  }
+  // only rebuild when contents change — otherwise the countdown span gets wiped each poll
+  const sig=slots.map(s=>s.idle ? ('idle'+(s.song?'S':'')) : s.a.token).join(',');
+  if(box.dataset.sig===sig) return;
+  box.dataset.sig=sig; _remDirty=true;
+  box.innerHTML='';
+  for(const s of slots){
+    const el=document.createElement('div');
+    if(s.idle){
+      el.className='np-slot'+(s.song?' song':'')+' idle';
+      el.textContent = s.song ? '🎵 song lane free' : 'sound lane free';
+      box.appendChild(el); continue;
+    }
+    const a=s.a, canKill=ME.admin||(a.by===uname()), src=BYFILE[a.file];
+    el.className='np-slot'+(s.song?' song':'');
+    el.innerHTML=
+      `<span class="tg${s.song?'':' snd'}">${s.song?'🎵 Song':'Snd'}</span>`+
+      `<span class="cnm">${esc(a.name)}</span>`+
+      `<span class="by"${a.color?' style="color:'+a.color+'"':''}>${esc(a.by||'')}</span>`+
       `<span class="rem" data-end="${a.start+(a.dur||0)}"></span>`+
       (src?`<button class="fav ${FAVSET.has(src.file)?'on':''}" title="favorite this sound">★</button>`:'')+
       (canKill?`<button class="kill" title="stop this sound">✕</button>`:'');
-    if(canKill) chip.querySelector('.kill').onclick=()=>killActive(a.token);
-    if(src){ const fb=chip.querySelector('.fav'); fb.onclick=()=>{ toggleFav(src); fb.classList.toggle('on', FAVSET.has(src.file)); }; }
-    updateRem(chip.querySelector('.rem'));   // fill in immediately so it never starts blank
-    o.appendChild(chip);
+    if(canKill) el.querySelector('.kill').onclick=()=>killActive(a.token);
+    if(src){ const fb=el.querySelector('.fav'); fb.onclick=()=>{ toggleFav(src); fb.classList.toggle('on', FAVSET.has(src.file)); }; }
+    updateRem(el.querySelector('.rem'));
+    box.appendChild(el);
   }
+  _remNodes = Array.from(document.querySelectorAll('#laneBoxes .np-slot .rem')); _remDirty=false;
 }
+function laneClass(lane){ return 'lane-'+lane; }   // 'lane-0'.. or 'lane-song0'/'lane-song1'
 // live "time remaining" countdown on the channel chips
 function updateRem(el){
   let r = parseFloat(el.dataset.end) - serverNow();
