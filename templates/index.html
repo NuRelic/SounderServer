@@ -421,7 +421,12 @@
         <button data-t="songs">🎵 Songs</button>
         <button data-t="sounds">Sounds</button>
       </div>
-      <button class="btn-edit" id="nsfwToggle" style="display:none">🔞 NSFW: off</button>
+      <div class="durfilter" id="durFilter" title="filter by length" style="display:none">
+        <span class="lbl">⏱ Length</span>
+        <div class="rng"><div class="track"></div><div class="fill" id="durFill"></div>
+          <input type="range" id="durMin" min="0" max="60" value="0"><input type="range" id="durMax" min="0" max="60" value="60"></div>
+        <span class="read" id="durRead">all</span>
+      </div>
       <div class="allbar" id="allAlpha" style="display:none"></div>
     </div>
     <div class="editbar" id="editbar">
@@ -684,6 +689,7 @@ async function loadSounds(){
   _alphaCounts = {}; for(const s of SOUNDS){ const b=bucketOf(s.name); _alphaCounts[b]=(_alphaCounts[b]||0)+1; }
   $('#allAlpha').dataset.built = '';   // counts changed → rebuild the bar lazily
   $('#libcount').textContent = d.count + ' sounds';
+  initDurFilter();
   render();
   if(d.scanning) setTimeout(loadSounds, 4000);   // refresh as song durations fill in
 }
@@ -708,7 +714,7 @@ function render(){
   grid.classList.toggle('nodelete', cediting && !ME.admin);   // editors can trim/rename but not delete
   $('#allAlpha').style.display = showFilters ? 'flex' : 'none';
   $('#typeFilter').style.display = showFilters ? 'flex' : 'none';
-  $('#nsfwToggle').style.display = showFilters ? 'inline-block' : 'none';
+  $('#durFilter').style.display = showFilters ? 'flex' : 'none';
   $('#shown').style.display = (TAB==='add') ? 'none' : 'inline';
   if(showFilters) buildAllAlpha();
   if(TAB==='add'){ renderEdit(); return; }
@@ -721,7 +727,7 @@ function render(){
   if(showFilters && ALLLETTER && !q) list = list.filter(s=>bucketOf(s.name)===ALLLETTER);
   if(showFilters && SONGFILTER==='songs')  list = list.filter(s=>s.long);
   if(showFilters && SONGFILTER==='sounds') list = list.filter(s=>!s.long);
-  if(!NSFW_ON) list = list.filter(s=>!s.nsfw);   // opt-in NSFW
+  if(showFilters) list = list.filter(s => (s.dur||0) >= DURMIN && (s.dur||0) <= DURMAX);
   // ordering: explicit sort wins; otherwise per-tab natural order
   if(SORT==='plays')          list.sort((a,b)=> b.plays - a.plays);
   else if(SORT==='plays_asc') list.sort((a,b)=> a.plays - b.plays);
@@ -1145,10 +1151,22 @@ document.querySelectorAll('#typeFilter button').forEach(b=>{
     document.querySelectorAll('#typeFilter button').forEach(x=>x.classList.toggle('on',x===b));
     render(); };
 });
-let NSFW_ON = localStorage.getItem('ss_nsfw')==='1';
-function paintNsfwBtn(){ $('#nsfwToggle').textContent='🔞 NSFW: '+(NSFW_ON?'on':'off'); $('#nsfwToggle').classList.toggle('on', NSFW_ON); }
-$('#nsfwToggle').onclick=()=>{ NSFW_ON=!NSFW_ON; localStorage.setItem('ss_nsfw', NSFW_ON?'1':'0'); paintNsfwBtn(); render(); };
-paintNsfwBtn();
+// ---- duration range filter ----
+let DURMIN = 0, DURMAX = Infinity, DURCAP = 60;
+function initDurFilter(){
+  DURCAP = Math.max(15, Math.ceil(Math.max(0, ...SOUNDS.map(s=>s.dur||0))));
+  for(const el of [$('#durMin'), $('#durMax')]){ el.min=0; el.max=DURCAP; }
+  $('#durMin').value=0; $('#durMax').value=DURCAP; DURMIN=0; DURMAX=Infinity; paintDur();
+}
+function paintDur(){
+  let lo=+$('#durMin').value, hi=+$('#durMax').value;
+  if(lo>hi){ [lo,hi]=[hi,lo]; }
+  DURMIN=lo; DURMAX=(hi>=DURCAP)?Infinity:hi;
+  $('#durRead').textContent = (hi>=DURCAP) ? (lo+'s+') : (lo+'–'+hi+'s');
+  const f=$('#durFill'); if(f){ f.style.left=(lo/DURCAP*100)+'%'; f.style.right=(100-hi/DURCAP*100)+'%'; }
+}
+$('#durMin').oninput = () => { paintDur(); render(); };
+$('#durMax').oninput = () => { paintDur(); render(); };
 function paintPresence(online){
   const el=$('#presence');
   if(!online || !online.length){
