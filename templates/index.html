@@ -520,20 +520,24 @@
 
 <script>
 const $ = s => document.querySelector(s);
-let SOUNDS = [], BYFILE = {}, TAB = 'all', FAVORDER = [], FAVSET = new Set(), EDITMODE = false;
-// favorites are per-username, with a localStorage cache as offline fallback
+let SOUNDS = [], BYFILE = {}, TAB = 'all', DECK = [], FAVSET = new Set(), EDITMODE = false;
+// favorites are per-username, with a localStorage cache as offline fallback.
+// Model: FAVSET = all favorites; DECK = an ordered subset hand-arranged on top.
 function favKey(u){ return ((u||'').trim().toLowerCase().slice(0,40)) || 'anon'; }
-function cacheFavs(){ try{ localStorage.setItem('ss_favs_'+favKey(uname()), JSON.stringify(FAVORDER)); }catch(_){} }
+function cacheFavs(){ try{ localStorage.setItem('ss_favs_'+favKey(uname()),
+  JSON.stringify({favs:[...FAVSET], deck:DECK})); }catch(_){} }
 async function loadFavs(){
   const u = uname(), key = favKey(u);
   try{
     const d = await (await fetch('/api/favorites?user='+encodeURIComponent(u))).json();
-    FAVORDER = d.order || [];
-    try{ localStorage.setItem('ss_favs_'+key, JSON.stringify(FAVORDER)); }catch(_){}
+    FAVSET = new Set(d.favs || []);
+    DECK = (d.deck || []).filter(f => FAVSET.has(f));
+    try{ localStorage.setItem('ss_favs_'+key, JSON.stringify({favs:[...FAVSET], deck:DECK})); }catch(_){}
   }catch(e){                                   // server unreachable → fall back to cache
-    try{ FAVORDER = JSON.parse(localStorage.getItem('ss_favs_'+key) || '[]'); }catch(_){ FAVORDER = []; }
+    try{ const c = JSON.parse(localStorage.getItem('ss_favs_'+key) || '{}');
+      FAVSET = new Set(c.favs || []); DECK = (c.deck || []).filter(f => FAVSET.has(f));
+    }catch(_){ FAVSET = new Set(); DECK = []; }
   }
-  FAVSET = new Set(FAVORDER);
   render();
 }
 // audio URL with a version (file mtime) appended so edits bust the browser cache
@@ -737,15 +741,24 @@ function render(){
   else if(SORT==='oldest')    list.sort((a,b)=> (a.ver||0) - (b.ver||0));
   else if(SORT==='long')      list.sort((a,b)=> b.dur - a.dur);
   else if(SORT==='short')     list.sort((a,b)=> a.dur - b.dur);
-  else if(TAB==='fav'){ const idx=f=>{const i=FAVORDER.indexOf(f);return i<0?1e9:i;}; list.sort((a,b)=> idx(a.file)-idx(b.file)); }
+  else if(TAB==='fav'){
+    // Custom (no explicit sort): deck first in deck order, then the rest A–Z
+    const di=f=>{const i=DECK.indexOf(f);return i<0?1e9:i;};
+    list.sort((a,b)=>{
+      const da=di(a.file), db=di(b.file);
+      if(da!==db) return da-db;                       // deck first, in deck order
+      return a.name.localeCompare(b.name);            // rest alphabetical
+    });
+  }
   // (default for 'all' keeps the server's name-sorted order)
   $('#shown').textContent =
     cediting ? (list.length + ' clips · click one to edit') :
-    TAB==='fav' ? (list.length + ' favorites' + (editing || SORT!=='default' ? '' : ' · ✏️ Edit layout to reorder')) :
+    TAB==='fav' ? (list.length + ' favorites' + (editing || SORT!=='custom' ? '' : ' · ✏️ Edit layout to arrange your deck')) :
     (list.length + ' shown');
   grid.innerHTML = '';
   const frag = document.createDocumentFragment();
-  for(const s of list){
+  // build a tile for one sound; `zone` = 'deck'|'rest' (fav edit mode) for two-zone DnD
+  const makeTile = (s, zone) => {
     const el = document.createElement('div');
     el.className = 'snd '+s.fmt+(anyEdit?' edit':'')+(s.long?' song':'');
     el.innerHTML =
@@ -754,8 +767,8 @@ function render(){
       `<button class="star ${FAVSET.has(s.file)?'on':''}" title="favorite">★</button>`+
       `<button class="rm" title="${cediting?'delete clip':'remove from favorites'}">✕</button>`;
     el.dataset.file = s.file;
+    if(zone) el.dataset.zone = zone;
     // click behavior is handled by ONE delegated listener on #grid (see gridClick)
-    // — no per-tile/per-zone closures, which is ~11k fewer closures for the full list
     if(editing) favDnD(el, s.file);
     if(!anyEdit){
       const lanes = s.long ? SONG_LANES : LANES;   // songs → song-lane zones, else N lane zones
@@ -767,7 +780,22 @@ function render(){
         el.appendChild(z);
       }
     }
-    frag.appendChild(el);
+    return el;
+  };
+  if(editing){
+    // Favorites edit: two zones split by a divider — deck (top, reorderable) and rest (A–Z)
+    const inDeck = f => DECK.includes(f);
+    const deckItems = DECK.map(f=>BYFILE[f]).filter(s=>s && FAVSET.has(s.file));
+    const restItems = list.filter(s=>!inDeck(s.file)).sort((a,b)=>a.name.localeCompare(b.name));
+    const span = el => { el.style.gridColumn='1/-1'; return el; };
+    const head = (txt, cls) => { const h=document.createElement('div'); h.className='deckhead'+(cls?' '+cls:''); h.textContent=txt; h.dataset.zone=(cls==='rest'?'rest':'deck'); return span(h); };
+    frag.appendChild(head('★ Your deck — drag to arrange',''));
+    for(const s of deckItems) frag.appendChild(makeTile(s,'deck'));
+    const div=document.createElement('div'); div.className='deckdiv'; div.dataset.zone='rest'; frag.appendChild(span(div));
+    frag.appendChild(head('Other favorites · A → Z','rest'));
+    for(const s of restItems) frag.appendChild(makeTile(s,'rest'));
+  } else {
+    for(const s of list) frag.appendChild(makeTile(s));
   }
   grid.appendChild(frag);
 }
@@ -801,6 +829,14 @@ function targetUnder(x, y, exclude){
   }
   return null;
 }
+// find the nearest element carrying a data-zone (tile, deckhead, or divider)
+function zoneUnder(x, y){
+  for(const e of document.elementsFromPoint(x, y)){
+    const z = e.closest && e.closest('[data-zone]');
+    if(z) return z;
+  }
+  return null;
+}
 function favDnD(el, file){
   let sx=0, sy=0, dragging=false;
   const onMove = e=>{
@@ -819,8 +855,11 @@ function favDnD(el, file){
     try{ el.releasePointerCapture(e.pointerId); }catch(_){}
     el.classList.remove('dragging'); clearDropMarks();
     if(dragging){
-      const t = targetUnder(e.clientX, e.clientY, el);
-      if(t && t.dataset.file !== file) reorderFav(file, t.dataset.file);
+      const t = targetUnder(e.clientX, e.clientY, el);    // a .snd tile, or null
+      const zoneEl = zoneUnder(e.clientX, e.clientY);     // tile/header/divider carrying a data-zone
+      const zone = t ? (t.dataset.zone || 'rest') : (zoneEl ? zoneEl.dataset.zone : 'rest');
+      const targetFile = (t && t.dataset.file !== file) ? t.dataset.file : null;
+      placeInDeck(file, targetFile, zone);
     }
     // tap in organize mode does nothing — playback is paused while editing
   };
@@ -931,17 +970,17 @@ async function deleteClip(s){
   if(d.ok) await loadSounds(); else alert(d.error||'delete failed');
 }
 
-function reorderFav(src, target){
-  let order = SOUNDS.filter(s=>FAVSET.has(s.file)).map(s=>s.file);
-  const idx = f => { const i = FAVORDER.indexOf(f); return i<0 ? 1e9 : i; };
-  order.sort((a,b)=> idx(a)-idx(b));
-  order = order.filter(f=>f!==src);
-  const ti = order.indexOf(target);
-  order.splice(ti < 0 ? order.length : ti, 0, src);   // insert before target
-  FAVORDER = order; cacheFavs();
+// two-zone drop: drop into the deck (insert before target) or back to the rest (remove)
+function placeInDeck(src, targetFile, targetZone){
+  let deck = DECK.filter(f => f !== src);
+  if(targetZone === 'deck'){
+    const ti = deck.indexOf(targetFile);
+    deck.splice(ti < 0 ? deck.length : ti, 0, src);   // insert before target in deck
+  } // drop onto the "rest" zone => src removed from deck (already filtered out)
+  DECK = deck; cacheFavs();
   render();
-  fetch('/api/favorites/order',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({order, user:uname()})});
+  fetch('/api/favorites/order', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({order: DECK, user: uname()})});
 }
 const _doSearch = debounce(() => { if(TAB!=='add') render(); }, 130);
 $('#search').oninput = () => { if($('#search').value.trim()) ALLLETTER=null; _doSearch(); };
@@ -985,8 +1024,8 @@ document.querySelectorAll('.tabs button[data-tab]').forEach(b=>{   // only real 
 // ---- favorites ----
 function toggleFav(s){
   const on = !FAVSET.has(s.file);
-  if(on){ FAVSET.add(s.file); if(!FAVORDER.includes(s.file)) FAVORDER.push(s.file); }
-  else  { FAVSET.delete(s.file); FAVORDER = FAVORDER.filter(f=>f!==s.file); }
+  if(on){ FAVSET.add(s.file); }                          // new favorites land in the rest, not the deck
+  else  { FAVSET.delete(s.file); DECK = DECK.filter(f=>f!==s.file); }
   cacheFavs();
   fetch('/api/favorite',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({file:s.file, on, user:uname()})});
