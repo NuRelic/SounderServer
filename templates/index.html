@@ -356,6 +356,9 @@
   .deckhead{display:flex;align-items:center;gap:10px;color:var(--dim);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;padding:8px 16px 2px}
   .deckhead::after{content:"";flex:1;height:1px;background:var(--line)}
   .deckhead.rest{color:var(--song)}
+  .deckph{grid-column:1/-1;border:1.5px dashed var(--line);border-radius:10px;padding:14px;margin:2px 16px 6px;text-align:center;color:var(--dim);font-size:13px}
+  .deckhead.dz-hot,.deckph.dz-hot{border-color:var(--accent2);color:var(--accent2)}
+  .deckhead.dz-hot{box-shadow:inset 0 0 0 1.5px var(--accent2);border-radius:8px}
   .deckdiv{height:0;border-top:2px dashed var(--accent);margin:10px 16px}
   .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;width:fit-content}
   .seg button{background:var(--panel2);border:none;color:var(--dim);padding:7px 16px;cursor:pointer;font-weight:600;font-size:12px;border-right:1px solid var(--line)}
@@ -796,6 +799,10 @@ function render(){
     const head = (txt, cls) => { const h=document.createElement('div'); h.className='deckhead'+(cls?' '+cls:''); h.textContent=txt; h.dataset.zone=(cls==='rest'?'rest':'deck'); return span(h); };
     frag.appendChild(head('★ Your deck — drag to arrange',''));
     for(const s of deckItems) frag.appendChild(makeTile(s,'deck'));
+    const ph=document.createElement('div'); ph.className='deckph'; ph.dataset.zone='deck';
+    ph.textContent = deckItems.length ? '＋ drop here to add to the end of your deck'
+                                      : 'Drag clips up here to build your deck';
+    frag.appendChild(span(ph));
     const div=document.createElement('div'); div.className='deckdiv'; div.dataset.zone='rest'; frag.appendChild(span(div));
     frag.appendChild(head('Other favorites · A → Z','rest'));
     for(const s of restItems) frag.appendChild(makeTile(s,'rest'));
@@ -826,7 +833,22 @@ $('#ceditToggle').onclick = () => { CEDIT = true; EDITMODE = false; render(); };
 $('#ceditDone').onclick   = () => { CEDIT = false; render(); };
 
 // ---- favorites drag-to-reorder (pointer-based: works on desktop + touch) ----
-function clearDropMarks(){ document.querySelectorAll('.snd.dropbefore').forEach(x=>x.classList.remove('dropbefore')); }
+function clearDropMarks(){
+  document.querySelectorAll('.snd.dropbefore').forEach(x=>x.classList.remove('dropbefore'));
+  document.querySelectorAll('.dz-hot').forEach(x=>x.classList.remove('dz-hot'));
+}
+// during a fav drag, show where it'll land: an insertion mark on a tile, or a
+// highlighted deck zone when hovering the deck area (incl. the empty placeholder)
+function markFavDrop(x, y, exclude){
+  clearDropMarks();
+  const t = targetUnder(x, y, exclude);
+  if(t){ t.classList.add('dropbefore'); return; }
+  const z = zoneUnder(x, y);
+  if(z && z.dataset.zone === 'deck'){
+    document.querySelectorAll('.deckph[data-zone="deck"], .deckhead[data-zone="deck"]')
+      .forEach(e=>e.classList.add('dz-hot'));
+  }
+}
 function targetUnder(x, y, exclude){
   for(const e of document.elementsFromPoint(x, y)){
     const s = e.closest && e.closest('.snd');
@@ -848,11 +870,7 @@ function favDnD(el, file){
     if(!dragging && Math.hypot(e.clientX-sx, e.clientY-sy) > 6){
       dragging = true; el.classList.add('dragging');
     }
-    if(dragging){
-      clearDropMarks();
-      const t = targetUnder(e.clientX, e.clientY, el);
-      if(t) t.classList.add('dropbefore');
-    }
+    if(dragging){ markFavDrop(e.clientX, e.clientY, el); }
   };
   const onUp = e=>{
     el.removeEventListener('pointermove', onMove);
