@@ -42,6 +42,7 @@ PORT      = int(os.environ.get("PORT", "5050"))
 
 AUDIO_EXTS = {".wav", ".mp3"}          # the two format channels
 LONG_THRESHOLD = 15.0                   # >15s = a "song" → the dedicated long lane
+TYPE_OVERRIDE_FILE = os.path.join(DATA_DIR, "type_overrides.json")
 SYNC_BUFFER = 1.0                       # must match the frontend sync buffer
 FAVS_FILE  = os.path.join(DATA_DIR, "favorites.json")
 LIMITS_FILE= os.path.join(DATA_DIR, "limits.json")
@@ -181,6 +182,15 @@ def duration(fn):
         snap = dict(_DUR)          # snapshot under the lock…
     _save(DUR_FILE, snap)          # …but write to disk WITHOUT holding it
     return d
+
+_TYPE_OVERRIDE = _load(TYPE_OVERRIDE_FILE, {})   # {file: "song"|"sound"}
+
+def is_long(fn):
+    """Effective song/sound classification: per-file override beats the 15s rule."""
+    ov = _TYPE_OVERRIDE.get(fn)
+    if ov == "song":  return True
+    if ov == "sound": return False
+    return duration(fn) > LONG_THRESHOLD
 
 _DUR_SCANNING = True   # background full-library duration probe in progress
 
@@ -355,7 +365,7 @@ def fire(fn, user, lane=0):
     if not info:
         return None
     dur = duration(fn)
-    is_song = dur > LONG_THRESHOLD
+    is_song = is_long(fn)
     now = time.time()
     with _ACTIVE_LOCK:
         _prune_locked(now)
@@ -537,7 +547,7 @@ def api_sounds():
     # favorites are per-user now — the client fetches them from /api/favorites?user=
     out = [{**it,
             "dur": round(dur.get(it["file"], 0), 1),
-            "long": dur.get(it["file"], 0) > LONG_THRESHOLD,
+            "long": is_long(it["file"]),
             "nsfw": it["file"] in nsfw,
             "plays": plays.get(it["file"], 0)} for it in items]
     return jsonify({"count": len(out), "sounds": out, "scanning": _DUR_SCANNING})
@@ -984,6 +994,24 @@ def api_edit():
         _DUR.pop(fn, None); _save(DUR_FILE, _DUR)
     scan_library()
     return jsonify({"ok": True})
+
+@app.route("/api/sound_type", methods=["POST"])
+def api_sound_type():
+    """Force a clip to song/sound (or auto = 15s rule). Same gate as Add/Edit; shared/global."""
+    if not can_edit():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    body = request.get_json(silent=True) or {}
+    fn = body.get("file"); typ = body.get("type")
+    if fn not in _LIBRARY:
+        return jsonify({"ok": False}), 404
+    if typ not in ("auto", "song", "sound"):
+        return jsonify({"ok": False, "error": "bad type"}), 400
+    if typ == "auto":
+        _TYPE_OVERRIDE.pop(fn, None)
+    else:
+        _TYPE_OVERRIDE[fn] = typ
+    _save(TYPE_OVERRIDE_FILE, _TYPE_OVERRIDE)
+    return jsonify({"ok": True, "type": typ, "long": is_long(fn)})
 
 # ----------------------------------------------------------------------------
 if __name__ == "__main__":
