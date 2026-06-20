@@ -348,8 +348,11 @@
   .durfilter{display:flex;align-items:center;gap:9px;flex:0 0 auto;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:5px 11px}
   .durfilter .lbl{font-size:11px;color:var(--dim);font-weight:600;white-space:nowrap}
   .durfilter .rng{position:relative;width:140px;height:20px}
-  .durfilter .rng input{position:absolute;top:0;left:0;width:100%;margin:0;-webkit-appearance:none;appearance:none;background:none;pointer-events:none;height:20px}
-  .durfilter .rng input::-webkit-slider-thumb{-webkit-appearance:none;pointer-events:auto;height:14px;width:14px;border-radius:50%;background:var(--accent);border:2px solid var(--bg);cursor:pointer}
+  .durfilter .rng input{position:absolute;top:0;left:0;width:100%;margin:0;-webkit-appearance:none;appearance:none;background:none;height:20px;cursor:pointer}
+  .durfilter .rng input::-webkit-slider-thumb{-webkit-appearance:none;height:14px;width:14px;border-radius:50%;background:var(--accent);border:2px solid var(--bg);cursor:pointer}
+  .durfilter .rng input::-moz-range-thumb{height:14px;width:14px;border:2px solid var(--bg);border-radius:50%;background:var(--accent);cursor:pointer}
+  .durfilter .rng input::-webkit-slider-runnable-track{background:transparent;height:20px}
+  .durfilter .rng input::-moz-range-track{background:transparent}
   .durfilter .rng .track{position:absolute;top:9px;left:0;right:0;height:3px;border-radius:3px;background:var(--line)}
   .durfilter .rng .fill{position:absolute;top:9px;height:3px;border-radius:3px;background:var(--accent)}
   .durfilter .read{font-size:11px;color:var(--txt);font-variant-numeric:tabular-nums;font-weight:600;min-width:58px;text-align:right}
@@ -1230,6 +1233,20 @@ function paintDur(){
 }
 $('#durMin').oninput = () => { paintDur(); render(); };
 $('#durMax').oninput = () => { paintDur(); render(); };
+// two overlapping range inputs: raise whichever thumb the cursor is nearest so it
+// receives the drag (otherwise the top input grabs every click). Works in all engines.
+(function(){
+  const mn=$('#durMin'), mx=$('#durMax'); if(!mn||!mx) return;
+  const rng=mn.parentElement;
+  function nearer(e){
+    const b=rng.getBoundingClientRect(), w=b.width||1, x=(e.clientX||0)-b.left;
+    const px=(+mn.value)/(+mn.max||1)*w, qx=(+mx.value)/(+mx.max||1)*w;
+    const useMin=Math.abs(x-px) <= Math.abs(x-qx);
+    mn.style.zIndex=useMin?4:3; mx.style.zIndex=useMin?3:4;
+  }
+  rng.addEventListener('pointermove', nearer);
+  rng.addEventListener('pointerdown', nearer);
+})();
 function paintPresence(online){
   const el=$('#presence');
   if(!online || !online.length){
