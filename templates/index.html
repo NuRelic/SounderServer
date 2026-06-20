@@ -1005,10 +1005,20 @@ function buildAllAlpha(){
     bar.innerHTML='';
     const letters=['#'].concat([...'ABCDEFGHIJKLMNOPQRSTUVWXYZ']);
     const all=document.createElement('button'); all.textContent='All'; all.dataset.l='';
-    all.onclick=()=>{ ALLLETTER=null; markAlpha(); render(); }; bar.appendChild(all);
+    all.onclick=()=>{
+      ALLLETTER=null;
+      if(PREV){ SORTFIELD=PREV.field; SORTDIR=PREV.dir; PREV=null; applySort(); paintSorters(); }   // restore prior sort
+      markAlpha(); render();
+    };
+    bar.appendChild(all);
     for(const L of letters){
       const b=document.createElement('button'); b.textContent=L; b.dataset.l=L; b.disabled=!_alphaCounts[L];
-      b.onclick=()=>{ if(b.disabled) return; ALLLETTER=L; $('#search').value=''; markAlpha(); render(); };
+      b.onclick=()=>{ if(b.disabled) return;
+        if(ALLLETTER===null && SORTFIELD!=='name'){ PREV = {field:SORTFIELD, dir:SORTDIR}; }   // remember the sort to restore
+        ALLLETTER=L; $('#search').value='';
+        SORTFIELD='name'; SORTDIR='asc'; applySort(); paintSorters();   // force A→Z
+        markAlpha(); render();
+      };
       bar.appendChild(b);
     }
     bar.dataset.built='1';
