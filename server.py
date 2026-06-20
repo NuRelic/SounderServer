@@ -293,6 +293,13 @@ def record_play(fn):
         _CAT.commit()
     _PLAYS[fn] = _PLAYS.get(fn, 0) + 1
 
+def catalog_rename(old, new):
+    """Repoint a renamed file in the catalog so its soundid — and play stats — carry over."""
+    with _CAT_LOCK:
+        _CAT.execute("UPDATE sounds SET file=? WHERE file=?", (new, old))
+        _CAT.commit()
+    catalog_reload()
+
 catalog_reload()
 
 # ----------------------------------------------------------------------------
@@ -911,6 +918,10 @@ def api_rename():
         if old in lst:
             lst[:] = [new if f == old else f for f in lst]; changed = True
     if changed: save_favs()
+    catalog_rename(old, new)              # carry the soundid (and its play stats) to the new name
+    with _DUR_LOCK:                       # move the cached duration so song/sound stays stable
+        if old in _DUR:
+            _DUR[new] = _DUR.pop(old); _save(DUR_FILE, _DUR)
     scan_library()
     return jsonify({"ok": True, "file": new})
 
