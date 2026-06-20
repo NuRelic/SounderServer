@@ -345,17 +345,12 @@
   /* ---- filters row separation + duration slider ---- */
   .toolbar.filters{border-top:1px solid var(--line);background:var(--panel)}
   .toolbar .flab{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;font-weight:700}
-  .durfilter{display:flex;align-items:center;gap:9px;flex:0 0 auto;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:5px 11px}
+  .durfilter{display:flex;align-items:center;gap:6px;flex:0 0 auto;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:4px 9px}
   .durfilter .lbl{font-size:11px;color:var(--dim);font-weight:600;white-space:nowrap}
-  .durfilter .rng{position:relative;width:140px;height:20px}
-  .durfilter .rng input{position:absolute;top:0;left:0;width:100%;margin:0;-webkit-appearance:none;appearance:none;background:none;height:20px;cursor:pointer}
-  .durfilter .rng input::-webkit-slider-thumb{-webkit-appearance:none;height:14px;width:14px;border-radius:50%;background:var(--accent);border:2px solid var(--bg);cursor:pointer}
-  .durfilter .rng input::-moz-range-thumb{height:14px;width:14px;border:2px solid var(--bg);border-radius:50%;background:var(--accent);cursor:pointer}
-  .durfilter .rng input::-webkit-slider-runnable-track{background:transparent;height:20px}
-  .durfilter .rng input::-moz-range-track{background:transparent}
-  .durfilter .rng .track{position:absolute;top:9px;left:0;right:0;height:3px;border-radius:3px;background:var(--line)}
-  .durfilter .rng .fill{position:absolute;top:9px;height:3px;border-radius:3px;background:var(--accent)}
-  .durfilter .read{font-size:11px;color:var(--txt);font-variant-numeric:tabular-nums;font-weight:600;min-width:58px;text-align:right}
+  .durfilter input{width:48px;background:var(--bg);border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:4px 6px;font-size:12px;text-align:center;-moz-appearance:textfield}
+  .durfilter input::-webkit-outer-spin-button,.durfilter input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+  .durfilter .dash{color:var(--dim)}
+  .durfilter .unit{font-size:11px;color:var(--dim)}
 
   /* ---- deck divider + song/sound seg ---- */
   .deckhead{display:flex;align-items:center;gap:10px;color:var(--dim);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;padding:8px 16px 2px}
@@ -424,11 +419,12 @@
         <button data-t="songs">🎵 Songs</button>
         <button data-t="sounds">Sounds</button>
       </div>
-      <div class="durfilter" id="durFilter" title="filter by length" style="display:none">
+      <div class="durfilter" id="durFilter" title="filter clips by length, in seconds" style="display:none">
         <span class="lbl">⏱ Length</span>
-        <div class="rng"><div class="track"></div><div class="fill" id="durFill"></div>
-          <input type="range" id="durMin" min="0" max="60" value="0"><input type="range" id="durMax" min="0" max="60" value="60"></div>
-        <span class="read" id="durRead">all</span>
+        <input type="number" id="durMin" min="0" step="0.5" placeholder="min" inputmode="decimal">
+        <span class="dash">–</span>
+        <input type="number" id="durMax" min="0" step="0.5" placeholder="max" inputmode="decimal">
+        <span class="unit">s</span>
       </div>
       <div class="allbar" id="allAlpha" style="display:none"></div>
     </div>
@@ -1039,7 +1035,7 @@ function resetFilters(){
   if (window.paintSorters) paintSorters();
   SONGFILTER='all'; document.querySelectorAll('#typeFilter button').forEach(x=>x.classList.toggle('on',x.dataset.t==='all'));
   ALLLETTER=null; $('#search').value=''; markAlpha();
-  if($('#durMin')){ $('#durMin').value=0; $('#durMax').value=DURCAP; paintDur(); }
+  if($('#durMin')){ $('#durMin').value=''; $('#durMax').value=''; readDur(); }
 }
 document.querySelectorAll('.tabs button[data-tab]').forEach(b=>{   // only real tabs, not the Edit buttons
   b.onclick = () => {
@@ -1218,35 +1214,15 @@ document.querySelectorAll('#typeFilter button').forEach(b=>{
     render(); };
 });
 // ---- duration range filter ----
-let DURMIN = 0, DURMAX = Infinity, DURCAP = 60;
-function initDurFilter(){
-  DURCAP = Math.max(15, Math.ceil(Math.max(0, ...SOUNDS.map(s=>s.dur||0))));
-  for(const el of [$('#durMin'), $('#durMax')]){ el.min=0; el.max=DURCAP; }
-  $('#durMin').value=0; $('#durMax').value=DURCAP; DURMIN=0; DURMAX=Infinity; paintDur();
+let DURMIN = 0, DURMAX = Infinity;
+function readDur(){            // lower/upper length bounds in seconds; blank = unbounded
+  const lo = parseFloat($('#durMin').value), hi = parseFloat($('#durMax').value);
+  DURMIN = isNaN(lo) ? 0 : Math.max(0, lo);
+  DURMAX = isNaN(hi) ? Infinity : hi;
 }
-function paintDur(){
-  let lo=+$('#durMin').value, hi=+$('#durMax').value;
-  if(lo>hi){ [lo,hi]=[hi,lo]; }
-  DURMIN=lo; DURMAX=(hi>=DURCAP)?Infinity:hi;
-  $('#durRead').textContent = (hi>=DURCAP) ? (lo+'s+') : (lo+'–'+hi+'s');
-  const f=$('#durFill'); if(f){ f.style.left=(lo/DURCAP*100)+'%'; f.style.right=(100-hi/DURCAP*100)+'%'; }
-}
-$('#durMin').oninput = () => { paintDur(); render(); };
-$('#durMax').oninput = () => { paintDur(); render(); };
-// two overlapping range inputs: raise whichever thumb the cursor is nearest so it
-// receives the drag (otherwise the top input grabs every click). Works in all engines.
-(function(){
-  const mn=$('#durMin'), mx=$('#durMax'); if(!mn||!mx) return;
-  const rng=mn.parentElement;
-  function nearer(e){
-    const b=rng.getBoundingClientRect(), w=b.width||1, x=(e.clientX||0)-b.left;
-    const px=(+mn.value)/(+mn.max||1)*w, qx=(+mx.value)/(+mx.max||1)*w;
-    const useMin=Math.abs(x-px) <= Math.abs(x-qx);
-    mn.style.zIndex=useMin?4:3; mx.style.zIndex=useMin?3:4;
-  }
-  rng.addEventListener('pointermove', nearer);
-  rng.addEventListener('pointerdown', nearer);
-})();
+function initDurFilter(){ readDur(); }     // keep typed bounds across background refreshes
+$('#durMin').oninput = () => { readDur(); render(); };
+$('#durMax').oninput = () => { readDur(); render(); };
 function paintPresence(online){
   const el=$('#presence');
   if(!online || !online.length){
