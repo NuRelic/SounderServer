@@ -401,28 +401,21 @@
 <div class="main">
   <div class="board">
     <div class="tabs">
-      <button class="on" data-tab="all">All</button>
-      <button data-tab="fav">★ Favorites</button>
-      <button data-tab="add" id="addTab" style="display:none">➕ Add / Edit</button>
-      <span class="tabs-right">
+      <div class="grp tabsgrp">
+        <button class="on" data-tab="all">All</button>
+        <button data-tab="fav">★ Favorites</button>
+        <button data-tab="add" id="addTab" style="display:none">➕ Add / Edit</button>
+      </div>
+      <div class="grp sorters" id="sorters"></div>
+      <div class="grp rightgrp">
         <span class="count" id="shown"></span>
         <button class="btn-edit" id="ceditToggle" style="display:none">✏️ Edit</button>
         <button class="btn-edit" id="editToggle" style="display:none">✏️ Edit layout</button>
-      </span>
+      </div>
     </div>
-    <div class="toolbar" id="toolbar">
+    <div class="toolbar filters" id="toolbar">
+      <span class="flab">Filter</span>
       <input class="search" id="search" placeholder="filter…">
-      <select class="sortsel" id="sortSel" style="display:none" title="sort order">
-        <option value="plays">🔥 Most played</option>
-        <option value="plays_asc">Least played</option>
-        <option value="name">A → Z</option>
-        <option value="name_desc">Z → A</option>
-        <option value="newest">🆕 Newest added</option>
-        <option value="oldest">🕰 Oldest added</option>
-        <option value="long">⏱ Longest</option>
-        <option value="short">⏱ Shortest</option>
-        <option value="default">★ Custom / fav order</option>
-      </select>
       <div class="typefilter" id="typeFilter" style="display:none">
         <button data-t="all" class="on">All</button>
         <button data-t="songs">🎵 Songs</button>
@@ -546,6 +539,41 @@ function audioUrl(file, ver){
 // debounce: coalesce rapid calls (typing) so we don't re-render ~1978 tiles per keystroke
 function debounce(fn, ms){ let t; return function(){ clearTimeout(t); t=setTimeout(fn, ms); }; }
 let LANES = 2, LANE = 0, SONG_LANES = 1, ALLLETTER = null, SONGFILTER = 'all', SORT = 'plays';
+// tri-state sort: SORTFIELD=null → tab's natural order; otherwise SORTDIR='desc'|'asc'
+let SORTFIELD = null, SORTDIR = null, PREV = null;
+const SORTS = [
+  {key:'plays', lab:'🔥 Played', desc:'plays',     asc:'plays_asc'},
+  {key:'name',  lab:'A–Z',       desc:'name_desc',  asc:'name'},   // ▲ A→Z
+  {key:'added', lab:'🆕 Added',   desc:'newest',     asc:'oldest'},
+  {key:'len',   lab:'⏱ Length',  desc:'long',       asc:'short'},
+];
+function buildSorters(){
+  const box=$('#sorters'); box.innerHTML='<span class="slab">Sort</span>';
+  for(const s of SORTS){
+    const b=document.createElement('button'); b.className='sortbtn';
+    b.innerHTML=s.lab+' <span class="arw"></span>';
+    b.onclick=()=>cycleSort(s.key); box.appendChild(b); s._el=b;
+  }
+  paintSorters();
+}
+function cycleSort(key){
+  if(SORTFIELD!==key){ SORTFIELD=key; SORTDIR='desc'; }
+  else if(SORTDIR==='desc'){ SORTDIR='asc'; }
+  else { SORTFIELD=null; SORTDIR=null; }   // 3rd click clears
+  PREV=null;                                // a manual sort cancels the letter-restore memory
+  applySort(); paintSorters(); render();
+}
+function applySort(){
+  const s=SORTS.find(x=>x.key===SORTFIELD);
+  SORT = s ? s[SORTDIR] : (TAB==='fav' ? 'custom' : 'plays_natural');
+}
+function paintSorters(){
+  for(const s of SORTS){
+    const on=s.key===SORTFIELD;
+    s._el.classList.toggle('on', on);
+    s._el.querySelector('.arw').textContent = on ? (SORTDIR==='desc'?'▼':'▲') : '';
+  }
+}
 // format a duration in seconds → compact label: "4s" / "1:23"
 function fmtDur(d){ d=Math.round(d||0); return d>=60 ? (Math.floor(d/60)+':'+String(d%60).padStart(2,'0')) : (d+'s'); }
 const LANE_COLORS = ['#3aa0ff','#ffa53a','#00d2a8','#ff6ec7'];
@@ -669,7 +697,7 @@ function render(){
   const anyEdit  = editing || cediting;
   const showFilters = (TAB==='all' || TAB==='fav');
   $('#toolbar').style.display = (TAB==='add' || editing) ? 'none' : 'flex';
-  $('#sortSel').style.display = showFilters ? 'inline-block' : 'none';
+  $('#sorters').style.display = showFilters ? 'flex' : 'none';
   grid.style.display = TAB==='add' ? 'none' : 'grid';
   $('#addwrap').style.display = TAB==='add' ? 'block' : 'none';
   $('#editToggle').style.display  = (TAB==='fav' && !EDITMODE && !CEDIT) ? 'inline-block' : 'none';
@@ -934,9 +962,12 @@ function markAlpha(){
 
 // switching tabs resets filters/sort to defaults (not persisted across tabs)
 function resetFilters(){
-  SORT='plays'; $('#sortSel').value='plays';
+  SORTFIELD = null; SORTDIR = null;
+  SORT = (TAB === 'fav') ? 'custom' : 'plays_natural';
+  if (window.paintSorters) paintSorters();
   SONGFILTER='all'; document.querySelectorAll('#typeFilter button').forEach(x=>x.classList.toggle('on',x.dataset.t==='all'));
   ALLLETTER=null; $('#search').value=''; markAlpha();
+  if($('#durMin')){ $('#durMin').value=0; $('#durMax').value=DURCAP; paintDur(); }
 }
 document.querySelectorAll('.tabs button[data-tab]').forEach(b=>{   // only real tabs, not the Edit buttons
   b.onclick = () => {
@@ -944,7 +975,6 @@ document.querySelectorAll('.tabs button[data-tab]').forEach(b=>{   // only real 
     b.classList.add('on'); TAB = b.dataset.tab; EDITMODE = false; CEDIT = false; resetFilters(); render();
   };
 });
-$('#sortSel').onchange = () => { SORT = $('#sortSel').value; render(); };
 
 // ---- favorites ----
 function toggleFav(s){
@@ -1520,7 +1550,7 @@ document.addEventListener('visibilitychange', ()=>{   // back to the tab → ref
 });
 function startApp(){
   if(APP_STARTED) return; APP_STARTED = true;
-  buildLanePicker(); applySolo(); applySync(); syncClock();
+  buildSorters(); buildLanePicker(); applySolo(); applySync(); syncClock();
   loadSounds(); loadFavs();
   pollFeed(); scheduleFeed();
   pollActive(); scheduleActive();
