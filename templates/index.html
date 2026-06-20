@@ -504,6 +504,12 @@
       <button class="mbtn" id="prevPlay">▶ Preview</button>
       <button class="mbtn" id="selFull">⤢ Full</button>
     </div>
+    <label>Type</label>
+    <div class="seg" id="typeSeg">
+      <button data-ty="auto">Auto</button>
+      <button data-ty="song">🎵 Song</button>
+      <button data-ty="sound">Sound</button>
+    </div>
     <label>Volume <b id="volLbl">100%</b></label>
     <div class="volrow"><button class="vstep" id="volDn" title="quieter">−</button><input type="range" id="vol" min="0" max="300" value="100"><button class="vstep" id="volUp" title="louder">+</button></div>
     <label>Name</label>
@@ -873,9 +879,15 @@ function favDnD(el, file){
 }
 // ---- clip editor (trim + volume, in-place) ----
 let EDITCUR=null, EDITBUF=null, EDITDUR=0, regStart=0, regEnd=0, prevAudio=null;
+// song/sound override segmented control
+let EDIT_TYPE = 'auto';
+function setTypeSeg(ty){ EDIT_TYPE=ty;
+  document.querySelectorAll('#typeSeg button').forEach(b=>b.classList.toggle('on', b.dataset.ty===ty)); }
+document.querySelectorAll('#typeSeg button').forEach(b=> b.onclick=()=>setTypeSeg(b.dataset.ty));
 async function openEdit(s){
   EDITCUR=s; $('#editErr').textContent=''; $('#editTitle').textContent='Edit · '+s.name;
   $('#editName').value=s.name; $('#vol').value=100; $('#volLbl').textContent='100%';
+  setTypeSeg(s.long ? 'song' : 'sound');   // reflect the clip's current effective type
   $('#editDelete').style.display = ME.admin ? '' : 'none';   // removing clips is admin-only
   $('#editModal').classList.add('show');
   EDITBUF=null; EDITDUR=0; regStart=0; regEnd=0;
@@ -950,6 +962,8 @@ $('#editSave').onclick=async()=>{
     await fetch('/api/rename',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({file:EDITCUR.file, name:newName})});
   }
+  await fetch('/api/sound_type', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({file: EDITCUR.file, type: EDIT_TYPE})});
   closeEdit(); await loadSounds();
 };
 $('#editDelete').onclick=async()=>{
