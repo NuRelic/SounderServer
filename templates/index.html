@@ -312,6 +312,16 @@
     .tabs button{padding:5px 10px}
     .grp{padding:3px 6px}
     .sortbtn{padding:4px 8px}
+    /* filter + All/Songs/Sounds + Length share one horizontal-scroll row (like the A–Z bar) */
+    .filtrow{display:flex;flex:1 1 100%;flex-wrap:nowrap;overflow-x:auto;gap:6px;align-items:center;
+      min-width:0;-webkit-overflow-scrolling:touch}
+    .filtrow>*{flex:0 0 auto}
+    .filtrow input.search{width:160px}
+    /* tabs row: drop the "# shown" count and pull Edit up to the right of All/Fav/Add;
+       Sort drops to its own full-width row below */
+    #shown{display:none !important}   /* JS sets an inline display on #shown; override it on mobile */
+    .tabs .rightgrp{order:0;margin-left:auto;border:none;background:none;padding:0;gap:5px}
+    .tabs .sorters{order:1;flex:1 1 100%}
   }
 
   /* ---- combined header: now-playing grid | controls ---- */
@@ -344,6 +354,7 @@
     #ctrlToggle,#ctrlClose{display:none}
     #hdpanel{display:contents}
     #ctrlBackdrop{display:none}
+    .filtrow{display:contents}   /* desktop: filter controls flow into the toolbar as before */
   }
   .hdctrls .name{width:84px;flex:0 1 auto}
   .iconbtn{width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;
@@ -456,19 +467,21 @@
       </div>
     </div>
     <div class="toolbar filters" id="toolbar">
-      <span class="flab">Filter</span>
-      <input class="search" id="search" placeholder="filter…">
-      <div class="typefilter" id="typeFilter" style="display:none">
-        <button data-t="all" class="on">All</button>
-        <button data-t="songs">🎵 Songs</button>
-        <button data-t="sounds">Sounds</button>
-      </div>
-      <div class="durfilter" id="durFilter" title="filter clips by length, in seconds" style="display:none">
-        <span class="lbl">⏱ Length</span>
-        <input type="number" id="durMin" min="0" step="0.5" placeholder="min" inputmode="decimal">
-        <span class="dash">–</span>
-        <input type="number" id="durMax" min="0" step="0.5" placeholder="max" inputmode="decimal">
-        <span class="unit">s</span>
+      <div class="filtrow">
+        <span class="flab">Filter</span>
+        <input class="search" id="search" placeholder="filter…">
+        <div class="typefilter" id="typeFilter" style="display:none">
+          <button data-t="all" class="on">All</button>
+          <button data-t="songs">🎵 Songs</button>
+          <button data-t="sounds">Sounds</button>
+        </div>
+        <div class="durfilter" id="durFilter" title="filter clips by length, in seconds" style="display:none">
+          <span class="lbl">⏱ Length</span>
+          <input type="number" id="durMin" min="0" step="0.5" placeholder="min" inputmode="decimal">
+          <span class="dash">–</span>
+          <input type="number" id="durMax" min="0" step="0.5" placeholder="max" inputmode="decimal">
+          <span class="unit">s</span>
+        </div>
       </div>
       <div class="allbar" id="allAlpha" style="display:none"></div>
     </div>
