@@ -172,7 +172,11 @@ def run():
                 if a["token"] not in _playing:
                     play_short(a, vol)
                 else:
-                    try: _playing[a["token"]][0].set_volume(vol)
+                    # update the SOUND's volume (index 1), NOT the channel (index 0):
+                    # play_short sets snd volume and leaves the channel at 1.0, so
+                    # setting the channel here too would compound to vol*vol and the
+                    # clip would drop after the first poll.
+                    try: _playing[a["token"]][1].set_volume(vol)
                     except Exception: pass
             for tok in list(_playing):
                 if tok not in live:                 # interrupted/finished on the server
