@@ -227,6 +227,9 @@
   .fi.cmd .c{color:var(--txt);font-weight:600}
   .fi.cmd.wav .c{color:var(--wav)} .fi.cmd.mp3 .c{color:var(--mp3)}
   .fi .t{color:var(--dim);font-size:10px;margin-left:4px}
+  .fi .fav{background:none;border:none;color:#8a8f98;font-size:13px;line-height:1;cursor:pointer;padding:0 3px;vertical-align:middle;opacity:.85}
+  .fi .fav:hover{opacity:1}
+  .fi .fav.on{color:var(--fav);opacity:1}
   .fi.chat .x{color:var(--txt)}
   .composer{position:relative;border-top:1px solid var(--line);padding:10px}
   .composer input{width:100%;background:var(--panel2);border:1px solid var(--line);
@@ -601,6 +604,7 @@ async function loadFavs(){
     }catch(_){ FAVSET = new Set(); DECK = []; }
   }
   render();
+  syncFeedFavs();
 }
 // audio URL with a version (file mtime) appended so edits bust the browser cache
 function audioUrl(file, ver){
@@ -1123,6 +1127,7 @@ function toggleFav(s){
   cacheFavs();
   fetch('/api/favorite',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({file:s.file, on, user:uname()})});
+  syncFeedFavs();                              // mirror the change onto any visible feed stars
   if(TAB==='fav'){ render(); return; }        // membership changed → rebuild the fav list
   // otherwise just repaint this one star instead of rebuilding ~1978 tiles
   const sel = (window.CSS && CSS.escape) ? CSS.escape(s.file) : s.file.replace(/"/g,'\\"');
@@ -1476,14 +1481,24 @@ function feedItem(it){
   const uc = it.color || '#00d2a8';
   if(it.kind==='cmd'){
     el.className = 'fi cmd '+laneClass(it.lane);
+    // favorite straight from the feed entry's file — no BYFILE lookup, so the star
+    // renders even before the sound library finishes loading (toggleFav needs only .file).
     el.innerHTML = `<span class="u" style="color:${uc}">${esc(it.user)}</span> `+
-      `<span class="c">!${esc((it.name||'').toLowerCase())}</span><span class="t">${t}</span>`;
+      `<span class="c">!${esc((it.name||'').toLowerCase())}</span>`+
+      (it.file?`<button class="fav${FAVSET.has(it.file)?' on':''}" data-file="${esc(it.file)}" title="favorite this sound">★</button>`:'')+
+      `<span class="t">${t}</span>`;
+    if(it.file){ const fb=el.querySelector('.fav'); fb.onclick=(e)=>{ e.stopPropagation(); toggleFav({file:it.file}); fb.classList.toggle('on', FAVSET.has(it.file)); }; }
   } else {
     el.className = 'fi chat';
     el.innerHTML = `<span class="u" style="color:${uc}">${esc(it.user)}</span> `+
       `<span class="x">${esc(it.text||'')}</span><span class="t">${t}</span>`;
   }
   return el;
+}
+// keep feed stars in sync with FAVSET (favorites may load after the feed paints,
+// or change from a grid tap) — re-derive every visible feed star's on-state.
+function syncFeedFavs(){
+  document.querySelectorAll('#feed .fav[data-file]').forEach(b=>b.classList.toggle('on', FAVSET.has(b.dataset.file)));
 }
 
 // ---- composer w/ live lookup ----
