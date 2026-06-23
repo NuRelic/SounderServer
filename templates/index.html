@@ -290,13 +290,13 @@
   }
 
   /* ---- combined header: now-playing grid | controls ---- */
-  header.combo{align-items:stretch;gap:12px;padding:8px 14px}
+  header.combo{align-items:stretch;gap:12px;padding:8px 14px;position:relative}
   /* now-playing eats ALL width the right controls don't need */
   .nowplay{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:4px}
   .nowplay .np-lab{font-size:10px;font-weight:700;letter-spacing:.6px;color:var(--dim);text-transform:uppercase}
   /* 2-up grid: two boxes fill the row; a lone box is one column (half), not stretched */
   .np-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
-  .np-slot{display:flex;align-items:center;gap:6px;background:var(--panel2);min-width:0;
+  .np-slot{display:flex;align-items:center;gap:6px;background:var(--panel2);min-width:0;height:36px;
            border:1px solid var(--line);border-radius:8px;padding:4px 9px;font-size:12px}
   .np-slot.song{border-color:var(--song)}
   .np-slot .tg{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;flex:0 0 auto}
@@ -310,8 +310,9 @@
     font-size:10px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
   .np-slot.idle{color:var(--dim);justify-content:center;font-size:11px;border-style:dashed}
   /* controls size to their content and never wrap; now-playing yields the width */
-  .hdctrls{flex:0 0 auto;display:flex;align-items:center;gap:6px;justify-content:flex-end;
-           border-left:1px solid var(--line);padding-left:12px;flex-wrap:nowrap}
+  .hdctrls{flex:0 0 auto;display:flex;flex-direction:column;gap:6px;justify-content:center;align-items:flex-end;
+           border-left:1px solid var(--line);padding-left:12px}
+  .hdrow{display:flex;align-items:center;gap:6px;justify-content:flex-end}
   .hdctrls .name{width:84px;flex:0 1 auto}
   .iconbtn{width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;
            background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:8px;
@@ -323,7 +324,7 @@
   .hdctrls .vol-ctl{padding:4px 8px;gap:4px}
   .hdctrls .vol-ctl input[type=range]{width:54px}
   /* gear popover holding lane/box-volume controls */
-  .gearpop{position:absolute;top:52px;right:14px;z-index:55;display:none;flex-direction:column;gap:8px;
+  .gearpop{position:absolute;top:calc(100% + 6px);right:14px;z-index:55;display:none;flex-direction:column;gap:8px;
            background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;
            box-shadow:0 10px 34px rgba(0,0,0,.5);min-width:230px}
   .gearpop.show{display:flex}
@@ -373,19 +374,22 @@
     <div id="laneBoxes" class="np-grid"></div>
   </div>
   <div class="hdctrls">
-    <input class="name" id="name" placeholder="name">
-    <input type="color" id="nameColor" class="namecolor" title="your name color">
-    <span class="me" id="me">
-      <span class="badge" id="meBadge" style="display:none"></span>
-      <button class="btn-edit" id="loginBtn">🔓 Log in</button>
-    </span>
-    <button class="iconbtn" id="syncBtn" style="display:none" title="Sync: align playback with everyone on a shared timeline (~1s delay)">🔁</button>
-    <button class="iconbtn" id="soloBtn" title="Solo: play only for you — you won't hear others and they won't hear you">🎧</button>
-    <div class="vol-ctl"><button class="spk" id="muteBtn" title="mute / unmute">🔊</button><button class="vstep" id="bvolDn" title="quieter">−</button><input type="range" id="browserVol" min="0" max="100" value="100"><button class="vstep" id="bvolUp" title="louder">+</button></div>
-    <button class="iconbtn" id="adminGear" style="display:none" title="Admin — lane counts, box volume">⚙</button>
-    <span id="connWarn" style="display:none;align-items:center;gap:4px;background:rgba(255,165,58,.15);
-      border:1px solid var(--mp3);color:var(--mp3);border-radius:14px;padding:3px 9px;font-size:11px;font-weight:600"
-      title="Your connection is weak, so playback is running un-synced (snappy) to avoid skips">⚠ weak conn · sync paused</span>
+    <div class="hdrow">
+      <input class="name" id="name" placeholder="name">
+      <input type="color" id="nameColor" class="namecolor" title="your name color">
+      <span class="me" id="me">
+        <span class="badge" id="meBadge" style="display:none"></span>
+        <button class="btn-edit" id="loginBtn">🔓 Log in</button>
+      </span>
+    </div>
+    <div class="hdrow">
+      <button class="iconbtn" id="soloBtn" title="Solo: play only for you — you won't hear others and they won't hear you">🎧</button>
+      <div class="vol-ctl"><button class="spk" id="muteBtn" title="mute / unmute">🔊</button><button class="vstep" id="bvolDn" title="quieter">−</button><input type="range" id="browserVol" min="0" max="100" value="100"><button class="vstep" id="bvolUp" title="louder">+</button></div>
+      <button class="iconbtn" id="adminGear" style="display:none" title="Admin — lane counts, box volume">⚙</button>
+      <span id="connWarn" style="display:none;align-items:center;gap:4px;background:rgba(255,165,58,.15);
+        border:1px solid var(--mp3);color:var(--mp3);border-radius:14px;padding:3px 9px;font-size:11px;font-weight:600"
+        title="Your connection is weak, so playback is running un-synced (snappy) to avoid skips">⚠ weak conn · sync paused</span>
+    </div>
   </div>
   <div class="gearpop" id="gearPop">
     <div class="lanes-ctl" id="songLanesCtl">
@@ -612,7 +616,6 @@ function applyMe(){
   $('#boxVolCtl').style.display = ME.admin ? 'flex' : 'none';
   $('#lanesCtl').style.display = ME.admin ? 'flex' : 'none';
   $('#songLanesCtl').style.display = ME.admin ? 'flex' : 'none';
-  $('#syncBtn').style.display = ME.admin ? 'inline-flex' : 'none';
   $('#adminGear').style.display = ME.admin ? 'inline-flex' : 'none';
   if(!ME.admin){ $('#gearPop').classList.remove('show'); }
   $('#nameColor').classList.toggle('admin', !!ME.admin);   // green border when admin
@@ -1204,7 +1207,7 @@ function paintChannels(active){
     const a=s.a, canKill=ME.admin||(a.by===uname()), src=BYFILE[a.file];
     el.className='np-slot'+(s.song?' song':'');
     el.innerHTML=
-      `<span class="tg${s.song?'':' snd'}">${s.song?'🎵 Song':'Snd'}</span>`+
+      (s.song?`<span class="tg">🎵 Song</span>`:'')+
       `<span class="cnm">${esc(a.name)}</span>`+
       `<span class="by"${a.color?' style="color:'+a.color+'"':''}>${esc(a.by||'')}</span>`+
       `<span class="rem" data-end="${a.start+(a.dur||0)}"></span>`+
@@ -1319,15 +1322,8 @@ async function syncClock(){
   if(best) clockOffset = best.off;
 }
 function applySync(){
-  $('#syncBtn').classList.toggle('sync-on', SYNC);
-  $('#syncBtn').textContent = SYNC ? '🔁 Sync: on' : '🔁 Sync: off';
-  if(SYNC) syncClock();
+  if(SYNC) syncClock();   // sync is always on now; the admin toggle button was removed
 }
-$('#syncBtn').onclick = () => {
-  if(!ME.admin) return;                              // admin-only
-  fetch('/api/sync',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({on:!SYNC})}).then(r=>r.json()).then(d=>{ SYNC=!!d.on; applySync(); });
-};
 // per-client connection health: on a weak/laggy connection, locally drop out of
 // sync (play snappy) so a user doesn't get the drift-seek "blip out / catch up".
 let connBad = false, _pollLat = [];
