@@ -24,8 +24,8 @@ POLL     = 0.35
 # box. Short sounds already play at max (Sound.set_volume can't amplify past 1.0),
 # so we tame the song instead: a baseline reduction, and DUCK it while any short
 # sound is firing so the sound cuts through. Both env-tunable (0..1).
-SONG_GAIN = float(os.environ.get("SS_SONG_GAIN", "0.7"))   # song level when no sound is firing
-SONG_DUCK = float(os.environ.get("SS_SONG_DUCK", "0.3"))   # song level while a sound is firing
+SONG_GAIN = float(os.environ.get("SS_SONG_GAIN", "0.7"))    # song level when no sound is firing
+SONG_DUCK = float(os.environ.get("SS_SONG_DUCK", "0.12"))   # song level while a sound is firing — duck hard so the (un-amplifiable) clip cuts through
 os.makedirs(CACHE, exist_ok=True)
 
 os.environ.setdefault("SDL_AUDIODRIVER", os.environ.get("SS_DRIVER", "alsa"))
