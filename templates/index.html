@@ -287,6 +287,31 @@
     .feed-toggle{display:flex;align-items:center;justify-content:center}
     .feed.open ~ .feed-toggle, body.feed-open .feed-toggle{background:#444}
     .composer .lookup{left:10px;right:10px}
+    /* right-header controls collapse into a slide-out panel; ☰ opens it, the cog is gone */
+    #ctrlToggle{display:inline-flex;flex:0 0 auto;margin-left:auto;align-self:flex-start}
+    #hdpanel{display:flex;flex-direction:column;gap:14px;position:fixed;top:0;right:0;
+      height:100dvh;width:min(86vw,320px);padding:16px;overflow-y:auto;z-index:62;
+      background:var(--panel);border-left:1px solid var(--line);
+      box-shadow:-10px 0 34px rgba(0,0,0,.55);transform:translateX(101%);transition:transform .25s ease}
+    body.ctrl-open #hdpanel{transform:translateX(0)}
+    #ctrlClose{display:inline-flex;align-self:flex-end}
+    #hdpanel .hdctrls{flex-direction:column;align-items:stretch;border-left:none;padding-left:0;gap:14px}
+    #hdpanel .hdrow{justify-content:flex-start;flex-wrap:wrap;gap:8px}
+    #hdpanel .name{width:auto;flex:1 1 120px}
+    #hdpanel .vol-ctl{flex:1 1 auto}
+    #hdpanel .vol-ctl span{display:inline}          /* show 🏠 Box / labels inside the panel */
+    #hdpanel .vol-ctl input[type=range]{flex:1 1 auto;width:auto}
+    #adminGear{display:none !important}             /* cog removed on mobile — options live in the panel */
+    #gearPop{position:static !important;display:flex !important;flex-direction:column;gap:12px;
+      background:none;border:none;box-shadow:none;padding:0;min-width:0}
+    #gearPop .lanes-ctl,#gearPop .vol-ctl{width:100%;justify-content:space-between}
+    #ctrlBackdrop{display:block;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:61;
+      opacity:0;pointer-events:none;transition:opacity .25s ease}
+    body.ctrl-open #ctrlBackdrop{opacity:1;pointer-events:auto}
+    /* trim toolbar verticals — the header was eating too much height */
+    .tabs button{padding:5px 10px}
+    .grp{padding:3px 6px}
+    .sortbtn{padding:4px 8px}
   }
 
   /* ---- combined header: now-playing grid | controls ---- */
@@ -313,6 +338,13 @@
   .hdctrls{flex:0 0 auto;display:flex;flex-direction:column;gap:6px;justify-content:center;align-items:flex-end;
            border-left:1px solid var(--line);padding-left:12px}
   .hdrow{display:flex;align-items:center;gap:6px;justify-content:flex-end}
+  /* desktop only: panel is a no-op wrapper, trigger/close/backdrop hidden (mobile-only).
+     Scoped to min-width so these can't override the mobile drawer rules defined above. */
+  @media (min-width:761px){
+    #ctrlToggle,#ctrlClose{display:none}
+    #hdpanel{display:contents}
+    #ctrlBackdrop{display:none}
+  }
   .hdctrls .name{width:84px;flex:0 1 auto}
   .iconbtn{width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;
            background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:8px;
@@ -373,35 +405,40 @@
     <span class="np-lab">▶ Now playing</span>
     <div id="laneBoxes" class="np-grid"></div>
   </div>
-  <div class="hdctrls">
-    <div class="hdrow">
-      <input class="name" id="name" placeholder="name">
-      <input type="color" id="nameColor" class="namecolor" title="your name color">
-      <span class="me" id="me">
-        <span class="badge" id="meBadge" style="display:none"></span>
-        <button class="btn-edit" id="loginBtn">🔓 Log in</button>
-      </span>
+  <button class="iconbtn" id="ctrlToggle" title="Settings &amp; controls">☰</button>
+  <div id="hdpanel">
+    <button class="iconbtn" id="ctrlClose" title="Close">✕</button>
+    <div class="hdctrls">
+      <div class="hdrow">
+        <input class="name" id="name" placeholder="name">
+        <input type="color" id="nameColor" class="namecolor" title="your name color">
+        <span class="me" id="me">
+          <span class="badge" id="meBadge" style="display:none"></span>
+          <button class="btn-edit" id="loginBtn">🔓 Log in</button>
+        </span>
+      </div>
+      <div class="hdrow">
+        <button class="iconbtn" id="soloBtn" title="Solo: play only for you — you won't hear others and they won't hear you">🎧</button>
+        <div class="vol-ctl"><button class="spk" id="muteBtn" title="mute / unmute">🔊</button><button class="vstep" id="bvolDn" title="quieter">−</button><input type="range" id="browserVol" min="0" max="100" value="100"><button class="vstep" id="bvolUp" title="louder">+</button></div>
+        <button class="iconbtn" id="adminGear" style="display:none" title="Admin — lane counts, box volume">⚙</button>
+        <span id="connWarn" style="display:none;align-items:center;gap:4px;background:rgba(255,165,58,.15);
+          border:1px solid var(--mp3);color:var(--mp3);border-radius:14px;padding:3px 9px;font-size:11px;font-weight:600"
+          title="Your connection is weak, so playback is running un-synced (snappy) to avoid skips">⚠ weak conn · sync paused</span>
+      </div>
     </div>
-    <div class="hdrow">
-      <button class="iconbtn" id="soloBtn" title="Solo: play only for you — you won't hear others and they won't hear you">🎧</button>
-      <div class="vol-ctl"><button class="spk" id="muteBtn" title="mute / unmute">🔊</button><button class="vstep" id="bvolDn" title="quieter">−</button><input type="range" id="browserVol" min="0" max="100" value="100"><button class="vstep" id="bvolUp" title="louder">+</button></div>
-      <button class="iconbtn" id="adminGear" style="display:none" title="Admin — lane counts, box volume">⚙</button>
-      <span id="connWarn" style="display:none;align-items:center;gap:4px;background:rgba(255,165,58,.15);
-        border:1px solid var(--mp3);color:var(--mp3);border-radius:14px;padding:3px 9px;font-size:11px;font-weight:600"
-        title="Your connection is weak, so playback is running un-synced (snappy) to avoid skips">⚠ weak conn · sync paused</span>
+    <div class="gearpop" id="gearPop">
+      <div class="lanes-ctl" id="songLanesCtl">
+        <span>🎵 Songs</span><button id="songLanesDn">−</button><b id="songLanesN">1</b><button id="songLanesUp">+</button>
+      </div>
+      <div class="lanes-ctl" id="lanesCtl">
+        <span>🔊 Lanes</span><button id="lanesDn">−</button><b id="lanesN">2</b><button id="lanesUp">+</button>
+      </div>
+      <div class="vol-ctl" id="boxVolCtl"><span>🏠 Box</span><button class="vstep" id="boxVolDn" title="quieter">−</button><input type="range" id="boxVol" min="0" max="100" value="50"><button class="vstep" id="boxVolUp" title="louder">+</button></div>
     </div>
-  </div>
-  <div class="gearpop" id="gearPop">
-    <div class="lanes-ctl" id="songLanesCtl">
-      <span>🎵 Songs</span><button id="songLanesDn">−</button><b id="songLanesN">1</b><button id="songLanesUp">+</button>
-    </div>
-    <div class="lanes-ctl" id="lanesCtl">
-      <span>🔊 Lanes</span><button id="lanesDn">−</button><b id="lanesN">2</b><button id="lanesUp">+</button>
-    </div>
-    <div class="vol-ctl" id="boxVolCtl"><span>🏠 Box</span><button class="vstep" id="boxVolDn" title="quieter">−</button><input type="range" id="boxVol" min="0" max="100" value="50"><button class="vstep" id="boxVolUp" title="louder">+</button></div>
   </div>
   <span class="count" id="libcount" style="display:none"></span>
 </header>
+<div id="ctrlBackdrop"></div>
 
 <div class="main">
   <div class="board">
@@ -1207,14 +1244,11 @@ function paintChannels(active){
     const a=s.a, canKill=ME.admin||(a.by===uname()), src=BYFILE[a.file];
     el.className='np-slot'+(s.song?' song':'');
     el.innerHTML=
-      (s.song?`<span class="tg">🎵 Song</span>`:'')+
+      (canKill?`<button class="kill" title="stop this sound">✕</button>`:'')+
       `<span class="cnm">${esc(a.name)}</span>`+
       `<span class="by"${a.color?' style="color:'+a.color+'"':''}>${esc(a.by||'')}</span>`+
-      `<span class="rem" data-end="${a.start+(a.dur||0)}"></span>`+
-      (src?`<button class="fav ${FAVSET.has(src.file)?'on':''}" title="favorite this sound">★</button>`:'')+
-      (canKill?`<button class="kill" title="stop this sound">✕</button>`:'');
+      `<span class="rem" data-end="${a.start+(a.dur||0)}"></span>`;
     if(canKill) el.querySelector('.kill').onclick=()=>killActive(a.token);
-    if(src){ const fb=el.querySelector('.fav'); fb.onclick=()=>{ toggleFav(src); fb.classList.toggle('on', FAVSET.has(src.file)); }; }
     updateRem(el.querySelector('.rem'));
     box.appendChild(el);
   }
@@ -1618,6 +1652,11 @@ $('#feedToggle').onclick = () => {
   const open = f.classList.toggle('open');
   $('#feedToggle').textContent = open ? '✕' : '💬';
 };
+
+// ---- mobile controls drawer (☰): holds name/color/login, solo/volume, admin lanes/box ----
+$('#ctrlToggle').onclick  = () => document.body.classList.toggle('ctrl-open');
+$('#ctrlClose').onclick   = () => document.body.classList.remove('ctrl-open');
+$('#ctrlBackdrop').onclick= () => document.body.classList.remove('ctrl-open');
 
 // ---- boot ----
 let APP_STARTED = false;
