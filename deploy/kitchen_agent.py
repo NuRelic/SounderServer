@@ -26,6 +26,7 @@ POLL     = 0.35
 # sound is firing so the sound cuts through. Both env-tunable (0..1).
 SONG_GAIN = float(os.environ.get("SS_SONG_GAIN", "0.7"))   # song level when no sound is firing
 SONG_DUCK = float(os.environ.get("SS_SONG_DUCK", "0.6"))   # song level while a sound is firing — only a slight dip so song + clip play at comparable volume
+SOUND_GAIN = float(os.environ.get("SS_SOUND_GAIN", "0.6"))  # short-clip level relative to box volume — pulled below the song baseline so clips don't sit above songs
 os.makedirs(CACHE, exist_ok=True)
 
 os.environ.setdefault("SDL_AUDIODRIVER", os.environ.get("SS_DRIVER", "alsa"))
@@ -167,16 +168,18 @@ def run():
             live = {a["token"] for a in active}
             shorts = [a for a in active if not _is_song(a)]
             songs  = [a for a in active if _is_song(a)]
-            # short sounds — overlap on channels
+            # short sounds — overlap on channels, pulled a touch below box volume
+            # so clips don't sit so far above the songs.
+            sound_vol = vol * SOUND_GAIN
             for a in shorts:
                 if a["token"] not in _playing:
-                    play_short(a, vol)
+                    play_short(a, sound_vol)
                 else:
                     # update the SOUND's volume (index 1), NOT the channel (index 0):
                     # play_short sets snd volume and leaves the channel at 1.0, so
                     # setting the channel here too would compound to vol*vol and the
                     # clip would drop after the first poll.
-                    try: _playing[a["token"]][1].set_volume(vol)
+                    try: _playing[a["token"]][1].set_volume(sound_vol)
                     except Exception: pass
             for tok in list(_playing):
                 if tok not in live:                 # interrupted/finished on the server
