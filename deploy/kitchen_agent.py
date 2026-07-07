@@ -48,7 +48,12 @@ def login():
     return json.loads(_opener.open(req, timeout=15).read())
 
 def get_active():
-    r = _opener.open(SERVER + "/api/active?u=kitchen", timeout=10)
+    # Short timeout on purpose: we poll every POLL seconds, so a poll that hasn't
+    # returned in a few seconds is already stale — better to abandon it and let the
+    # NEXT poll catch the current state than to block the loop. A long timeout here
+    # turns a single slow response into a multi-second window where the kitchen is
+    # blind and any short sound fired in that window is never seen (so never plays).
+    r = _opener.open(SERVER + "/api/active?u=kitchen", timeout=3)
     return json.loads(r.read())
 
 def _evict_cache(keep):
@@ -201,9 +206,12 @@ def run():
             if e.code in (401, 403):                # only if a future build re-gates /api/active
                 print("auth lost (%s) — re-logging in" % e.code); try_login()
             else:
-                print("loop error:", e); time.sleep(1.5)
+                print("loop error:", e)             # fall through to the normal POLL sleep and retry
         except Exception as e:
-            print("loop error:", e); time.sleep(1.5)
+            # Don't add an extra sleep here: a failed/slow poll should NOT extend the
+            # blind window. The trailing time.sleep(POLL) already paces retries, so we
+            # resume polling within POLL seconds and catch sounds we'd otherwise miss.
+            print("loop error:", e)
         time.sleep(POLL)
 
 if __name__ == "__main__":
