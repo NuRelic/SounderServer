@@ -1462,17 +1462,35 @@ $('#songLanesUp').onclick=()=>setSongLanes(SONG_LANES+1);
 $('#songLanesDn').onclick=()=>setSongLanes(SONG_LANES-1);
 
 // ---- feed ----
-let feedSince = 0;
+let feedSince = 0, feedPrimed = false;
+// Live play counts: every fire (mine or anyone's) arrives as one 'cmd' feed item,
+// so the feed is our single source of truth for ticking the ▶ totals up in real time.
+// Update the tile in place rather than re-render, so the grid doesn't reshuffle under
+// someone who's browsing (the plays sort re-applies on the next full render).
+function bumpPlays(file){
+  const s = BYFILE[file];
+  if(!s) return;
+  s.plays = (s.plays||0) + 1;
+  for(const el of document.querySelectorAll('#grid .snd')){
+    if(el.dataset.file === file){ const pl = el.querySelector('.pl'); if(pl) pl.textContent = '▶ ' + s.plays; }
+  }
+}
 async function pollFeed(){
   try{
     const r = await fetch('/api/feed?since='+feedSince); const d = await r.json();
     if(d.feed.length){
       const box = $('#feed');
       const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
-      for(const it of d.feed){ feedSince = it.id; box.appendChild(feedItem(it)); }
+      for(const it of d.feed){
+        feedSince = it.id;
+        // skip the first batch: it's history backfill already counted in loadSounds().
+        if(feedPrimed && it.kind==='cmd' && it.file) bumpPlays(it.file);
+        box.appendChild(feedItem(it));
+      }
       while(box.children.length>200) box.removeChild(box.firstChild);
       if(atBottom) box.scrollTop = box.scrollHeight;
     }
+    feedPrimed = true;
   }catch(e){}
 }
 function feedItem(it){
@@ -1700,7 +1718,7 @@ function scheduleActive(){ clearTimeout(_activeTimer);
 function scheduleFeed(){ clearTimeout(_feedTimer);
   _feedTimer = setTimeout(async ()=>{ await pollFeed(); scheduleFeed(); }, feedInterval()); }
 document.addEventListener('visibilitychange', ()=>{   // back to the tab → refresh now, then resume the right cadence
-  if(!document.hidden){ pollActive(); pollFeed(); }
+  if(!document.hidden){ pollActive(); pollFeed(); loadSounds(); }   // loadSounds reconciles play totals against the server
   scheduleActive(); scheduleFeed();
 });
 function startApp(){

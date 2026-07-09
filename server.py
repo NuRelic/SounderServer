@@ -293,7 +293,21 @@ def catalog_reload():
 def record_play(fn):
     sid = _FILE2ID.get(fn)
     if sid is None:
-        return
+        # A sound added since startup (upload / fetch_url) is in the library but has
+        # no catalog row yet — catalog_sync() only runs at boot. Give it a soundid on
+        # the fly so its plays are counted instead of silently dropped.
+        if fn not in _LIBRARY:
+            return
+        with _CAT_LOCK:
+            row = _CAT.execute("SELECT id FROM sounds WHERE file=? ORDER BY id LIMIT 1",
+                               (fn,)).fetchone()
+            if row:
+                sid = row["id"]
+            else:
+                sid = _CAT.execute("INSERT INTO sounds(command,file,nsfw) VALUES(?,?,0)",
+                                   (os.path.splitext(fn)[0].lower(), fn)).lastrowid
+            _CAT.commit()
+        _FILE2ID[fn] = sid
     now = int(time.time())
     with _CAT_LOCK:
         if _CAT.execute("SELECT 1 FROM sound_stats_all_time WHERE soundid=?", (sid,)).fetchone():
