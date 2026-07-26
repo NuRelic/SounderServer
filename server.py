@@ -57,6 +57,8 @@ YTDLP      = shutil.which("yt-dlp")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 app = Flask(__name__)
+from recipes import recipes_bp
+app.register_blueprint(recipes_bp)
 
 # ----------------------------------------------------------------------------
 # Sessions / auth (staging)

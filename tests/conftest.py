@@ -20,6 +20,14 @@ def app(tmp_path, monkeypatch):
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
     if "server" in sys.modules:
         del sys.modules["server"]
+    # server.py imports the recipes blueprint, and recipes/api.py opens its
+    # DB connection at import time against DATA_DIR. If a previous test left
+    # recipes.* cached in sys.modules, re-importing server would just reuse
+    # that stale module (and its CONN pointing at a different tmp_path's
+    # database) instead of picking up the DATA_DIR set above. Scrub it too so
+    # each test's server import gets a fresh recipes DB to match.
+    for mod in [m for m in sys.modules if m == "recipes" or m.startswith("recipes.")]:
+        del sys.modules[mod]
     server = importlib.import_module("server")
     server.scan_library()        # populate _LIBRARY (only runs in __main__ otherwise)
     server.app.config["TESTING"] = True
@@ -55,3 +63,18 @@ def recipes_db(tmp_path):
     db.seed_sections(conn)
     yield conn
     conn.close()
+
+
+@pytest.fixture
+def recipes_client(app):
+    """Test client with edit rights, against the real app + blueprint."""
+    c = app.app.test_client()
+    with c.session_transaction() as s:
+        s["can_edit"] = True
+    return c
+
+
+@pytest.fixture
+def reader_client(app):
+    """Test client with no edit rights — for asserting writes are gated."""
+    return app.app.test_client()
