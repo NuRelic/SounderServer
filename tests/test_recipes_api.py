@@ -214,3 +214,150 @@ def test_archiving_hides_a_recipe_from_the_list(recipes_client):
     recipes_client.delete(f"/recipes/api/recipes/{r['id']}?who=brandon")
     rows = recipes_client.get("/recipes/api/recipes").get_json()["recipes"]
     assert rows == []
+
+
+STIR_FRY = {
+    "name": "Veggie Stir Fry",
+    "ingredients": ["2 yellow onions", "2 cups rice", "1 tbsp soy sauce"],
+    "who": "brandon",
+}
+
+
+def _add_to_list(client, recipe_id, skip=None):
+    return client.post(f"/recipes/api/list/add-recipe/{recipe_id}",
+                       json={"skip": skip or [], "who": "brandon"}).get_json()
+
+
+def _lines(client):
+    return client.get("/recipes/api/list").get_json()["lines"]
+
+
+def test_adding_a_recipe_puts_its_ingredients_on_the_list(recipes_client):
+    r = _mk_recipe(recipes_client)
+    _add_to_list(recipes_client, r["id"])
+    names = [l["name"] for l in _lines(recipes_client)]
+    assert "yellow onions" in names
+    assert "cilantro" in names
+
+
+def test_skipped_ingredients_do_not_appear(recipes_client):
+    r = _mk_recipe(recipes_client)
+    pepper = [i for i in r["ingredients"] if "green pepper" in i["raw_text"]][0]
+    _add_to_list(recipes_client, r["id"], skip=[pepper["id"]])
+    assert "green pepper" not in [l["name"] for l in _lines(recipes_client)]
+
+
+def test_two_recipes_merge_into_one_line_with_summed_quantity(recipes_client):
+    chili = _mk_recipe(recipes_client)
+    fry = _mk_recipe(recipes_client, STIR_FRY)
+    _add_to_list(recipes_client, chili["id"])
+    _add_to_list(recipes_client, fry["id"])
+    onions = [l for l in _lines(recipes_client) if l["name"] == "yellow onions"]
+    assert len(onions) == 1
+    assert onions[0]["qty_display"] == "4"
+
+
+def test_a_merged_line_names_every_recipe_that_wanted_it(recipes_client):
+    chili = _mk_recipe(recipes_client)
+    fry = _mk_recipe(recipes_client, STIR_FRY)
+    _add_to_list(recipes_client, chili["id"])
+    _add_to_list(recipes_client, fry["id"])
+    onions = [l for l in _lines(recipes_client) if l["name"] == "yellow onions"][0]
+    assert sorted(onions["sources"]) == ["Black Bean Chili", "Veggie Stir Fry"]
+
+
+def test_list_comes_back_grouped_in_store_order(recipes_client):
+    _mk_pantry(recipes_client, "Apples", subsection="produce")
+    _mk_pantry(recipes_client, "Trash bags", subsection="home")
+    recipes_client.post("/recipes/api/list/add",
+                        json={"name": "Trash bags", "who": "kate"})
+    recipes_client.post("/recipes/api/list/add",
+                        json={"name": "Apples", "who": "kate"})
+    sections = recipes_client.get("/recipes/api/list").get_json()["sections"]
+    ordered = [s["name"] for s in sections if s["lines"]]
+    assert ordered == ["Produce & Fancy Cheese", "Late Aisles"]
+
+
+def test_lines_within_a_section_follow_the_hidden_sub_order(recipes_client):
+    """The sub-categories are invisible, but they are the whole point of the walk.
+
+    Coffee (coffee & tea) sits before the spices, which sit before baking, even
+    though a plain alphabetical sort would put Flour between Cumin and Paprika.
+    Only the two spices tie on sub-order, and there alphabetical breaks it.
+    """
+    for name, sub in [("Paprika", "spices"), ("Flour", "baking"),
+                      ("Cumin", "spices"), ("Coffee", "coffee & tea")]:
+        _mk_pantry(recipes_client, name, subsection=sub)
+        recipes_client.post("/recipes/api/list/add",
+                            json={"name": name, "who": "kate"})
+    sections = recipes_client.get("/recipes/api/list").get_json()["sections"]
+    early = [s for s in sections if s["name"] == "Early Aisles"][0]
+    assert [l["name"] for l in early["lines"]] == [
+        "Coffee", "Cumin", "Paprika", "Flour"]
+
+
+def test_the_flat_line_list_is_itself_in_walking_order(recipes_client):
+    """`lines` is not an unordered bag — it is the walk, start to finish.
+
+    Adding them backwards proves the order comes from the store layout rather
+    than from insertion order.
+    """
+    _mk_pantry(recipes_client, "Bagels", subsection="bread")
+    _mk_pantry(recipes_client, "Trash bags", subsection="home")
+    _mk_pantry(recipes_client, "Apples", subsection="produce")
+    for name in ["Bagels", "Trash bags", "Apples"]:
+        recipes_client.post("/recipes/api/list/add",
+                            json={"name": name, "who": "kate"})
+    recipes_client.post("/recipes/api/list/add",
+                        json={"name": "Birthday candles", "who": "kate"})
+    assert [l["name"] for l in _lines(recipes_client)] == [
+        "Apples", "Trash bags", "Bagels", "Birthday candles"]
+
+
+def test_free_text_add_lands_in_unsorted(recipes_client):
+    recipes_client.post("/recipes/api/list/add",
+                        json={"name": "Birthday candles", "who": "sam"})
+    line = [l for l in _lines(recipes_client) if l["name"] == "Birthday candles"][0]
+    assert line["section_name"] == "Unsorted"
+    assert line["sources"] == ["added by sam"]
+
+
+def test_checking_off_records_who(recipes_client):
+    recipes_client.post("/recipes/api/list/add", json={"name": "Milk", "who": "kate"})
+    line = _lines(recipes_client)[0]
+    recipes_client.post(f"/recipes/api/list/line/{line['id']}/check",
+                        json={"checked": True, "who": "brandon"})
+    after = _lines(recipes_client)[0]
+    assert after["checked"] is True
+    assert after["checked_by"] == "brandon"
+
+
+def test_unchecking_works(recipes_client):
+    recipes_client.post("/recipes/api/list/add", json={"name": "Milk", "who": "kate"})
+    line = _lines(recipes_client)[0]
+    recipes_client.post(f"/recipes/api/list/line/{line['id']}/check",
+                        json={"checked": True, "who": "brandon"})
+    recipes_client.post(f"/recipes/api/list/line/{line['id']}/check",
+                        json={"checked": False, "who": "brandon"})
+    assert _lines(recipes_client)[0]["checked"] is False
+
+
+def test_finish_trip_clears_checked_and_keeps_the_rest(recipes_client):
+    recipes_client.post("/recipes/api/list/add", json={"name": "Milk", "who": "k"})
+    recipes_client.post("/recipes/api/list/add", json={"name": "Capers", "who": "k"})
+    milk = [l for l in _lines(recipes_client) if l["name"] == "Milk"][0]
+    recipes_client.post(f"/recipes/api/list/line/{milk['id']}/check",
+                        json={"checked": True, "who": "brandon"})
+    recipes_client.post("/recipes/api/list/finish-trip", json={"who": "brandon"})
+    names = [l["name"] for l in _lines(recipes_client)]
+    assert names == ["Capers"]      # couldn't find the capers; they survive
+
+
+def test_staples_are_reported_so_the_add_sheet_can_fold_them(recipes_client):
+    r = _mk_recipe(recipes_client)
+    cumin = [i for i in r["ingredients"] if "cumin" in i["raw_text"]][0]
+    recipes_client.patch(f"/recipes/api/pantry/{cumin['pantry_item_id']}",
+                         json={"is_staple": True, "who": "brandon"})
+    detail = recipes_client.get(f"/recipes/api/recipes/{r['id']}").get_json()
+    staples = [i for i in detail["ingredients"] if i["is_staple"]]
+    assert [s["pantry_name"] for s in staples] == ["cumin"]

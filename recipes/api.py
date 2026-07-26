@@ -1,7 +1,8 @@
 """HTTP surface for the recipes blueprint.
 
-This slice only proves the mount point: the page route and a sections
-endpoint. Pantry/recipe/list routes land in later tasks.
+The page route, sections, pantry, recipes, and the store list. Read it in that
+order — the list routes at the bottom are the ones with real behavior behind
+them (merging claims onto shared lines, grouping into the store walk).
 """
 
 import os
@@ -11,6 +12,7 @@ import time
 from flask import Blueprint, jsonify, render_template, request, session
 
 from . import db as _db
+from . import units
 from .parse import parse_ingredient
 
 bp = Blueprint("recipes", __name__, url_prefix="/recipes")
@@ -362,3 +364,202 @@ def api_recipe_archive(recipe_id):
         CONN.commit()
     _db.bump_version(CONN)
     return jsonify({"ok": True})
+
+
+def _find_or_make_line(pantry_item_id=None, free_text=None):
+    """One line per grocery thing. Unchecked lines merge; checked ones do not.
+
+    A checked line is already in the cart, so a new claim on the same item needs
+    its own line rather than silently reviving something you already bought.
+
+    The SELECT and the INSERT both sit inside the lock. Splitting them is a
+    check-then-act race: two phones adding onions at the same moment would both
+    see no open line and both insert one. Task 1's partial unique index catches
+    that at the schema level, so the lock is what keeps it from surfacing as an
+    IntegrityError under normal use.
+    """
+    with _db.LOCK:
+        if pantry_item_id:
+            row = CONN.execute(
+                "SELECT id FROM list_line WHERE pantry_item_id=? AND checked=0",
+                (pantry_item_id,),
+            ).fetchone()
+        else:
+            row = CONN.execute(
+                "SELECT id FROM list_line WHERE free_text=? AND checked=0",
+                (free_text,),
+            ).fetchone()
+        if row:
+            return row["id"]
+        cur = CONN.execute(
+            "INSERT INTO list_line(pantry_item_id, free_text, created_at)"
+            " VALUES(?,?,?)",
+            (pantry_item_id, free_text, int(time.time())),
+        )
+        CONN.commit()
+        return cur.lastrowid
+
+
+def _list_json():
+    """The store list, merged and grouped into the walking order."""
+    rows = CONN.execute("""
+        SELECT ll.id, ll.free_text, ll.checked, ll.checked_by,
+               p.id AS pantry_id, p.name AS pantry_name, p.buy_unit, p.shaws_url,
+               sub.name AS subsection_name,
+               COALESCE(s.name, 'Unsorted')  AS section_name,
+               COALESCE(s.position, 9999)    AS section_pos,
+               COALESCE(sub.position, 9999)  AS sub_pos
+        FROM list_line ll
+        LEFT JOIN pantry_item p ON p.id = ll.pantry_item_id
+        LEFT JOIN subsection sub ON sub.id = p.subsection_id
+        LEFT JOIN section s ON s.id = sub.section_id
+        ORDER BY section_pos, sub_pos,
+                 COALESCE(p.name, ll.free_text) COLLATE NOCASE
+    """).fetchall()
+
+    lines, by_section = [], {}
+    for r in rows:
+        contribs = CONN.execute("""
+            SELECT c.qty, c.unit, c.added_by, rc.name AS recipe_name
+            FROM list_contribution c
+            LEFT JOIN recipe rc ON rc.id = c.recipe_id
+            WHERE c.list_line_id = ?
+        """, (r["id"],)).fetchall()
+
+        merged = units.merge([(c["qty"], c["unit"]) for c in contribs
+                              if c["qty"] is not None])
+        qty_display = " + ".join(units.format_quantity(q, u) for q, u in merged)
+
+        sources = []
+        for c in contribs:
+            sources.append(c["recipe_name"] if c["recipe_name"]
+                           else f"added by {c['added_by']}")
+
+        line = {
+            "id": r["id"],
+            "name": r["pantry_name"] or r["free_text"],
+            "pantry_id": r["pantry_id"],
+            "qty_display": qty_display,
+            "buy_unit": r["buy_unit"],
+            "shaws_url": r["shaws_url"],
+            "sources": sorted(set(sources)),
+            "checked": bool(r["checked"]),
+            "checked_by": r["checked_by"],
+            "section_name": r["section_name"],
+        }
+        lines.append(line)
+        by_section.setdefault(r["section_name"], []).append(line)
+
+    section_rows = CONN.execute(
+        "SELECT name FROM section ORDER BY position"
+    ).fetchall()
+    sections = [{"name": s["name"], "lines": by_section.get(s["name"], [])}
+                for s in section_rows]
+
+    meals = CONN.execute("""
+        SELECT r.id, r.name FROM meal_plan m
+        JOIN recipe r ON r.id = m.recipe_id
+        ORDER BY m.added_at
+    """).fetchall()
+
+    return {
+        "version": _db.get_version(CONN),
+        "lines": lines,
+        "sections": sections,
+        "meals": [dict(m) for m in meals],
+    }
+
+
+@bp.route("/api/list")
+def api_list():
+    return jsonify(_list_json())
+
+
+@bp.route("/api/list/add-recipe/<int:recipe_id>", methods=["POST"])
+def api_list_add_recipe(recipe_id):
+    gate = need_edit()
+    if gate:
+        return gate
+    body = request.get_json(silent=True) or {}
+    skip = set(body.get("skip") or [])
+    person = who()
+    rows = CONN.execute(
+        "SELECT * FROM recipe_ingredient WHERE recipe_id=? ORDER BY position",
+        (recipe_id,),
+    ).fetchall()
+    for ing in rows:
+        if ing["id"] in skip:
+            continue
+        line_id = _find_or_make_line(
+            pantry_item_id=ing["pantry_item_id"],
+            free_text=None if ing["pantry_item_id"] else ing["raw_text"])
+        with _db.LOCK:
+            CONN.execute("""
+                INSERT INTO list_contribution
+                    (list_line_id, recipe_id, added_by, qty, unit, raw_text)
+                VALUES (?,?,?,?,?,?)
+            """, (line_id, recipe_id, person, ing["qty"], ing["unit"], ing["raw_text"]))
+            CONN.commit()
+    with _db.LOCK:
+        CONN.execute(
+            "INSERT OR IGNORE INTO meal_plan(recipe_id, added_by, added_at)"
+            " VALUES(?,?,?)",
+            (recipe_id, person, int(time.time())),
+        )
+        CONN.commit()
+    _db.bump_version(CONN)
+    return jsonify(_list_json())
+
+
+@bp.route("/api/list/add", methods=["POST"])
+def api_list_add_free():
+    gate = need_edit()
+    if gate:
+        return gate
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "name required"}), 400
+    person = who()
+    pantry_id = resolve_pantry(name)      # link if we already know it, else free text
+    line_id = _find_or_make_line(pantry_item_id=pantry_id,
+                                 free_text=None if pantry_id else name)
+    with _db.LOCK:
+        CONN.execute("""
+            INSERT INTO list_contribution
+                (list_line_id, recipe_id, added_by, qty, unit, raw_text)
+            VALUES (?, NULL, ?, ?, ?, ?)
+        """, (line_id, person, body.get("qty"), body.get("unit"), name))
+        CONN.commit()
+    _db.bump_version(CONN)
+    return jsonify(_list_json())
+
+
+@bp.route("/api/list/line/<int:line_id>/check", methods=["POST"])
+def api_list_check(line_id):
+    gate = need_edit()
+    if gate:
+        return gate
+    body = request.get_json(silent=True) or {}
+    checked = bool(body.get("checked"))
+    with _db.LOCK:
+        CONN.execute(
+            "UPDATE list_line SET checked=?, checked_by=?, checked_at=? WHERE id=?",
+            (int(checked), who() if checked else None,
+             int(time.time()) if checked else None, line_id),
+        )
+        CONN.commit()
+    _db.bump_version(CONN)
+    return jsonify(_list_json())
+
+
+@bp.route("/api/list/finish-trip", methods=["POST"])
+def api_list_finish_trip():
+    gate = need_edit()
+    if gate:
+        return gate
+    with _db.LOCK:
+        CONN.execute("DELETE FROM list_line WHERE checked=1")
+        CONN.commit()
+    _db.bump_version(CONN)
+    return jsonify(_list_json())
