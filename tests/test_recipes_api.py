@@ -1,3 +1,18 @@
+import importlib
+import sqlite3
+
+import pytest
+
+
+def _api():
+    """The live blueprint module — the same object the test client is serving.
+
+    conftest scrubs `recipes.*` from sys.modules per test, so this has to be
+    imported after the app fixture has run, not at module scope.
+    """
+    return importlib.import_module("recipes.api")
+
+
 def test_recipes_page_loads(recipes_client):
     resp = recipes_client.get("/recipes/")
     assert resp.status_code == 200
@@ -75,6 +90,22 @@ def test_alias_resolves_to_the_same_item(recipes_client):
     assert resolved["id"] == item["id"]
 
 
+def test_losing_the_create_race_twice_reraises_the_real_error(recipes_client,
+                                                             monkeypatch):
+    """The IntegrityError fallback must surface the collision, not a bare raise.
+
+    Stubbing resolve_pantry to always miss reproduces the pathological case:
+    the INSERT collides with an existing row, and the re-resolve after it comes
+    back empty too. A bare `raise` there has no active exception and turns a
+    real IntegrityError into a confusing RuntimeError.
+    """
+    api = _api()
+    _mk_pantry(recipes_client, "Shallots")
+    monkeypatch.setattr(api, "resolve_pantry", lambda name: None)
+    with pytest.raises(sqlite3.IntegrityError):
+        api.get_or_create_pantry("Shallots")
+
+
 def test_writes_require_login(reader_client):
     resp = reader_client.post("/recipes/api/pantry",
                               json={"name": "Sneaky", "who": "nobody"})
@@ -116,6 +147,20 @@ def test_creating_a_recipe_parses_its_ingredients(recipes_client):
     assert onions["qty"] == 2
     assert onions["unit"] == "each"
     assert onions["prep"] == "diced"
+
+
+def test_prep_is_stored_at_write_time_not_reparsed_on_read(recipes_client,
+                                                           monkeypatch):
+    """A saved recipe's prep must not drift when parse.py's heuristics change."""
+    api = _api()
+    r = _mk_recipe(recipes_client)
+    monkeypatch.setattr(api, "parse_ingredient", lambda line: {
+        "raw": line, "qty": None, "unit": None, "name": line,
+        "prep": "DRIFTED", "note": "",
+    })
+    detail = recipes_client.get(f"/recipes/api/recipes/{r['id']}").get_json()
+    by_raw = {i["raw_text"]: i for i in detail["ingredients"]}
+    assert by_raw["2 yellow onions, diced"]["prep"] == "diced"
 
 
 def test_creating_a_recipe_creates_pantry_items(recipes_client):

@@ -137,14 +137,19 @@ def get_or_create_pantry(name, subsection_id=None):
             )
             CONN.commit()
             return cur.lastrowid
-        except sqlite3.IntegrityError:
+        except sqlite3.IntegrityError as collision:
             CONN.rollback()
+            lost_race = collision
     # Lost the race — someone else just created this name. Resolve again
     # outside the lock rather than propagating the collision.
     again = resolve_pantry(name)
     if again:
         return again
-    raise
+    # The name collided but still doesn't resolve, so the constraint we tripped
+    # was not the one we assumed. Re-raise the original error explicitly: a bare
+    # `raise` here has no active exception (the except block has already ended)
+    # and would surface as a RuntimeError masking the real cause.
+    raise lost_race
 
 
 @bp.route("/api/pantry")
@@ -238,10 +243,10 @@ def _store_ingredients(recipe_id, lines):
         with _db.LOCK:
             CONN.execute("""
                 INSERT INTO recipe_ingredient
-                    (recipe_id, position, raw_text, qty, unit, pantry_item_id)
-                VALUES (?,?,?,?,?,?)
+                    (recipe_id, position, raw_text, qty, unit, prep, pantry_item_id)
+                VALUES (?,?,?,?,?,?,?)
             """, (recipe_id, position, parsed["raw"], parsed["qty"],
-                  parsed["unit"], pantry_id))
+                  parsed["unit"], parsed["prep"], pantry_id))
             CONN.commit()
 
 
@@ -255,13 +260,14 @@ def _ingredients_json(recipe_id):
     """, (recipe_id,)).fetchall()
     out = []
     for r in rows:
-        parsed = parse_ingredient(r["raw_text"]) or {}
         out.append({
             "id": r["id"],
             "raw_text": r["raw_text"],
             "qty": r["qty"],
             "unit": r["unit"],
-            "prep": parsed.get("prep", ""),
+            # Read what was parsed at save time. Re-parsing here would make a
+            # later change to parse.py rewrite recipes nobody touched.
+            "prep": r["prep"] or "",
             "pantry_item_id": r["pantry_item_id"],
             "pantry_name": r["pantry_name"],
             "is_staple": bool(r["is_staple"]),

@@ -77,6 +77,11 @@ CREATE TABLE IF NOT EXISTS recipe_ingredient (
     raw_text       TEXT NOT NULL,
     qty            REAL,
     unit           TEXT,
+    -- The prep clause ("diced") is parsed once, when the recipe is saved, and
+    -- stored here rather than re-derived on every read. Re-parsing would mean
+    -- a later tweak to parse.py silently rewrites what already-saved recipes
+    -- appear to say -- history changing under a recipe nobody edited.
+    prep           TEXT,
     pantry_item_id INTEGER REFERENCES pantry_item(id) ON DELETE SET NULL
 );
 

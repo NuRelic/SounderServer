@@ -136,6 +136,20 @@ def test_connect_enables_foreign_keys(recipes_db):
     assert row[0] == 1
 
 
+def test_recipe_ingredient_persists_the_parsed_prep(recipes_db):
+    # prep is written once at save time rather than re-derived on every read,
+    # so the column has to exist for a parse.py change not to rewrite history.
+    recipes_db.execute(
+        "INSERT INTO recipe(name, created_at) VALUES('Soup', 0)")
+    recipes_db.execute("""
+        INSERT INTO recipe_ingredient(recipe_id, position, raw_text, qty, unit, prep)
+        VALUES(last_insert_rowid(), 0, '2 yellow onions, diced', 2, 'each', 'diced')
+    """)
+    recipes_db.commit()
+    row = recipes_db.execute("SELECT prep FROM recipe_ingredient").fetchone()
+    assert row["prep"] == "diced"
+
+
 def test_pantry_item_name_uniqueness_is_case_insensitive(recipes_db):
     _mk_pantry_item(recipes_db, "Onions")
     with pytest.raises(sqlite3.IntegrityError):
