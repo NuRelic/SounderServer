@@ -63,6 +63,11 @@ _PLURALS = {"bunch": "bunches", "box": "boxes", "pinch": "pinches",
             "g": "g", "kg": "kg", "ml": "ml", "l": "l",
             "tsp": "tsp", "tbsp": "tbsp", "floz": "fl oz"}
 
+# Readability threshold for merged volume/weight totals — not a unit-system
+# fact, just the point past which a number in this unit stops being something
+# a person would want to read off a shopping list (e.g. "771 tsp").
+_READABILITY_CAP = 100
+
 _VULGAR = {
     Fraction(1, 4): "¼", Fraction(1, 2): "½", Fraction(3, 4): "¾",
     Fraction(1, 3): "⅓", Fraction(2, 3): "⅔",
@@ -108,10 +113,14 @@ def merge(pairs):
     """Merge [(qty, unit), ...] into the fewest (qty, unit) pairs possible.
 
     Pairs in the same family are summed. Volume and weight sums are expressed
-    in the smallest unit that was actually present among the merged inputs
-    (2 cups + 1 quart -> 6 cups, not 1.5 quarts) — that keeps the result in a
-    unit the recipes actually used rather than inventing a "nicer" one.
-    Pairs in different families are never combined; they come back untouched.
+    in the smallest unit, among those actually present among the merged
+    inputs, whose value stays within a readable range (2 cups + 1 quart ->
+    6 cups, not 1.5 quarts) — that keeps the result in a unit the recipes
+    actually used rather than inventing a "nicer" one. If every present unit
+    would render an unreadably large number (3 tsp + 1 gallon), the largest
+    present unit is used instead, so the list says "1 gallon" rather than
+    "771 tsp". Pairs in different families are never combined; they come
+    back untouched.
     """
     buckets = {}
     for qty, unit in pairs:
@@ -134,10 +143,21 @@ def merge(pairs):
 
 
 def _merge_convertible(items, table):
-    """Sum same-family items and render the total in the smallest unit present."""
+    """Sum same-family items and render the total in a readable present unit.
+
+    Walk the units actually present, smallest to largest, and take the first
+    whose value is at or below the readability cap. If none qualify (every
+    present unit would render a huge number), fall back to the largest
+    present unit.
+    """
     base = sum(q * table[u] for q, u in items)
-    target = min({u for _, u in items}, key=lambda u: table[u])
-    return (_tidy(base / table[target]), target)
+    present = sorted({u for _, u in items}, key=lambda u: table[u])
+    for unit in present:
+        value = base / table[unit]
+        if value <= _READABILITY_CAP:
+            return (_tidy(value), unit)
+    largest = present[-1]
+    return (_tidy(base / table[largest]), largest)
 
 
 def _tidy(value):
@@ -167,7 +187,9 @@ def format_quantity(qty, unit):
         return number
 
     # Only pluralize once we're past a single whole unit — "½ clove" stays
-    # singular, but "2 cups" and "3½ cups" both need the plural form.
-    plural = float(frac) > 1
+    # singular, but "2 cups" and "3½ cups" both need the plural form. English
+    # also pluralizes at zero ("0 cups"), so that's the one exception below 1.
+    value = float(frac)
+    plural = value > 1 or value == 0
     label = _PLURALS.get(unit, unit + "s") if plural else unit
     return f"{number} {label}"
