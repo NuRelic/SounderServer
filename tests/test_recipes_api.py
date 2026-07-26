@@ -361,3 +361,80 @@ def test_staples_are_reported_so_the_add_sheet_can_fold_them(recipes_client):
     detail = recipes_client.get(f"/recipes/api/recipes/{r['id']}").get_json()
     staples = [i for i in detail["ingredients"] if i["is_staple"]]
     assert [s["pantry_name"] for s in staples] == ["cumin"]
+
+
+def test_removing_a_recipe_leaves_the_other_recipes_share(recipes_client):
+    chili = _mk_recipe(recipes_client)
+    fry = _mk_recipe(recipes_client, STIR_FRY)
+    _add_to_list(recipes_client, chili["id"])
+    _add_to_list(recipes_client, fry["id"])
+    recipes_client.post(f"/recipes/api/list/remove-recipe/{chili['id']}",
+                        json={"who": "brandon"})
+    onions = [l for l in _lines(recipes_client) if l["name"] == "yellow onions"]
+    assert len(onions) == 1
+    assert onions[0]["qty_display"] == "2"       # stir fry's 2, not 4, not gone
+
+
+def test_removing_a_recipe_deletes_lines_nothing_else_wanted(recipes_client):
+    chili = _mk_recipe(recipes_client)
+    _add_to_list(recipes_client, chili["id"])
+    recipes_client.post(f"/recipes/api/list/remove-recipe/{chili['id']}",
+                        json={"who": "brandon"})
+    assert _lines(recipes_client) == []
+
+
+def test_removing_a_recipe_drops_it_from_the_meal_strip(recipes_client):
+    chili = _mk_recipe(recipes_client)
+    _add_to_list(recipes_client, chili["id"])
+    recipes_client.post(f"/recipes/api/list/remove-recipe/{chili['id']}",
+                        json={"who": "brandon"})
+    meals = recipes_client.get("/recipes/api/list").get_json()["meals"]
+    assert meals == []
+
+
+def test_finish_trip_keeps_the_meal_strip(recipes_client):
+    chili = _mk_recipe(recipes_client)
+    _add_to_list(recipes_client, chili["id"])
+    for line in _lines(recipes_client):
+        recipes_client.post(f"/recipes/api/list/line/{line['id']}/check",
+                            json={"checked": True, "who": "brandon"})
+    recipes_client.post("/recipes/api/list/finish-trip", json={"who": "brandon"})
+    data = recipes_client.get("/recipes/api/list").get_json()
+    assert data["lines"] == []
+    assert [m["name"] for m in data["meals"]] == ["Black Bean Chili"]
+
+
+def test_poll_returns_nothing_when_unchanged(recipes_client):
+    version = recipes_client.get("/recipes/api/list").get_json()["version"]
+    resp = recipes_client.get(f"/recipes/api/list/poll?since={version}").get_json()
+    assert resp["changed"] is False
+    assert "sections" not in resp
+
+
+def test_poll_returns_the_list_when_changed(recipes_client):
+    version = recipes_client.get("/recipes/api/list").get_json()["version"]
+    recipes_client.post("/recipes/api/list/add", json={"name": "Milk", "who": "k"})
+    resp = recipes_client.get(f"/recipes/api/list/poll?since={version}").get_json()
+    assert resp["changed"] is True
+    assert [l["name"] for l in resp["lines"]] == ["Milk"]
+
+
+def test_removing_a_recipe_only_deletes_its_own_contribution_rows(recipes_client):
+    """Guards the WHERE recipe_id=? filter itself.
+
+    Two recipes on the list, remove one: the survivor's own contribution row
+    for a *different* ingredient (rice) must still be intact, and the shared
+    onions line must keep exactly the surviving recipe's contribution — not
+    zero, not both.
+    """
+    chili = _mk_recipe(recipes_client)
+    fry = _mk_recipe(recipes_client, STIR_FRY)
+    _add_to_list(recipes_client, chili["id"])
+    _add_to_list(recipes_client, fry["id"])
+    recipes_client.post(f"/recipes/api/list/remove-recipe/{chili['id']}",
+                        json={"who": "brandon"})
+    lines = _lines(recipes_client)
+    onions = [l for l in lines if l["name"] == "yellow onions"][0]
+    assert onions["sources"] == ["Veggie Stir Fry"]
+    rice = [l for l in lines if l["name"] == "rice"][0]
+    assert rice["sources"] == ["Veggie Stir Fry"]

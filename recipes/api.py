@@ -563,3 +563,39 @@ def api_list_finish_trip():
         CONN.commit()
     _db.bump_version(CONN)
     return jsonify(_list_json())
+
+
+@bp.route("/api/list/remove-recipe/<int:recipe_id>", methods=["POST"])
+def api_list_remove_recipe(recipe_id):
+    """Withdraw one recipe's claims from the list, leaving other recipes' intact.
+
+    Deleting only this recipe's `list_contribution` rows is what makes a line
+    shared by several recipes drop by just this recipe's share rather than
+    disappearing or losing nothing. Orphan cleanup (a line with zero
+    contributions left) is handled by `trg_drop_childless_line` in db.py, which
+    fires per-row on this DELETE — no separate sweep needed here.
+    """
+    gate = need_edit()
+    if gate:
+        return gate
+    with _db.LOCK:
+        CONN.execute("DELETE FROM list_contribution WHERE recipe_id=?", (recipe_id,))
+        CONN.execute("DELETE FROM meal_plan WHERE recipe_id=?", (recipe_id,))
+        CONN.commit()
+    _db.bump_version(CONN)
+    return jsonify(_list_json())
+
+
+@bp.route("/api/list/poll")
+def api_list_poll():
+    """Cheap change check. Returns the full list only when the version moved."""
+    try:
+        since = int(request.args.get("since", -1))
+    except ValueError:
+        since = -1
+    current = _db.get_version(CONN)
+    if since == current:
+        return jsonify({"changed": False, "version": current})
+    payload = _list_json()
+    payload["changed"] = True
+    return jsonify(payload)
