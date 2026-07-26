@@ -1,12 +1,13 @@
-"""SQLite storage for the recipes + store list feature.
+"""Schema, seed data, and store-order query for the recipes + grocery list feature.
 
-Connection lifecycle mirrors the soundboard's catalog DB (server.py:229): one
-module-level connection opened at import from a DATA_DIR-driven path, guarded by
-a lock, with check_same_thread=False because Waitress serves on many threads.
-WAL is on because four phones write concurrently.
+Exposes `connect()`, `init_schema()`, and `seed_sections()` as plain functions
+rather than a module-level connection: callers (tests today, a later
+runtime-owning module going forward) pass in the path and drive the lifecycle
+themselves. `check_same_thread=False` and WAL are set here regardless, since
+whatever ends up holding the long-lived connection will be shared across
+threads the same way the soundboard's catalog DB is (server.py:229).
 """
 
-import os
 import sqlite3
 import threading
 
@@ -159,11 +160,12 @@ ORDER BY COALESCE(s.position, 9999),
 
 def bump_version(conn):
     """Bump the list version. Every mutating request must call this."""
-    conn.execute("""
-        INSERT INTO meta(key, value) VALUES('list_version', '1')
-        ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1
-    """)
-    conn.commit()
+    with LOCK:
+        conn.execute("""
+            INSERT INTO meta(key, value) VALUES('list_version', '1')
+            ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1
+        """)
+        conn.commit()
     return get_version(conn)
 
 

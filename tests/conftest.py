@@ -38,12 +38,18 @@ def editor_client(app):
 
 @pytest.fixture
 def recipes_db(tmp_path, monkeypatch):
-    """A fresh, seeded recipes database on disk, isolated per test."""
-    import importlib, sys
+    """A fresh, seeded recipes database on disk, isolated per test.
+
+    recipes.db holds no DATA_DIR-derived module-level state (unlike server.py),
+    so unlike the `app` fixture above there is nothing to reset by popping it
+    from sys.modules and reimporting — doing so would only hand back a second,
+    distinct module object while tests/test_recipes_db.py's own top-level
+    `import recipes.db as db` keeps pointing at the first. Import normally so
+    both references resolve to the same cached module; isolation comes from
+    handing each test its own on-disk database file instead.
+    """
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-    for mod in ("recipes.db", "recipes.api", "recipes", "recipes.seed"):
-        sys.modules.pop(mod, None)
     db = importlib.import_module("recipes.db")
     conn = db.connect(str(tmp_path / "recipes.db"))
     db.init_schema(conn)

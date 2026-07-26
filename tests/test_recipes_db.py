@@ -51,24 +51,29 @@ def _mk_item(conn, name, section, sub):
 
 
 def test_store_order_is_section_then_subsection_then_alphabetical(recipes_db):
-    # deliberately inserted out of order
-    _mk_item(recipes_db, "Trash bags",  "Late Aisles",             "home")
-    _mk_item(recipes_db, "Gruyere",     "Produce & Fancy Cheese",  "fancy cheese")
-    _mk_item(recipes_db, "Cumin",       "Early Aisles",            "spices")
-    _mk_item(recipes_db, "Apples",      "Produce & Fancy Cheese",  "produce")
-    _mk_item(recipes_db, "Candy bars",  "Late Aisles",             "candy")
-    _mk_item(recipes_db, "Coffee",      "Early Aisles",            "coffee & tea")
-    _mk_item(recipes_db, "Bananas",     "Produce & Fancy Cheese",  "produce")
+    # Names are deliberately picked to fight their subcategory: in each pair
+    # below, the item filed in the *later* subcategory sorts alphabetically
+    # *before* the other one. That means dropping the subsection sort key
+    # (leaving only section + alphabetical) would flip these pairs, so a
+    # regression there causes a real assertion failure, not a coincidental
+    # pass.
+    _mk_item(recipes_db, "Zucchini",    "Produce & Fancy Cheese",  "produce")       # pos 0
+    _mk_item(recipes_db, "Apples",      "Produce & Fancy Cheese",  "produce")       # pos 0, alpha check
+    _mk_item(recipes_db, "Brie",        "Produce & Fancy Cheese",  "fancy cheese")  # pos 1, sorts < Zucchini
+    _mk_item(recipes_db, "Walnuts",     "Early Aisles",            "shelf-stable fruit")  # pos 0
+    _mk_item(recipes_db, "Almonds",     "Early Aisles",            "baking")              # pos 5, sorts < Walnuts
+    _mk_item(recipes_db, "Zephyr gum",  "Late Aisles",             "candy")          # pos 0
+    _mk_item(recipes_db, "Aloe wipes",  "Late Aisles",             "toiletries")     # pos 5, sorts < Zephyr gum
 
     rows = recipes_db.execute(db.STORE_ORDER_SQL).fetchall()
 
     assert [r["name"] for r in rows] == [
-        "Apples", "Bananas",   # produce, alphabetical
-        "Gruyere",             # fancy cheese comes after produce
-        "Coffee",              # coffee & tea precedes spices
-        "Cumin",
-        "Candy bars",          # candy precedes home
-        "Trash bags",
+        "Apples", "Zucchini",  # produce (pos 0), alphabetical within the subcategory
+        "Brie",                # fancy cheese (pos 1) — after produce despite B < Z
+        "Walnuts",             # shelf-stable fruit (pos 0) — before baking despite W > A
+        "Almonds",             # baking (pos 5)
+        "Zephyr gum",          # candy (pos 0) — before toiletries despite Z > A
+        "Aloe wipes",          # toiletries (pos 5)
     ]
 
 
