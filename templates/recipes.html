@@ -1,5 +1,347 @@
 <!doctype html>
+<html lang="en">
+<head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111418">
 <title>Recipes</title>
-<h1>Recipes</h1>
+<style>
+  :root{
+    --bg:#111418; --panel:#171c23; --panel2:#1e242c; --line:rgba(255,255,255,.08);
+    --txt:#e8eaed; --dim:rgba(232,234,237,.45); --accent:#6aa9ff; --go:#3d8b5f;
+    /* height of the sticky header, measured after every render — section
+       headers stick just below it instead of sliding underneath. */
+    --hdh:0px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--txt);
+    font:400 17px/1.35 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased; overscroll-behavior-y:contain}
+  /* the home indicator sits over the bottom of the screen; keep the last row clear */
+  body{padding-bottom:calc(78px + env(safe-area-inset-bottom))}
+  header{position:sticky;top:0;z-index:5;background:var(--panel);
+    border-bottom:1px solid var(--line);padding:8px 16px 12px}
+  header .top{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+  header h1{font-size:26px;font-weight:700;letter-spacing:-.4px;margin:0}
+  header .meta{font-size:15px;color:var(--dim);white-space:nowrap}
+  /* 16px keeps iOS from zooming the page when the field takes focus */
+  input.name{background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+    border-radius:8px;padding:7px 9px;font-size:16px;width:112px;font-family:inherit}
+  .search{width:100%;margin-top:10px;padding:12px 13px;border-radius:11px;
+    background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+    font-size:16px;font-family:inherit}
+  .row{display:flex;align-items:center;gap:14px;padding:11px 16px;min-height:56px;
+    border-bottom:1px solid rgba(255,255,255,.05);
+    touch-action:manipulation;-webkit-tap-highlight-color:transparent;
+    -webkit-user-select:none;user-select:none}
+  .row:active{background:var(--panel2)}
+  .row .nm{flex:1;min-width:0}
+  .row .nm b{font-weight:500;display:block}
+  .row .nm small{display:block;color:var(--dim);font-size:14px;margin-top:2px}
+  .row .qty{color:var(--dim);font-size:15px;text-align:right;flex:none}
+  .sec{padding:12px 16px 8px;font-size:14px;letter-spacing:.09em;text-transform:uppercase;
+    color:var(--dim);background:#151920;border-top:1px solid var(--line);
+    position:sticky;top:var(--hdh);z-index:1}
+  .bx{width:26px;height:26px;border-radius:7px;border:2px solid rgba(255,255,255,.3);
+    flex:none;text-align:center;line-height:23px;font-size:16px}
+  .bx.on{background:var(--go);border-color:var(--go);color:#fff}
+  .fold{display:flex;align-items:center;min-height:48px;padding:13px 16px;font-size:15px;
+    color:var(--dim);background:#13171d;border-bottom:1px solid var(--line);
+    touch-action:manipulation;-webkit-tap-highlight-color:transparent;
+    -webkit-user-select:none;user-select:none}
+  .fold:active{background:var(--panel2)}
+  .btn{display:block;width:calc(100% - 32px);margin:16px;padding:16px;border:0;
+    border-radius:14px;background:var(--go);color:#fff;font-size:17px;font-weight:600;
+    font-family:inherit;touch-action:manipulation}
+  .btn.quiet{background:var(--panel2);color:var(--txt)}
+  nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--panel);
+    border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom);z-index:10}
+  nav button{flex:1;background:0;border:0;color:var(--dim);font-size:14px;
+    padding:9px 0 9px;font-family:inherit;min-height:56px;
+    touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+  nav button em{display:block;font-style:normal;font-size:22px;margin-bottom:2px}
+  nav button.sel{color:var(--accent)}
+  .empty{padding:48px 24px;text-align:center;color:var(--dim)}
+  .strip{display:flex;gap:8px;overflow-x:auto;padding:10px 16px;margin:0 -16px;
+    border-bottom:1px solid var(--line);-webkit-overflow-scrolling:touch}
+  .strip span{flex:none;display:inline-flex;align-items:center;min-height:44px;
+    padding:6px 14px;border-radius:22px;background:var(--panel2);font-size:15px;
+    white-space:nowrap;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+  .strip span:active{background:#2a323c}
+  .toast{position:fixed;left:16px;right:16px;z-index:20;text-align:center;
+    bottom:calc(88px + env(safe-area-inset-bottom));
+    background:#3a2228;border:1px solid #6d3a44;color:var(--txt);
+    padding:13px 14px;border-radius:12px;font-size:15px}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="top">
+    <h1 id="title">Recipes</h1>
+    <div style="display:flex;gap:8px;align-items:center">
+      <span class="meta" id="count"></span>
+      <input class="name" id="name" placeholder="your name">
+    </div>
+  </div>
+  <div id="hdextra"></div>
+</header>
+
+<main id="main"></main>
+
+<nav>
+  <button data-tab="recipes" class="sel"><em>📖</em>Recipes</button>
+  <button data-tab="list"><em>🛒</em>List</button>
+  <button data-tab="pantry"><em>🧂</em>Pantry</button>
+</nav>
+
+<script>
+const $  = s => document.querySelector(s);
+const el = (t, c, h) => { const n=document.createElement(t);
+  if(c) n.className=c; if(h!=null) n.innerHTML=h; return n; };
+const esc = s => String(s==null?'':s).replace(/[&<>"]/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// Display name is shared with the soundboard — same localStorage key, so if you
+// have ever used the soundboard your name is already filled in here.
+$('#name').value = localStorage.getItem('ss_name') || '';
+$('#name').onchange = () => localStorage.setItem('ss_name', $('#name').value.trim());
+const who = () => $('#name').value.trim() || 'someone';
+
+// A write that quietly does nothing is the worst failure mode in a store, so
+// say so. Reads stay silent apart from a refused login.
+let TOAST_T = null;
+function note(msg){
+  const old = document.querySelector('.toast');
+  if (old) old.remove();
+  const t = el('div','toast', esc(msg));
+  document.body.appendChild(t);
+  clearTimeout(TOAST_T);
+  TOAST_T = setTimeout(() => t.remove(), 4000);
+}
+
+const api = async (path, opts={}) => {
+  const o = {headers:{'Content-Type':'application/json'}, ...opts};
+  if (o.body && typeof o.body === 'object') o.body = JSON.stringify({...o.body, who: who()});
+  let r;
+  try { r = await fetch('/recipes/api' + path, o); }
+  catch (e) {
+    if (o.method) note('No connection — that change did not save.');
+    return null;
+  }
+  if (!r.ok) {
+    console.warn('api', path, r.status);
+    // Writes are gated by the site-wide session, so logging in on the
+    // soundboard once unlocks this page too. There is no second login.
+    if (r.status === 403) note('Log in on the soundboard first to make changes.');
+    else if (o.method) note('That did not save (' + r.status + ').');
+    return null;
+  }
+  return r.json();
+};
+
+let TAB = 'recipes';
+let STATE = {recipes: [], list: null, pantry: [], version: -1, queued: new Set()};
+
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
+  TAB = b.dataset.tab;
+  document.querySelectorAll('nav button').forEach(x => x.classList.toggle('sel', x===b));
+  render();                       // switch instantly…
+  refresh();                      // …then top up whatever this tab needs
+  if (TAB === 'list') poll();     // and take the newest list state
+});
+
+function render(){
+  // Anything focused inside the header is about to be destroyed and rebuilt;
+  // remember it so a background poll can't eat what someone is typing.
+  const focused = document.activeElement && document.activeElement.id;
+  $('#hdextra').innerHTML = '';
+  if (TAB === 'recipes') renderRecipes();
+  else if (TAB === 'list') renderList(focused);
+  else renderPantry();
+  measureHeader();
+}
+
+// Section headers stick below the page header, whose height changes with the
+// meal strip and the add field.
+function measureHeader(){
+  const h = document.querySelector('header');
+  if (h) document.documentElement.style.setProperty('--hdh', h.offsetHeight + 'px');
+}
+window.addEventListener('resize', measureHeader);
+
+// Filled in by the recipes and pantry tasks; stubbed so the shell runs.
+function renderRecipes(){
+  $('#title').textContent = 'Recipes';
+  $('#count').textContent = STATE.recipes.length ? STATE.recipes.length + ' saved' : '';
+  $('#main').innerHTML = '<div class="empty">Recipes screen coming soon.</div>';
+}
+function renderPantry(){
+  $('#title').textContent = 'Pantry';
+  $('#count').textContent = STATE.pantry.length ? STATE.pantry.length + ' items' : '';
+  $('#main').innerHTML = '<div class="empty">Pantry screen coming soon.</div>';
+}
+
+// ---- store list -------------------------------------------------------------
+// Checked items leave the screen and sink into a per-section fold, so the list
+// only ever shows what is still needed. The fold is how you undo a mistake.
+
+const OPEN_FOLDS = new Set();     // section names whose fold is expanded
+let ADD_TEXT = '';                // survives the re-render a poll triggers
+
+function renderList(focused){
+  const d = STATE.list;
+  $('#title').textContent = 'Store List';
+  if (!d) { $('#main').innerHTML = '<div class="empty">Loading…</div>'; return; }
+
+  const left = d.lines.filter(l => !l.checked).length;
+  $('#count').textContent = left + ' left · ' + d.lines.length;
+
+  // meal-plan strip: what these groceries are for
+  if (d.meals.length){
+    const strip = el('div','strip');
+    d.meals.forEach(m => {
+      const chip = el('span', null, esc(m.name) + ' ✕');
+      chip.onclick = async () => {
+        if (!confirm('Take ' + m.name + ' off the list?')) return;
+        const r = await api('/list/remove-recipe/' + m.id, {method:'POST', body:{}});
+        if (r) { STATE.list = r; STATE.version = r.version; }
+        render();
+      };
+      strip.appendChild(chip);
+    });
+    $('#hdextra').appendChild(strip);
+  }
+
+  const main = el('div');
+
+  // quick add — "we're out of trash bags", straight onto the list
+  const add = el('input','search');
+  add.id = 'addline';
+  add.placeholder = 'Add anything…';
+  add.value = ADD_TEXT;
+  add.oninput = () => { ADD_TEXT = add.value; };
+  add.onkeydown = async e => {
+    if (e.key !== 'Enter' || !add.value.trim()) return;
+    const name = add.value.trim();
+    add.value = ''; ADD_TEXT = '';
+    const r = await api('/list/add', {method:'POST', body:{name}});
+    if (r) { STATE.list = r; STATE.version = r.version; }
+    render();
+  };
+  $('#hdextra').appendChild(add);
+  if (focused === 'addline'){ add.focus(); add.setSelectionRange(add.value.length, add.value.length); }
+
+  let any = false;
+  for (const section of d.sections){
+    if (!section.lines.length) continue;          // never show an empty aisle
+    any = true;
+    main.appendChild(el('div','sec', esc(section.name)));
+
+    const open = section.lines.filter(l => !l.checked);
+    const done = section.lines.filter(l => l.checked);
+
+    open.forEach(l => main.appendChild(lineRow(l)));
+
+    if (done.length){
+      const fold = el('div','fold', '✓ ' + done.length + ' in the cart');
+      const holder = el('div');
+      const paint = () => {
+        const shown = OPEN_FOLDS.has(section.name);
+        holder.innerHTML = '';
+        if (shown) done.forEach(l => holder.appendChild(lineRow(l)));
+      };
+      fold.onclick = () => {
+        if (OPEN_FOLDS.has(section.name)) OPEN_FOLDS.delete(section.name);
+        else OPEN_FOLDS.add(section.name);
+        paint(); measureHeader();
+      };
+      paint();
+      main.appendChild(fold);
+      main.appendChild(holder);
+    }
+  }
+
+  if (!any) main.appendChild(el('div','empty',
+    'Nothing on the list.<br>Add a recipe, or type something above.'));
+
+  if (d.lines.some(l => l.checked)){
+    const finish = el('button','btn', 'Finish trip');
+    finish.onclick = async () => {
+      const r = await api('/list/finish-trip', {method:'POST', body:{}});
+      if (r) { STATE.list = r; STATE.version = r.version; }
+      render();
+    };
+    main.appendChild(finish);
+  }
+
+  $('#main').innerHTML = '';
+  $('#main').appendChild(main);
+}
+
+// /api/list serves every line twice — once in `lines`, once inside its section —
+// and JSON hands us two separate objects, so a local flip has to touch both or
+// the counter and the Finish trip button go stale for a render.
+function markChecked(id, val){
+  const d = STATE.list;
+  if (!d) return;
+  const hit = l => { if (l.id === id){ l.checked = val; l.checked_by = val ? who() : null; } };
+  d.lines.forEach(hit);
+  d.sections.forEach(s => s.lines.forEach(hit));
+}
+
+function lineRow(l){
+  const row = el('div','row');
+  row.appendChild(el('div', 'bx' + (l.checked ? ' on' : ''), l.checked ? '✓' : ''));
+
+  const sub = [l.sources.join(' · '),
+               l.buy_unit ? '→ ' + l.buy_unit : '',
+               l.checked && l.checked_by ? 'got by ' + l.checked_by : '']
+                .filter(Boolean).join(' · ');
+  const nm = el('div','nm',
+    '<b>' + esc(l.name) + '</b>' + (sub ? '<small>' + esc(sub) + '</small>' : ''));
+  row.appendChild(nm);
+
+  if (l.qty_display) row.appendChild(el('div','qty', esc(l.qty_display)));
+
+  if (l.checked) { nm.style.opacity = .4; nm.style.textDecoration = 'line-through'; }
+
+  // whole row is the target, not just the little box
+  row.onclick = async () => {
+    const want = !l.checked;
+    markChecked(l.id, want);        // leave the screen now, not in 300ms
+    render();
+    const r = await api('/list/line/' + l.id + '/check',
+                        {method:'POST', body:{checked: want}});
+    if (r) { STATE.list = r; STATE.version = r.version; }
+    else markChecked(l.id, !want);  // the server refused — put it back
+    render();
+  };
+  return row;
+}
+
+// ---- loading and sync -------------------------------------------------------
+
+async function refresh(){
+  if (TAB === 'recipes' && !STATE.recipes.length)
+    STATE.recipes = (await api('/recipes'))?.recipes || [];
+  if (TAB === 'pantry')
+    STATE.pantry = (await api('/pantry'))?.items || [];
+  if (!STATE.list) STATE.list = await api('/list');
+  if (STATE.list) STATE.version = STATE.list.version;
+  render();
+}
+
+// Cross-phone sync: cheap version check, full payload only when something moved.
+async function poll(){
+  if (TAB !== 'list') return;
+  const r = await api('/list/poll?since=' + STATE.version);
+  if (r && r.changed) { STATE.list = r; STATE.version = r.version; render(); }
+}
+setInterval(poll, 4000);
+document.addEventListener('visibilitychange', () => { if(!document.hidden) poll(); });
+
+refresh();
+</script>
+</body>
+</html>
