@@ -6,10 +6,12 @@ endpoint. Pantry/recipe/list routes land in later tasks.
 
 import os
 import sqlite3
+import time
 
 from flask import Blueprint, jsonify, render_template, request, session
 
 from . import db as _db
+from .parse import parse_ingredient
 
 bp = Blueprint("recipes", __name__, url_prefix="/recipes")
 
@@ -220,4 +222,137 @@ def api_pantry_alias(item_id):
             (item_id, alias),
         )
         CONN.commit()
+    return jsonify({"ok": True})
+
+
+def _store_ingredients(recipe_id, lines):
+    """Replace a recipe's ingredients, parsing each line and linking pantry items."""
+    with _db.LOCK:
+        CONN.execute("DELETE FROM recipe_ingredient WHERE recipe_id=?", (recipe_id,))
+        CONN.commit()
+    for position, line in enumerate(lines or []):
+        parsed = parse_ingredient(line)
+        if not parsed:
+            continue
+        pantry_id = get_or_create_pantry(parsed["name"]) if parsed["name"] else None
+        with _db.LOCK:
+            CONN.execute("""
+                INSERT INTO recipe_ingredient
+                    (recipe_id, position, raw_text, qty, unit, pantry_item_id)
+                VALUES (?,?,?,?,?,?)
+            """, (recipe_id, position, parsed["raw"], parsed["qty"],
+                  parsed["unit"], pantry_id))
+            CONN.commit()
+
+
+def _ingredients_json(recipe_id):
+    rows = CONN.execute("""
+        SELECT ri.*, p.name AS pantry_name, p.is_staple
+        FROM recipe_ingredient ri
+        LEFT JOIN pantry_item p ON p.id = ri.pantry_item_id
+        WHERE ri.recipe_id = ?
+        ORDER BY ri.position
+    """, (recipe_id,)).fetchall()
+    out = []
+    for r in rows:
+        parsed = parse_ingredient(r["raw_text"]) or {}
+        out.append({
+            "id": r["id"],
+            "raw_text": r["raw_text"],
+            "qty": r["qty"],
+            "unit": r["unit"],
+            "prep": parsed.get("prep", ""),
+            "pantry_item_id": r["pantry_item_id"],
+            "pantry_name": r["pantry_name"],
+            "is_staple": bool(r["is_staple"]),
+        })
+    return out
+
+
+def _recipe_json(recipe_id):
+    r = CONN.execute("SELECT * FROM recipe WHERE id=?", (recipe_id,)).fetchone()
+    if not r:
+        return None
+    out = dict(r)
+    out["archived"] = bool(r["archived"])
+    out["ingredients"] = _ingredients_json(recipe_id)
+    return out
+
+
+@bp.route("/api/recipes")
+def api_recipes_list():
+    rows = CONN.execute("""
+        SELECT id, name, source_name, source_url, servings, time_minutes,
+               photo_url, created_by
+        FROM recipe WHERE archived = 0
+        ORDER BY name COLLATE NOCASE
+    """).fetchall()
+    return jsonify({"recipes": [dict(r) for r in rows]})
+
+
+@bp.route("/api/recipes/<int:recipe_id>")
+def api_recipe_detail(recipe_id):
+    data = _recipe_json(recipe_id)
+    if not data:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(data)
+
+
+@bp.route("/api/recipes", methods=["POST"])
+def api_recipe_create():
+    gate = need_edit()
+    if gate:
+        return gate
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "name required"}), 400
+    with _db.LOCK:
+        cur = CONN.execute("""
+            INSERT INTO recipe (name, source_name, source_url, servings,
+                                time_minutes, instructions, notes, photo_url,
+                                created_by, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+        """, (name, body.get("source_name"), body.get("source_url"),
+              body.get("servings"), body.get("time_minutes"),
+              body.get("instructions"), body.get("notes"), body.get("photo_url"),
+              who(), int(time.time())))
+        CONN.commit()
+    recipe_id = cur.lastrowid
+    _store_ingredients(recipe_id, body.get("ingredients"))
+    _db.bump_version(CONN)
+    return jsonify(_recipe_json(recipe_id))
+
+
+@bp.route("/api/recipes/<int:recipe_id>", methods=["PUT"])
+def api_recipe_update(recipe_id):
+    gate = need_edit()
+    if gate:
+        return gate
+    body = request.get_json(silent=True) or {}
+    with _db.LOCK:
+        CONN.execute("""
+            UPDATE recipe SET name=?, source_name=?, source_url=?, servings=?,
+                              time_minutes=?, instructions=?, notes=?, photo_url=?
+            WHERE id=?
+        """, (body.get("name"), body.get("source_name"), body.get("source_url"),
+              body.get("servings"), body.get("time_minutes"),
+              body.get("instructions"), body.get("notes"), body.get("photo_url"),
+              recipe_id))
+        CONN.commit()
+    if "ingredients" in body:
+        _store_ingredients(recipe_id, body["ingredients"])
+    _db.bump_version(CONN)
+    return jsonify(_recipe_json(recipe_id))
+
+
+@bp.route("/api/recipes/<int:recipe_id>", methods=["DELETE"])
+def api_recipe_archive(recipe_id):
+    gate = need_edit()
+    if gate:
+        return gate
+    with _db.LOCK:
+        CONN.execute("UPDATE recipe SET archived=1 WHERE id=?", (recipe_id,))
+        CONN.commit()
+    _db.bump_version(CONN)
     return jsonify({"ok": True})
