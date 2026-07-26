@@ -10,3 +10,4 @@ __pycache__/
 # the local sound library + catalog seed live outside the repo
 sounds/
 *.db
+.superpowers/
