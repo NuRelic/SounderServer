@@ -438,3 +438,49 @@ def test_removing_a_recipe_only_deletes_its_own_contribution_rows(recipes_client
     assert onions["sources"] == ["Veggie Stir Fry"]
     rice = [l for l in lines if l["name"] == "rice"][0]
     assert rice["sources"] == ["Veggie Stir Fry"]
+
+
+def test_export_lists_unchecked_items_with_their_shaws_links(recipes_client):
+    item = _mk_pantry(recipes_client, "Milk", subsection="dairy")
+    recipes_client.patch(f"/recipes/api/pantry/{item['id']}", json={
+        "shaws_url": "https://shaws.com/p/whole-milk-gal",
+        "buy_unit": "1 gal", "who": "brandon"})
+    recipes_client.post("/recipes/api/list/add", json={"name": "Milk", "who": "k"})
+
+    export = recipes_client.get("/recipes/api/list/export").get_json()
+    assert export["items"][0]["name"] == "Milk"
+    assert export["items"][0]["shaws_url"].endswith("whole-milk-gal")
+    assert export["items"][0]["buy_unit"] == "1 gal"
+
+
+def test_export_flags_items_with_no_product_link(recipes_client):
+    recipes_client.post("/recipes/api/list/add",
+                        json={"name": "Birthday candles", "who": "sam"})
+    export = recipes_client.get("/recipes/api/list/export").get_json()
+    assert export["items"][0]["shaws_url"] is None
+    assert export["needs_product_link"] == ["Birthday candles"]
+
+
+def test_export_omits_checked_items(recipes_client):
+    recipes_client.post("/recipes/api/list/add", json={"name": "Milk", "who": "k"})
+    line = _lines(recipes_client)[0]
+    recipes_client.post(f"/recipes/api/list/line/{line['id']}/check",
+                        json={"checked": True, "who": "brandon"})
+    assert recipes_client.get("/recipes/api/list/export").get_json()["items"] == []
+
+
+def test_export_needs_product_link_excludes_items_that_have_one(recipes_client):
+    """Guards the `if not line['shaws_url']` filter itself.
+
+    With one item linked and one unlinked, needs_product_link must name only
+    the unlinked one — a filter that always appended (or never appended)
+    would still pass a test that only checked the linked item's own fields.
+    """
+    milk = _mk_pantry(recipes_client, "Milk", subsection="dairy")
+    recipes_client.patch(f"/recipes/api/pantry/{milk['id']}", json={
+        "shaws_url": "https://shaws.com/p/whole-milk-gal", "who": "brandon"})
+    recipes_client.post("/recipes/api/list/add", json={"name": "Milk", "who": "k"})
+    recipes_client.post("/recipes/api/list/add",
+                        json={"name": "Birthday candles", "who": "sam"})
+    export = recipes_client.get("/recipes/api/list/export").get_json()
+    assert export["needs_product_link"] == ["Birthday candles"]

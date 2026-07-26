@@ -599,3 +599,28 @@ def api_list_poll():
     payload = _list_json()
     payload["changed"] = True
     return jsonify(payload)
+
+
+@bp.route("/api/list/export")
+def api_list_export():
+    """Machine-readable unchecked list, for filling a Shaws pickup cart.
+
+    `needs_product_link` is the useful half: those are the items where somebody
+    has to pick a product once, after which this export gets more automatic.
+    """
+    data = _list_json()
+    items, missing = [], []
+    for line in data["lines"]:
+        if line["checked"]:
+            continue
+        items.append({
+            "name": line["name"],
+            "qty_display": line["qty_display"],
+            "buy_unit": line["buy_unit"],
+            "shaws_url": line["shaws_url"],
+            "section": line["section_name"],
+            "wanted_by": line["sources"],
+        })
+        if not line["shaws_url"]:
+            missing.append(line["name"])
+    return jsonify({"items": items, "needs_product_link": missing})
