@@ -30,6 +30,16 @@
   .search{width:100%;margin-top:10px;padding:12px 13px;border-radius:11px;
     background:var(--panel2);border:1px solid var(--line);color:var(--txt);
     font-size:16px;font-family:inherit}
+  /* a form field in the body of a screen, rather than in the header */
+  .fld{display:block;width:100%;min-height:44px;padding:12px 13px;border-radius:11px;
+    background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+    font-size:16px;font-family:inherit}
+  textarea.fld{line-height:1.4;resize:vertical}
+  select.fld{-webkit-appearance:none;appearance:none;
+    background-image:linear-gradient(45deg,transparent 50%,var(--dim) 50%),
+                     linear-gradient(135deg,var(--dim) 50%,transparent 50%);
+    background-position:calc(100% - 18px) 20px,calc(100% - 13px) 20px;
+    background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:38px}
   .row{display:flex;align-items:center;gap:14px;padding:11px 16px;min-height:56px;
     border-bottom:1px solid rgba(255,255,255,.05);
     touch-action:manipulation;-webkit-tap-highlight-color:transparent;
@@ -72,6 +82,14 @@
     bottom:calc(88px + env(safe-area-inset-bottom));
     background:#3a2228;border:1px solid #6d3a44;color:var(--txt);
     padding:13px 14px;border-radius:12px;font-size:15px}
+  /* login sheet — rises from the bottom so the field sits under the thumb */
+  .login{position:fixed;inset:0;z-index:30;background:rgba(0,0,0,.6);
+    display:flex;align-items:flex-end}
+  .login .card{width:100%;background:var(--panel);border-radius:16px 16px 0 0;
+    border-top:1px solid var(--line);
+    padding:18px 16px calc(18px + env(safe-area-inset-bottom))}
+  .login .card .btn{width:100%;margin:10px 0 0}
+  .login .err{color:#f0a0a8;font-size:15px;padding:8px 2px 0}
 </style>
 </head>
 <body>
@@ -120,6 +138,62 @@ function note(msg){
   TOAST_T = setTimeout(() => t.remove(), 4000);
 }
 
+// Writes are gated by the site-wide session, which the soundboard's modal sets.
+// Somebody who opens /recipes/ first has no way to reach that modal, so ask for
+// the password right here and replay whatever got refused. Same session, same
+// /api/login endpoint — this is an affordance, not a second auth system.
+let LOGIN_ASK = null;      // one sheet no matter how many calls are refused
+
+function askLogin(){
+  if (LOGIN_ASK) return LOGIN_ASK;
+  LOGIN_ASK = new Promise(resolve => {
+    const wrap = el('div','login');
+    const card = el('div','card');
+    card.appendChild(el('div', null,
+      '<b style="font-size:19px">Log in to make changes</b>' +
+      '<div style="color:var(--dim);font-size:15px;margin-top:4px">' +
+      'The same password as the soundboard.</div>'));
+
+    const pw = document.createElement('input');
+    pw.type = 'password'; pw.className = 'fld'; pw.id = 'loginpw';
+    pw.placeholder = 'Password'; pw.autocomplete = 'current-password';
+    pw.style.marginTop = '14px';
+    card.appendChild(pw);
+
+    const err = el('div','err','');
+    card.appendChild(err);
+
+    const finish = ok => { wrap.remove(); LOGIN_ASK = null; resolve(ok); };
+    const go = el('button','btn','Log in');
+    const submit = async () => {
+      if (go.disabled) return;
+      go.disabled = true; err.textContent = '';
+      let r = null;
+      try {
+        r = await fetch('/api/login', {method:'POST',
+              headers:{'Content-Type':'application/json'},
+              body: JSON.stringify({password: pw.value})});
+      } catch (e) { /* offline — fall through to the message below */ }
+      go.disabled = false;
+      if (r && r.ok) return finish(true);
+      err.textContent = r ? 'That password did not work.' : 'No connection.';
+      pw.value = ''; pw.focus();
+    };
+    go.onclick = submit;
+    pw.onkeydown = e => { if (e.key === 'Enter') submit(); };
+    card.appendChild(go);
+
+    const no = el('button','btn quiet','Not now');
+    no.onclick = () => finish(false);
+    card.appendChild(no);
+
+    wrap.appendChild(card);
+    document.body.appendChild(wrap);
+    pw.focus();
+  });
+  return LOGIN_ASK;
+}
+
 const api = async (path, opts={}) => {
   const o = {headers:{'Content-Type':'application/json'}, ...opts};
   if (o.body && typeof o.body === 'object') o.body = JSON.stringify({...o.body, who: who()});
@@ -131,9 +205,14 @@ const api = async (path, opts={}) => {
   }
   if (!r.ok) {
     console.warn('api', path, r.status);
-    // Writes are gated by the site-wide session, so logging in on the
-    // soundboard once unlocks this page too. There is no second login.
-    if (r.status === 403) note('Log in on the soundboard first to make changes.');
+    if (r.status === 403 && !opts.retried) {
+      // Ask, then send the very same request again — nobody has to remember
+      // what they were doing when the refusal landed.
+      if (await askLogin()) return api(path, {...opts, retried: true});
+      note('Not logged in — that change did not save.');
+      return null;
+    }
+    if (r.status === 403) note('Log in to make changes.');
     else if (o.method) note('That did not save (' + r.status + ').');
     return null;
   }

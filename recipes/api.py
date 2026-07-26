@@ -100,10 +100,65 @@ def _pantry_json(row):
     }
 
 
-def resolve_pantry(name):
-    """Find a pantry item by name or alias, case-insensitively. None if absent."""
-    if not name:
-        return None
+# Anything shorter than this is never produced or consumed as a plural variant.
+# "bas" and "ba" are not words we want colliding with "bass" and "bay".
+_MIN_STEM = 3
+
+# The endings where English adds -es rather than -s. Used in both directions:
+# going singular -> plural we add -es after them, and going plural -> singular
+# a word ending in <one of these> + "es" gives up the whole "es", never just
+# the "s". That second half is what keeps "molasses" off "molasse".
+_ES_ENDINGS = ("s", "x", "z", "ch", "sh", "o")
+
+
+def _plural_variants(name):
+    """Dumb, predictable singular/plural spellings of `name`.
+
+    Deliberately not a stemmer. It exists for one case: an ingredient line says
+    "1 onion, diced" and the pantry already has "Onions", or says "2 tomatoes"
+    and the pantry has "Tomato". Splitting those into two rows breaks quantity
+    merging on the most ordinary input there is.
+
+    Anything it does not recognise -- irregulars, latinate plurals -- simply
+    yields no variant and the name lands in Unsorted as its own item, which is
+    the same outcome as before this function existed. Over-matching is the
+    expensive failure (two unrelated groceries collapsed into one line), so the
+    rules stay conservative: no bare trailing "s" is ever stripped from a word
+    ending "ss", and no variant shorter than three characters is offered.
+    """
+    n = (name or "").strip()
+    if len(n) < _MIN_STEM:
+        return []
+    low = n.lower()
+    out = []
+
+    def add(v):
+        if len(v) >= _MIN_STEM and v.lower() != low and v not in out:
+            out.append(v)
+
+    # singular -> plural
+    if low.endswith("y") and len(low) > 2 and low[-2] not in "aeiou":
+        add(n[:-1] + "ies")                      # berry -> berries
+    elif low.endswith(_ES_ENDINGS):
+        add(n + "es")                            # tomato -> tomatoes, box -> boxes
+        if low.endswith("o"):
+            add(n + "s")                         # avocado -> avocados
+    else:
+        add(n + "s")                             # onion -> onions
+
+    # plural -> singular
+    if low.endswith("ies") and len(low) > 4:
+        add(n[:-3] + "y")                        # berries -> berry
+    elif low.endswith("es") and any(
+            low[:-2].endswith(e) for e in _ES_ENDINGS):
+        add(n[:-2])                              # tomatoes -> tomato, glasses -> glass
+    elif low.endswith("s") and not low.endswith("ss"):
+        add(n[:-1])                              # onions -> onion
+
+    return out
+
+
+def _lookup_exact(name):
     row = CONN.execute(
         "SELECT id FROM pantry_item WHERE name = ?", (name,)
     ).fetchone()
@@ -114,6 +169,25 @@ def resolve_pantry(name):
         (name,),
     ).fetchone()
     return row["id"] if row else None
+
+
+def resolve_pantry(name):
+    """Find a pantry item by name or alias, case-insensitively. None if absent.
+
+    Falls back to a simple singular/plural spelling of the same name (see
+    `_plural_variants`) so "onion" and "onions" are one grocery thing. An exact
+    hit always wins: a pantry that genuinely holds both spellings keeps them.
+    """
+    if not name:
+        return None
+    hit = _lookup_exact(name)
+    if hit:
+        return hit
+    for variant in _plural_variants(name):
+        hit = _lookup_exact(variant)
+        if hit:
+            return hit
+    return None
 
 
 def get_or_create_pantry(name, subsection_id=None):

@@ -90,6 +90,68 @@ def test_alias_resolves_to_the_same_item(recipes_client):
     assert resolved["id"] == item["id"]
 
 
+def test_singular_ingredient_finds_the_plural_pantry_item(recipes_client):
+    """"1 onion, diced" must land on the existing "Onions", not beside it.
+
+    This is the most ordinary input there is; splitting it defeats merging.
+    """
+    item = _mk_pantry(recipes_client, "Onions", subsection="produce")
+    resolved = recipes_client.get(
+        "/recipes/api/pantry/resolve?name=onion").get_json()
+    assert resolved["id"] == item["id"]
+
+
+def test_plural_ingredient_finds_the_singular_pantry_item(recipes_client):
+    item = _mk_pantry(recipes_client, "Tomato", subsection="produce")
+    resolved = recipes_client.get(
+        "/recipes/api/pantry/resolve?name=tomatoes").get_json()
+    assert resolved["id"] == item["id"]
+
+
+def test_plural_match_does_not_create_a_second_pantry_row(recipes_client):
+    _mk_pantry(recipes_client, "Onions", subsection="produce")
+    recipes_client.post("/recipes/api/recipes", json={
+        "name": "Soup", "who": "brandon",
+        "ingredients": ["1 onion, diced"],
+    })
+    names = [i["name"] for i in
+             recipes_client.get("/recipes/api/pantry").get_json()["items"]]
+    assert names.count("Onions") == 1
+    assert "onion" not in [n.lower() for n in names if n != "Onions"]
+
+
+def test_an_exact_name_always_beats_a_plural_variant(recipes_client):
+    """If the pantry genuinely holds both spellings, neither is hijacked.
+
+    The create route can no longer produce this state on purpose -- asking it
+    for "Green" when "Greens" exists now hands back "Greens", which is the
+    whole point of the fix -- so the pair is seeded straight into the table.
+    """
+    api = _api()
+    plural = _mk_pantry(recipes_client, "Greens", subsection="produce")
+    cur = api.CONN.execute("INSERT INTO pantry_item(name) VALUES('Green')")
+    api.CONN.commit()
+    single_id = cur.lastrowid
+    for name, expected in (("Greens", plural["id"]), ("Green", single_id)):
+        got = recipes_client.get(
+            f"/recipes/api/pantry/resolve?name={name}").get_json()
+        assert got["id"] == expected
+
+
+@pytest.mark.parametrize("stored, looked_up", [
+    ("bas", "bass"),            # a doubled s is not a plural
+    ("bass", "bas"),            # ...in either direction
+    ("molasse", "molasses"),    # -sses gives up the whole "es", never just "s"
+    ("ba", "bay"),              # too short to vary at all
+    ("rice", "ice"),            # not a plural relationship in any direction
+])
+def test_different_groceries_are_never_collapsed(recipes_client, stored,
+                                                 looked_up):
+    _mk_pantry(recipes_client, stored)
+    resp = recipes_client.get(f"/recipes/api/pantry/resolve?name={looked_up}")
+    assert resp.status_code == 404, f"{looked_up!r} wrongly matched {stored!r}"
+
+
 def test_losing_the_create_race_twice_reraises_the_real_error(recipes_client,
                                                              monkeypatch):
     """The IntegrityError fallback must surface the collision, not a bare raise.
