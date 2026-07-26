@@ -1827,27 +1827,33 @@ def _find_or_make_line(pantry_item_id=None, free_text=None):
 
     A checked line is already in the cart, so a new claim on the same item needs
     its own line rather than silently reviving something you already bought.
+
+    The SELECT and the INSERT both sit inside the lock. Splitting them is a
+    check-then-act race: two phones adding onions at the same moment would both
+    see no open line and both insert one. Task 1's partial unique index catches
+    that at the schema level, so the lock is what keeps it from surfacing as an
+    IntegrityError under normal use.
     """
-    if pantry_item_id:
-        row = CONN.execute(
-            "SELECT id FROM list_line WHERE pantry_item_id=? AND checked=0",
-            (pantry_item_id,),
-        ).fetchone()
-    else:
-        row = CONN.execute(
-            "SELECT id FROM list_line WHERE free_text=? COLLATE NOCASE AND checked=0",
-            (free_text,),
-        ).fetchone()
-    if row:
-        return row["id"]
     with _db.LOCK:
+        if pantry_item_id:
+            row = CONN.execute(
+                "SELECT id FROM list_line WHERE pantry_item_id=? AND checked=0",
+                (pantry_item_id,),
+            ).fetchone()
+        else:
+            row = CONN.execute(
+                "SELECT id FROM list_line WHERE free_text=? AND checked=0",
+                (free_text,),
+            ).fetchone()
+        if row:
+            return row["id"]
         cur = CONN.execute(
             "INSERT INTO list_line(pantry_item_id, free_text, created_at)"
             " VALUES(?,?,?)",
             (pantry_item_id, free_text, int(time.time())),
         )
         CONN.commit()
-    return cur.lastrowid
+        return cur.lastrowid
 
 
 @bp.route("/api/list/add-recipe/<int:recipe_id>", methods=["POST"])
