@@ -3,6 +3,14 @@
 Sections are visible headers. Sub-categories are invisible sort keys: they exist
 so items land in the right part of a section without adding headers to scroll
 past. Both are reorderable in the app; this is a first-run seed, not a constant.
+
+`seed_sections()` inserts this with `INSERT OR IGNORE`, so it only ever takes
+effect on the very first boot of a database — editing SECTIONS afterward is a
+silent no-op against existing databases. That's intentional: it's what lets
+the family reorder sections/subsections in the app without a later deploy
+stomping their changes back to this list. It does mean this file stops being
+"the" source of truth for anyone who has already booted once; treat it as the
+seed, not a live config.
 """
 
 SECTIONS = [

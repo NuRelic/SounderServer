@@ -37,7 +37,7 @@ def editor_client(app):
     return c
 
 @pytest.fixture
-def recipes_db(tmp_path, monkeypatch):
+def recipes_db(tmp_path):
     """A fresh, seeded recipes database on disk, isolated per test.
 
     recipes.db holds no DATA_DIR-derived module-level state (unlike server.py),
@@ -48,10 +48,10 @@ def recipes_db(tmp_path, monkeypatch):
     both references resolve to the same cached module; isolation comes from
     handing each test its own on-disk database file instead.
     """
-    monkeypatch.setenv("DATA_DIR", str(tmp_path))
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
     db = importlib.import_module("recipes.db")
     conn = db.connect(str(tmp_path / "recipes.db"))
     db.init_schema(conn)
     db.seed_sections(conn)
-    return conn
+    yield conn
+    conn.close()

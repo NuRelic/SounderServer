@@ -5,7 +5,13 @@ rather than a module-level connection: callers (tests today, a later
 runtime-owning module going forward) pass in the path and drive the lifecycle
 themselves. `check_same_thread=False` and WAL are set here regardless, since
 whatever ends up holding the long-lived connection will be shared across
-threads the same way the soundboard's catalog DB is (server.py:229).
+threads the same way the soundboard's catalog DB is (server.py:238).
+
+No migration framework: `CREATE TABLE IF NOT EXISTS` doesn't handle `ALTER
+TABLE`, so any schema change after first boot would need one. That's a
+conscious deferral, not an oversight — this is a greenfield DB with no rows
+anywhere yet, and building migration tooling before there's real family data
+to migrate is wasted work. Revisit the moment there's data worth preserving.
 """
 
 import sqlite3
@@ -27,12 +33,15 @@ CREATE TABLE IF NOT EXISTS subsection (
     section_id INTEGER NOT NULL REFERENCES section(id) ON DELETE CASCADE,
     name       TEXT NOT NULL,
     position   INTEGER NOT NULL,
-    UNIQUE(section_id, name)
+    UNIQUE(section_id, name COLLATE NOCASE)
 );
 
+-- COLLATE NOCASE on name/alias: every planned lookup and merge is
+-- case-insensitive ("Onions" and "onions" are the same grocery thing), so
+-- uniqueness has to agree with that or two rows can exist for one product.
 CREATE TABLE IF NOT EXISTS pantry_item (
     id             INTEGER PRIMARY KEY,
-    name           TEXT NOT NULL UNIQUE,
+    name           TEXT NOT NULL COLLATE NOCASE UNIQUE,
     subsection_id  INTEGER REFERENCES subsection(id) ON DELETE SET NULL,
     is_staple      INTEGER NOT NULL DEFAULT 0,
     buy_unit       TEXT,
@@ -43,7 +52,7 @@ CREATE TABLE IF NOT EXISTS pantry_item (
 
 CREATE TABLE IF NOT EXISTS pantry_alias (
     pantry_item_id INTEGER NOT NULL REFERENCES pantry_item(id) ON DELETE CASCADE,
-    alias          TEXT NOT NULL UNIQUE
+    alias          TEXT NOT NULL COLLATE NOCASE UNIQUE
 );
 
 CREATE TABLE IF NOT EXISTS recipe (
@@ -107,6 +116,27 @@ CREATE INDEX IF NOT EXISTS idx_ing_pantry   ON recipe_ingredient(pantry_item_id)
 CREATE INDEX IF NOT EXISTS idx_contrib_line ON list_contribution(list_line_id);
 CREATE INDEX IF NOT EXISTS idx_contrib_rcp  ON list_contribution(recipe_id);
 CREATE INDEX IF NOT EXISTS idx_line_pantry  ON list_line(pantry_item_id);
+CREATE INDEX IF NOT EXISTS idx_alias_pantry ON pantry_alias(pantry_item_id);
+
+-- "One open line per grocery thing": two recipes wanting onions merge onto
+-- the same unchecked line (their claims are separate list_contribution rows);
+-- once a line is checked off, a fresh one is allowed to start. Partial
+-- indexes only cover checked=0 rows so history isn't constrained.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_line_open_item
+  ON list_line(pantry_item_id) WHERE checked = 0 AND pantry_item_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_line_open_text
+  ON list_line(free_text) WHERE checked = 0 AND free_text IS NOT NULL;
+
+-- A list_line with zero remaining list_contribution rows is nothing anyone
+-- still wants — drop it rather than leaving an orphaned line on the shopping
+-- list forever. Fires whether a contribution is deleted directly or cascaded
+-- in via a deleted recipe.
+CREATE TRIGGER IF NOT EXISTS trg_drop_childless_line
+AFTER DELETE ON list_contribution
+BEGIN
+  DELETE FROM list_line WHERE id = OLD.list_line_id
+    AND NOT EXISTS (SELECT 1 FROM list_contribution WHERE list_line_id = OLD.list_line_id);
+END;
 """
 
 
@@ -166,7 +196,7 @@ def bump_version(conn):
             ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1
         """)
         conn.commit()
-    return get_version(conn)
+        return get_version(conn)
 
 
 def get_version(conn):
