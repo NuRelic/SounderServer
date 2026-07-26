@@ -10,7 +10,7 @@ guess a quantity that was not written.
 
 import re
 
-from .units import normalize_unit
+from .units import _ALIASES, normalize_unit
 
 _VULGAR = {
     "¼": 0.25, "½": 0.5, "¾": 0.75, "⅓": 1 / 3, "⅔": 2 / 3,
@@ -19,17 +19,12 @@ _VULGAR = {
 }
 _VULGAR_CLASS = "".join(_VULGAR)
 
-# Canonical units known to recipes.units, spelled out here (not imported) so
-# this module stays a pure function of its own regexes plus normalize_unit().
-_CANONICAL_UNITS = frozenset({
-    "tsp", "tbsp", "floz", "cup", "pint", "quart", "gallon", "ml", "l",
-    "g", "kg", "oz", "lb", "each", "clove", "bunch", "can", "jar", "pkg",
-    "head", "stalk", "sprig", "slice", "loaf", "box", "bag", "bottle",
-    "pinch",
-})
+# Canonical units, derived from the same alias table units.py itself uses —
+# a new unit or alias added there is picked up here automatically.
+_CANONICAL_UNITS = frozenset(_ALIASES.keys())
 
-# a leading amount: mixed number, ascii fraction, vulgar glyph, or decimal,
-# optionally the low end of a range
+# a leading amount: mixed number, ascii fraction, vulgar glyph, decimal (with
+# optional thousands separators), optionally the low end of a range
 _QTY_RE = re.compile(
     r"^\s*"
     r"(?P<qty>"
@@ -37,6 +32,7 @@ _QTY_RE = re.compile(
     r"|\d+\s+\d+\s*/\s*\d+"              # 1 1/2
     r"|\d+\s*/\s*\d+"                    # 1/2
     rf"|[{_VULGAR_CLASS}]"               # ½
+    r"|\d{1,3}(?:,\d{3})+(?:\.\d+)?"     # 1,000 or 12,345.5
     r"|\d+(?:\.\d+)?"                    # 2 or 2.5
     r")"
     r"(?:\s*[-–—]\s*\d+(?:\.\d+)?)?"     # discard the high end of a range
@@ -60,7 +56,7 @@ def _to_number(text):
             return float(parts[0]) + float(num) / float(den)
         num, den = text.split("/")
         return float(num) / float(den)
-    return float(text)
+    return float(text.replace(",", ""))
 
 
 def _clean_number(value):
@@ -71,7 +67,7 @@ def parse_ingredient(line):
     """Parse one line. Returns a dict, or None for a blank line."""
     if not line or not line.strip():
         return None
-    raw = line.rstrip()
+    raw = line
     work = _BULLET_RE.sub("", raw).strip()
 
     note_parts = []
@@ -81,7 +77,7 @@ def parse_ingredient(line):
         return " "
 
     work = _PAREN_RE.sub(_capture, work).strip()
-    work = re.sub(r"\s{2,}", " ", work)
+    work = re.sub(r"\s+", " ", work)
 
     qty = None
     match = _QTY_RE.match(work)
@@ -94,7 +90,7 @@ def parse_ingredient(line):
 
     unit = None
     if qty is not None and work:
-        tokens = work.split(" ", 2)
+        tokens = work.split(None, 2)
         # Check the two-word unit "fl oz" before falling back to a single
         # token, since normalizing "fl" alone is not a known unit.
         two_word_unit = None
@@ -107,7 +103,9 @@ def parse_ingredient(line):
             unit = two_word_unit
             work = " ".join(tokens[2:]).strip()
         else:
-            first_token, _, rest = work.partition(" ")
+            parts = work.split(None, 1)
+            first_token = parts[0]
+            rest = parts[1] if len(parts) > 1 else ""
             candidate = normalize_unit(first_token)
             if candidate in _CANONICAL_UNITS:
                 unit = candidate
@@ -116,11 +114,18 @@ def parse_ingredient(line):
                 unit = "each"
 
     name, _, prep = work.partition(",")
+    note = "; ".join(p for p in note_parts if p)
+    name = name.strip()
+    if not name:
+        # A line that was nothing but "(a parenthetical)" or a bullet with no
+        # text still needs a non-blank row in the list — fall back to
+        # whatever we do have rather than showing a blank name.
+        name = note or raw.strip()
     return {
         "raw": raw,
         "qty": qty,
         "unit": unit,
-        "name": name.strip(),
+        "name": name,
         "prep": prep.strip(),
-        "note": "; ".join(p for p in note_parts if p),
+        "note": note,
     }
