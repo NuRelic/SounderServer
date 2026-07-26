@@ -35,3 +35,17 @@ def editor_client(app):
     with c.session_transaction() as s:
         s["can_edit"] = True
     return c
+
+@pytest.fixture
+def recipes_db(tmp_path, monkeypatch):
+    """A fresh, seeded recipes database on disk, isolated per test."""
+    import importlib, sys
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+    for mod in ("recipes.db", "recipes.api", "recipes", "recipes.seed"):
+        sys.modules.pop(mod, None)
+    db = importlib.import_module("recipes.db")
+    conn = db.connect(str(tmp_path / "recipes.db"))
+    db.init_schema(conn)
+    db.seed_sections(conn)
+    return conn
