@@ -24,9 +24,24 @@ DATA_DIR = os.environ.get(
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, "recipes.db")
 
-CONN = _db.connect(DB_PATH)
-_db.init_schema(CONN)
-_db.seed_sections(CONN)
+
+def _conn():
+    """This request thread's database connection.
+
+    Not a module-level `CONN` object: one connection shared across waitress's
+    16 threads corrupts concurrent reads of the same query (see
+    `db.get_conn`). Every call site below goes through this instead, which is
+    a dict lookup on a `threading.local` — cheap enough to do per statement.
+    """
+    return _db.get_conn(DB_PATH)
+
+
+# Schema and seed run once, here at import, on the importing thread — not
+# per-thread inside `_conn()`. Both are idempotent, but doing them on every
+# thread's first request would mean 16 redundant `executescript` calls
+# contending for the write lock during the first seconds of a deploy.
+_db.init_schema(_conn())
+_db.seed_sections(_conn())
 
 
 def can_edit():
@@ -60,10 +75,10 @@ def api_sections():
     rather than a hardcoded copy of seed.py — that list is editable in the
     database and a frontend copy would silently drift the first time it is.
     """
-    rows = CONN.execute(
+    rows = _conn().execute(
         "SELECT id, name, position FROM section ORDER BY position"
     ).fetchall()
-    subs = CONN.execute(
+    subs = _conn().execute(
         "SELECT section_id, name FROM subsection ORDER BY section_id, position"
     ).fetchall()
     by_section = {}
@@ -78,7 +93,7 @@ def api_sections():
 
 
 def _unsorted_subsection_id():
-    row = CONN.execute("""
+    row = _conn().execute("""
         SELECT sub.id FROM subsection sub
         JOIN section s ON s.id = sub.section_id
         WHERE s.name = 'Unsorted'
@@ -90,7 +105,7 @@ def _unsorted_subsection_id():
 def _subsection_id_by_name(name):
     if not name:
         return None
-    row = CONN.execute(
+    row = _conn().execute(
         "SELECT id FROM subsection WHERE name = ?", (name,)
     ).fetchone()
     return row["id"] if row else None
@@ -100,7 +115,7 @@ def _pantry_row(item_id):
     # STORE_ORDER_SQL's ORDER BY lives inside the subquery here; SQLite accepts
     # this (it just becomes a no-op ordering once we filter to a single row by
     # WHERE id = ?), so no restructuring is needed.
-    return CONN.execute(f"""
+    return _conn().execute(f"""
         SELECT * FROM ({_db.STORE_ORDER_SQL}) WHERE id = ?
     """, (item_id,)).fetchone()
 
@@ -178,12 +193,12 @@ def _plural_variants(name):
 
 
 def _lookup_exact(name):
-    row = CONN.execute(
+    row = _conn().execute(
         "SELECT id FROM pantry_item WHERE name = ?", (name,)
     ).fetchone()
     if row:
         return row["id"]
-    row = CONN.execute(
+    row = _conn().execute(
         "SELECT pantry_item_id AS id FROM pantry_alias WHERE alias = ?",
         (name,),
     ).fetchone()
@@ -226,14 +241,14 @@ def get_or_create_pantry(name, subsection_id=None):
         return existing
     with _db.LOCK:
         try:
-            cur = CONN.execute(
+            cur = _conn().execute(
                 "INSERT INTO pantry_item(name, subsection_id) VALUES(?,?)",
                 (name.strip(), subsection_id or _unsorted_subsection_id()),
             )
-            CONN.commit()
+            _conn().commit()
             return cur.lastrowid
         except sqlite3.IntegrityError as collision:
-            CONN.rollback()
+            _conn().rollback()
             lost_race = collision
     # Lost the race — someone else just created this name. Resolve again
     # outside the lock rather than propagating the collision.
@@ -249,7 +264,7 @@ def get_or_create_pantry(name, subsection_id=None):
 
 @bp.route("/api/pantry")
 def api_pantry_list():
-    rows = CONN.execute(_db.STORE_ORDER_SQL).fetchall()
+    rows = _conn().execute(_db.STORE_ORDER_SQL).fetchall()
     return jsonify({"items": [_pantry_json(r) for r in rows]})
 
 
@@ -273,10 +288,10 @@ def api_pantry_create():
     item_id = get_or_create_pantry(name, _subsection_id_by_name(body.get("subsection")))
     if body.get("subsection"):
         with _db.LOCK:
-            CONN.execute("UPDATE pantry_item SET subsection_id=? WHERE id=?",
-                         (_subsection_id_by_name(body["subsection"]), item_id))
-            CONN.commit()
-    _db.bump_version(CONN)
+            _conn().execute("UPDATE pantry_item SET subsection_id=? WHERE id=?",
+                            (_subsection_id_by_name(body["subsection"]), item_id))
+            _conn().commit()
+    _db.bump_version(_conn())
     return jsonify(_pantry_json(_pantry_row(item_id)))
 
 
@@ -302,9 +317,9 @@ def api_pantry_update(item_id):
         return jsonify({"error": "nothing to update"}), 400
     vals.append(item_id)
     with _db.LOCK:
-        CONN.execute(f"UPDATE pantry_item SET {', '.join(sets)} WHERE id=?", vals)
-        CONN.commit()
-    _db.bump_version(CONN)
+        _conn().execute(f"UPDATE pantry_item SET {', '.join(sets)} WHERE id=?", vals)
+        _conn().commit()
+    _db.bump_version(_conn())
     return jsonify(_pantry_json(_pantry_row(item_id)))
 
 
@@ -317,36 +332,36 @@ def api_pantry_alias(item_id):
     if not alias:
         return jsonify({"error": "alias required"}), 400
     with _db.LOCK:
-        CONN.execute(
+        _conn().execute(
             "INSERT OR IGNORE INTO pantry_alias(pantry_item_id, alias) VALUES(?,?)",
             (item_id, alias),
         )
-        CONN.commit()
+        _conn().commit()
     return jsonify({"ok": True})
 
 
 def _store_ingredients(recipe_id, lines):
     """Replace a recipe's ingredients, parsing each line and linking pantry items."""
     with _db.LOCK:
-        CONN.execute("DELETE FROM recipe_ingredient WHERE recipe_id=?", (recipe_id,))
-        CONN.commit()
+        _conn().execute("DELETE FROM recipe_ingredient WHERE recipe_id=?", (recipe_id,))
+        _conn().commit()
     for position, line in enumerate(lines or []):
         parsed = parse_ingredient(line)
         if not parsed:
             continue
         pantry_id = get_or_create_pantry(parsed["name"]) if parsed["name"] else None
         with _db.LOCK:
-            CONN.execute("""
+            _conn().execute("""
                 INSERT INTO recipe_ingredient
                     (recipe_id, position, raw_text, qty, unit, prep, pantry_item_id)
                 VALUES (?,?,?,?,?,?,?)
             """, (recipe_id, position, parsed["raw"], parsed["qty"],
                   parsed["unit"], parsed["prep"], pantry_id))
-            CONN.commit()
+            _conn().commit()
 
 
 def _ingredients_json(recipe_id):
-    rows = CONN.execute("""
+    rows = _conn().execute("""
         SELECT ri.*, p.name AS pantry_name, p.is_staple
         FROM recipe_ingredient ri
         LEFT JOIN pantry_item p ON p.id = ri.pantry_item_id
@@ -371,7 +386,7 @@ def _ingredients_json(recipe_id):
 
 
 def _recipe_json(recipe_id):
-    r = CONN.execute("SELECT * FROM recipe WHERE id=?", (recipe_id,)).fetchone()
+    r = _conn().execute("SELECT * FROM recipe WHERE id=?", (recipe_id,)).fetchone()
     if not r:
         return None
     out = dict(r)
@@ -382,7 +397,7 @@ def _recipe_json(recipe_id):
 
 @bp.route("/api/recipes")
 def api_recipes_list():
-    rows = CONN.execute("""
+    rows = _conn().execute("""
         SELECT id, name, source_name, source_url, servings, time_minutes,
                photo_url, created_by
         FROM recipe WHERE archived = 0
@@ -409,7 +424,7 @@ def api_recipe_create():
     if not name:
         return jsonify({"error": "name required"}), 400
     with _db.LOCK:
-        cur = CONN.execute("""
+        cur = _conn().execute("""
             INSERT INTO recipe (name, source_name, source_url, servings,
                                 time_minutes, instructions, notes, photo_url,
                                 created_by, created_at)
@@ -418,10 +433,10 @@ def api_recipe_create():
               body.get("servings"), body.get("time_minutes"),
               body.get("instructions"), body.get("notes"), body.get("photo_url"),
               who(), int(time.time())))
-        CONN.commit()
+        _conn().commit()
     recipe_id = cur.lastrowid
     _store_ingredients(recipe_id, body.get("ingredients"))
-    _db.bump_version(CONN)
+    _db.bump_version(_conn())
     return jsonify(_recipe_json(recipe_id))
 
 
@@ -432,7 +447,7 @@ def api_recipe_update(recipe_id):
         return gate
     body = request.get_json(silent=True) or {}
     with _db.LOCK:
-        CONN.execute("""
+        _conn().execute("""
             UPDATE recipe SET name=?, source_name=?, source_url=?, servings=?,
                               time_minutes=?, instructions=?, notes=?, photo_url=?
             WHERE id=?
@@ -440,10 +455,10 @@ def api_recipe_update(recipe_id):
               body.get("servings"), body.get("time_minutes"),
               body.get("instructions"), body.get("notes"), body.get("photo_url"),
               recipe_id))
-        CONN.commit()
+        _conn().commit()
     if "ingredients" in body:
         _store_ingredients(recipe_id, body["ingredients"])
-    _db.bump_version(CONN)
+    _db.bump_version(_conn())
     return jsonify(_recipe_json(recipe_id))
 
 
@@ -453,9 +468,9 @@ def api_recipe_archive(recipe_id):
     if gate:
         return gate
     with _db.LOCK:
-        CONN.execute("UPDATE recipe SET archived=1 WHERE id=?", (recipe_id,))
-        CONN.commit()
-    _db.bump_version(CONN)
+        _conn().execute("UPDATE recipe SET archived=1 WHERE id=?", (recipe_id,))
+        _conn().commit()
+    _db.bump_version(_conn())
     return jsonify({"ok": True})
 
 
@@ -473,29 +488,29 @@ def _find_or_make_line(pantry_item_id=None, free_text=None):
     """
     with _db.LOCK:
         if pantry_item_id:
-            row = CONN.execute(
+            row = _conn().execute(
                 "SELECT id FROM list_line WHERE pantry_item_id=? AND checked=0",
                 (pantry_item_id,),
             ).fetchone()
         else:
-            row = CONN.execute(
+            row = _conn().execute(
                 "SELECT id FROM list_line WHERE free_text=? AND checked=0",
                 (free_text,),
             ).fetchone()
         if row:
             return row["id"]
-        cur = CONN.execute(
+        cur = _conn().execute(
             "INSERT INTO list_line(pantry_item_id, free_text, created_at)"
             " VALUES(?,?,?)",
             (pantry_item_id, free_text, int(time.time())),
         )
-        CONN.commit()
+        _conn().commit()
         return cur.lastrowid
 
 
 def _list_json():
     """The store list, merged and grouped into the walking order."""
-    rows = CONN.execute("""
+    rows = _conn().execute("""
         SELECT ll.id, ll.free_text, ll.checked, ll.checked_by,
                p.id AS pantry_id, p.name AS pantry_name, p.buy_unit, p.shaws_url,
                sub.name AS subsection_name,
@@ -512,7 +527,7 @@ def _list_json():
 
     lines, by_section = [], {}
     for r in rows:
-        contribs = CONN.execute("""
+        contribs = _conn().execute("""
             SELECT c.qty, c.unit, c.added_by, rc.name AS recipe_name
             FROM list_contribution c
             LEFT JOIN recipe rc ON rc.id = c.recipe_id
@@ -543,20 +558,20 @@ def _list_json():
         lines.append(line)
         by_section.setdefault(r["section_name"], []).append(line)
 
-    section_rows = CONN.execute(
+    section_rows = _conn().execute(
         "SELECT name FROM section ORDER BY position"
     ).fetchall()
     sections = [{"name": s["name"], "lines": by_section.get(s["name"], [])}
                 for s in section_rows]
 
-    meals = CONN.execute("""
+    meals = _conn().execute("""
         SELECT r.id, r.name FROM meal_plan m
         JOIN recipe r ON r.id = m.recipe_id
         ORDER BY m.added_at
     """).fetchall()
 
     return {
-        "version": _db.get_version(CONN),
+        "version": _db.get_version(_conn()),
         "lines": lines,
         "sections": sections,
         "meals": [dict(m) for m in meals],
@@ -576,7 +591,7 @@ def api_list_add_recipe(recipe_id):
     body = request.get_json(silent=True) or {}
     skip = set(body.get("skip") or [])
     person = who()
-    rows = CONN.execute(
+    rows = _conn().execute(
         "SELECT * FROM recipe_ingredient WHERE recipe_id=? ORDER BY position",
         (recipe_id,),
     ).fetchall()
@@ -587,20 +602,20 @@ def api_list_add_recipe(recipe_id):
             pantry_item_id=ing["pantry_item_id"],
             free_text=None if ing["pantry_item_id"] else ing["raw_text"])
         with _db.LOCK:
-            CONN.execute("""
+            _conn().execute("""
                 INSERT INTO list_contribution
                     (list_line_id, recipe_id, added_by, qty, unit, raw_text)
                 VALUES (?,?,?,?,?,?)
             """, (line_id, recipe_id, person, ing["qty"], ing["unit"], ing["raw_text"]))
-            CONN.commit()
+            _conn().commit()
     with _db.LOCK:
-        CONN.execute(
+        _conn().execute(
             "INSERT OR IGNORE INTO meal_plan(recipe_id, added_by, added_at)"
             " VALUES(?,?,?)",
             (recipe_id, person, int(time.time())),
         )
-        CONN.commit()
-    _db.bump_version(CONN)
+        _conn().commit()
+    _db.bump_version(_conn())
     return jsonify(_list_json())
 
 
@@ -618,13 +633,13 @@ def api_list_add_free():
     line_id = _find_or_make_line(pantry_item_id=pantry_id,
                                  free_text=None if pantry_id else name)
     with _db.LOCK:
-        CONN.execute("""
+        _conn().execute("""
             INSERT INTO list_contribution
                 (list_line_id, recipe_id, added_by, qty, unit, raw_text)
             VALUES (?, NULL, ?, ?, ?, ?)
         """, (line_id, person, body.get("qty"), body.get("unit"), name))
-        CONN.commit()
-    _db.bump_version(CONN)
+        _conn().commit()
+    _db.bump_version(_conn())
     return jsonify(_list_json())
 
 
@@ -636,13 +651,13 @@ def api_list_check(line_id):
     body = request.get_json(silent=True) or {}
     checked = bool(body.get("checked"))
     with _db.LOCK:
-        CONN.execute(
+        _conn().execute(
             "UPDATE list_line SET checked=?, checked_by=?, checked_at=? WHERE id=?",
             (int(checked), who() if checked else None,
              int(time.time()) if checked else None, line_id),
         )
-        CONN.commit()
-    _db.bump_version(CONN)
+        _conn().commit()
+    _db.bump_version(_conn())
     return jsonify(_list_json())
 
 
@@ -652,9 +667,9 @@ def api_list_finish_trip():
     if gate:
         return gate
     with _db.LOCK:
-        CONN.execute("DELETE FROM list_line WHERE checked=1")
-        CONN.commit()
-    _db.bump_version(CONN)
+        _conn().execute("DELETE FROM list_line WHERE checked=1")
+        _conn().commit()
+    _db.bump_version(_conn())
     return jsonify(_list_json())
 
 
@@ -672,10 +687,10 @@ def api_list_remove_recipe(recipe_id):
     if gate:
         return gate
     with _db.LOCK:
-        CONN.execute("DELETE FROM list_contribution WHERE recipe_id=?", (recipe_id,))
-        CONN.execute("DELETE FROM meal_plan WHERE recipe_id=?", (recipe_id,))
-        CONN.commit()
-    _db.bump_version(CONN)
+        _conn().execute("DELETE FROM list_contribution WHERE recipe_id=?", (recipe_id,))
+        _conn().execute("DELETE FROM meal_plan WHERE recipe_id=?", (recipe_id,))
+        _conn().commit()
+    _db.bump_version(_conn())
     return jsonify(_list_json())
 
 
@@ -686,7 +701,7 @@ def api_list_poll():
         since = int(request.args.get("since", -1))
     except ValueError:
         since = -1
-    current = _db.get_version(CONN)
+    current = _db.get_version(_conn())
     if since == current:
         return jsonify({"changed": False, "version": current})
     payload = _list_json()

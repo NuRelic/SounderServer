@@ -3,9 +3,9 @@
 Exposes `connect()`, `init_schema()`, and `seed_sections()` as plain functions
 rather than a module-level connection: callers (tests today, a later
 runtime-owning module going forward) pass in the path and drive the lifecycle
-themselves. `check_same_thread=False` and WAL are set here regardless, since
-whatever ends up holding the long-lived connection will be shared across
-threads the same way the soundboard's catalog DB is (server.py:238).
+themselves. Long-lived server use goes through `get_conn()`, which hands each
+thread its own connection — see that function for why sharing one is not an
+option.
 
 No migration framework: `CREATE TABLE IF NOT EXISTS` doesn't handle `ALTER
 TABLE`, so any schema change after first boot would need one. That's a
@@ -150,6 +150,48 @@ def connect(path):
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+
+# Per-thread connection cache. Lives on the module object deliberately: the
+# test suite reloads this package under a fresh DATA_DIR, and a cache anchored
+# anywhere longer-lived (a global registry, a class attribute on something
+# imported elsewhere) would survive that reload and hand a test a connection to
+# the previous test's database file.
+_LOCAL = threading.local()
+
+
+def get_conn(path):
+    """The calling thread's connection to `path`, opened on first use.
+
+    One `sqlite3.Connection` shared across waitress's 16 request threads was a
+    real, measured bug, not a theoretical one. A connection carries a cache of
+    prepared statements keyed by SQL text, so two threads running the *same*
+    query — which is exactly what a four-second poll from every phone in the
+    house produces — are handed the *same* statement object. Whichever one
+    resets it first leaves the other fetching rows whose tuple is shorter than
+    the column description they were built against, and that surfaces as
+    `IndexError: tuple index out of range` from `dict(row)`: a 500 to somebody
+    standing in an aisle.
+
+    A connection each is what WAL mode is for. Readers do not block the writer
+    and the writer does not block readers, so N shoppers polling while one adds
+    an item all proceed. Writers are still serialised by `LOCK` above, which is
+    what keeps the check-then-act in `_find_or_make_line` honest; at household
+    scale that costs nothing.
+
+    Connections are never closed. Waitress runs a fixed thread pool, so the
+    count is bounded by that pool and by the number of distinct paths a process
+    touches — one, outside tests.
+    """
+    cache = getattr(_LOCAL, "conns", None)
+    if cache is None:
+        cache = _LOCAL.conns = {}
+    conn = cache.get(path)
+    if conn is None:
+        # Keyed by path as well, so even a cache that somehow outlived a reload
+        # cannot answer with a connection to a different database file.
+        conn = cache[path] = connect(path)
     return conn
 
 

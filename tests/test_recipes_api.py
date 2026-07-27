@@ -139,8 +139,8 @@ def test_an_exact_name_always_beats_a_plural_variant(recipes_client):
     """
     api = _api()
     plural = _mk_pantry(recipes_client, "Greens", subsection="produce")
-    cur = api.CONN.execute("INSERT INTO pantry_item(name) VALUES('Green')")
-    api.CONN.commit()
+    cur = api._conn().execute("INSERT INTO pantry_item(name) VALUES('Green')")
+    api._conn().commit()
     single_id = cur.lastrowid
     for name, expected in (("Greens", plural["id"]), ("Green", single_id)):
         got = recipes_client.get(

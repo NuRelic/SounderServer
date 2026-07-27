@@ -20,12 +20,14 @@ def app(tmp_path, monkeypatch):
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
     if "server" in sys.modules:
         del sys.modules["server"]
-    # server.py imports the recipes blueprint, and recipes/api.py opens its
-    # DB connection at import time against DATA_DIR. If a previous test left
-    # recipes.* cached in sys.modules, re-importing server would just reuse
-    # that stale module (and its CONN pointing at a different tmp_path's
-    # database) instead of picking up the DATA_DIR set above. Scrub it too so
-    # each test's server import gets a fresh recipes DB to match.
+    # server.py imports the recipes blueprint, and recipes/api.py resolves
+    # DB_PATH and runs the schema/seed at import time against DATA_DIR. If a
+    # previous test left recipes.* cached in sys.modules, re-importing server
+    # would just reuse that stale module (and its DB_PATH pointing at a
+    # different tmp_path's database) instead of picking up the DATA_DIR set
+    # above. Scrub it too so each test's server import gets a fresh recipes DB
+    # to match. recipes/db.py's per-thread connection cache lives on that
+    # module object and is keyed by path, so it cannot survive this either way.
     for mod in [m for m in sys.modules if m == "recipes" or m.startswith("recipes.")]:
         del sys.modules[mod]
     server = importlib.import_module("server")
