@@ -7,11 +7,11 @@ themselves. Long-lived server use goes through `get_conn()`, which hands each
 thread its own connection — see that function for why sharing one is not an
 option.
 
-No migration framework: `CREATE TABLE IF NOT EXISTS` doesn't handle `ALTER
-TABLE`, so any schema change after first boot would need one. That's a
-conscious deferral, not an oversight — this is a greenfield DB with no rows
-anywhere yet, and building migration tooling before there's real family data
-to migrate is wasted work. Revisit the moment there's data worth preserving.
+Schema changes go through `migrate()`, which every caller gets for free via
+`init_schema()`. `CREATE TABLE IF NOT EXISTS` cannot add a column to a table
+that already exists, so a database created before a column was added stays
+broken until something ALTERs it — see `_sync_columns` for how that is now
+handled automatically, and `MIGRATIONS` for the changes it cannot express.
 """
 
 import sqlite3
@@ -195,10 +195,188 @@ def get_conn(path):
     return conn
 
 
+class SchemaDriftError(RuntimeError):
+    """SCHEMA declares something an existing database lacks and we can't add it.
+
+    Always a programming error, never bad user data: someone changed SCHEMA in a
+    way `ALTER TABLE ... ADD COLUMN` cannot express and didn't write the
+    matching `MIGRATIONS` step. Raised at startup so it's caught on deploy
+    rather than by whichever request first touches the column.
+    """
+
+
+# Ordered, run-once migration steps, for the changes `_sync_columns` below
+# cannot make on its own: a NOT NULL column with no default, a changed
+# collation, a data backfill, a dropped column.
+#
+# Append only, never reorder or delete — position in this list *is* the version
+# number recorded in `meta.schema_version`.
+#
+# Each step MUST be idempotent anyway. Databases that predate this mechanism
+# report version 0 whatever their actual shape, so an already-current database
+# will run every step once. Guard on what the database actually looks like
+# (`PRAGMA table_info`, `sqlite_master`), not on the version number.
+#
+# Empty today on purpose: the only column ever added to SCHEMA since the first
+# release is `recipe_ingredient.prep`, which is nullable TEXT and therefore
+# handled by `_sync_columns`. That is the intended outcome — reach for this list
+# only when the automatic path provably cannot do the job.
+#
+# One older change deliberately has no step here. The first schema declared
+# `pantry_item.name`, `pantry_alias.alias` and `subsection`'s UNIQUE without
+# COLLATE NOCASE; a database in that shape would accept both "Onions" and
+# "onions" as separate items, and only a full table rebuild can fix it. No such
+# database can exist: nothing creates recipes.db except `recipes/api.py`, which
+# was written after the collations landed. Adding a rebuild — DROP TABLE with
+# foreign keys disabled, on tables holding the family's data — to guard an
+# unreachable state is the riskier choice. If one ever turns up, this is where
+# the step goes; `test_the_collation_drift_is_a_known_unfixed_limit` pins the
+# current behaviour so the gap stays visible.
+MIGRATIONS = []          # list of (name, callable taking a connection)
+
+SCHEMA_VERSION = len(MIGRATIONS)
+
+
+def _declared_tables():
+    """What SCHEMA says each table should look like: {table: [table_info rows]}.
+
+    Built by letting SQLite parse SCHEMA into a throwaway in-memory database and
+    reading the shape back out, rather than regexing the DDL ourselves. SQLite
+    is the only thing that reliably gets its own grammar right, and this stays
+    correct for free as SCHEMA changes.
+    """
+    ref = sqlite3.connect(":memory:")
+    try:
+        ref.executescript(SCHEMA)
+        tables = [r[0] for r in ref.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+            " AND name NOT LIKE 'sqlite_%'"
+        )]
+        return {t: list(ref.execute(f'PRAGMA table_info("{t}")')) for t in tables}
+    finally:
+        ref.close()
+
+
+def _add_column_sql(table, col):
+    """`ALTER TABLE ... ADD COLUMN` for one `PRAGMA table_info` row, or None.
+
+    None means SQLite cannot add this column to a populated table, so it needs a
+    MIGRATIONS step instead. Two cases: a primary key (ADD COLUMN can never
+    introduce one) and NOT NULL without a default (there'd be no value for the
+    rows already there).
+    """
+    _cid, name, coltype, notnull, default, pk = col
+    if pk or (notnull and default is None):
+        return None
+    bits = [f'"{name}"', coltype or "BLOB"]
+    if notnull:
+        bits.append("NOT NULL")
+    if default is not None:
+        # `dflt_value` is the default's literal SQL text ("0"), already quoted
+        # by SQLite where it needs to be, so it interpolates as-is.
+        bits.append(f"DEFAULT {default}")
+    return f'ALTER TABLE "{table}" ADD COLUMN {" ".join(bits)}'
+
+
+def _sync_columns(conn):
+    """Add any column SCHEMA declares that this database is missing.
+
+    This is the fix for the whole class of bug rather than one instance of it:
+    `recipe_ingredient.prep` was added to SCHEMA, `CREATE TABLE IF NOT EXISTS`
+    silently did nothing to the existing table, and every ingredient insert on
+    the long-lived production database died with "no column named prep" while
+    every test — each building a fresh database in a tmp_path — passed. Diffing
+    against SCHEMA closes that gap for the next nullable column too, with no
+    version bookkeeping to remember.
+
+    Idempotent by construction: it compares against what's actually there, so
+    running it on an already-current database does nothing.
+
+    What it deliberately does NOT do, because ADD COLUMN can't: change a column's
+    type or collation, add a table-level UNIQUE or FOREIGN KEY constraint, or
+    drop anything. Those need a MIGRATIONS step that rebuilds the table.
+    """
+    added = []
+    for table, cols in _declared_tables().items():
+        have = {r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')}
+        if not have:
+            continue          # table absent entirely; executescript(SCHEMA) makes it
+        for col in cols:
+            if col[1] in have:
+                continue
+            sql = _add_column_sql(table, col)
+            if sql is None:
+                raise SchemaDriftError(
+                    f"{table}.{col[1]} is missing from this database and cannot "
+                    f"be added with ALTER TABLE (primary key, or NOT NULL with "
+                    f"no default). Add a MIGRATIONS step in recipes/db.py."
+                )
+            conn.execute(sql)
+            added.append(f"{table}.{col[1]}")
+    if added:
+        conn.commit()
+    return added
+
+
+def _schema_version(conn):
+    row = conn.execute(
+        "SELECT value FROM meta WHERE key='schema_version'"
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def _set_schema_version(conn, version):
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES('schema_version', ?)"
+        " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(version),),
+    )
+
+
+def migrate(conn):
+    """Bring an existing database up to what SCHEMA declares. Safe on every boot.
+
+    Assumes the tables exist — `init_schema` runs `executescript(SCHEMA)` first,
+    which creates any table, index or trigger that's missing outright. What's
+    left after that is the drift inside tables that already exist, which is what
+    this handles: the ordered MIGRATIONS steps, then the automatic column sync.
+
+    MIGRATIONS runs first so a step can create a column with constraints the
+    automatic pass would refuse; the sync then only sees what's genuinely left.
+
+    Returns the list of columns it added, for the caller to log.
+    """
+    with LOCK:
+        start = _schema_version(conn)
+        for version, (name, step) in enumerate(MIGRATIONS):
+            if version < start:
+                continue
+            step(conn)
+            _set_schema_version(conn, version + 1)
+            conn.commit()
+        added = _sync_columns(conn)
+        # Never stamp downwards. Rolling a deploy back leaves a database ahead
+        # of the code reading it; recording the older number would claim
+        # migrations had been undone when they haven't, and re-run them on the
+        # next deploy forward.
+        _set_schema_version(conn, max(start, SCHEMA_VERSION))
+        conn.commit()
+    return added
+
+
 def init_schema(conn):
+    """Create anything missing, then migrate what's already there.
+
+    Both halves are needed and neither substitutes for the other:
+    `executescript` builds tables/indexes/triggers that don't exist at all but
+    will not touch a table that does, and `migrate` fixes up the ones that do.
+    """
     with LOCK:
         conn.executescript(SCHEMA)
         conn.commit()
+    # Outside the block above on purpose: LOCK is a plain, non-reentrant
+    # threading.Lock and migrate() takes it itself.
+    return migrate(conn)
 
 
 def seed_sections(conn):
