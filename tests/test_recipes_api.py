@@ -27,6 +27,16 @@ def test_health_reports_seeded_sections(recipes_client):
     assert names[-1] == "Unsorted"
 
 
+def test_sections_carry_their_subcategories_in_order(recipes_client):
+    """The filing screen builds its picker from this, so it must be complete."""
+    sections = recipes_client.get("/recipes/api/sections").get_json()["sections"]
+    produce = sections[0]
+    assert produce["subsections"] == ["produce", "fancy cheese"]
+    everything = [sub for s in sections for sub in s["subsections"]]
+    assert "spices" in everything and "dairy" in everything
+    assert all(s["subsections"] for s in sections)
+
+
 def _mk_pantry(client, name, **kw):
     body = {"name": name, "who": "brandon"}
     body.update(kw)

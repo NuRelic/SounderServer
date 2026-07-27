@@ -54,8 +54,27 @@ def page():
 
 @bp.route("/api/sections")
 def api_sections():
-    rows = CONN.execute("SELECT id, name, position FROM section ORDER BY position")
-    return jsonify({"sections": [dict(r) for r in rows]})
+    """The store layout: sections in walking order, each with its sub-categories.
+
+    `subsections` is here so the pantry filing screen can offer the real list
+    rather than a hardcoded copy of seed.py — that list is editable in the
+    database and a frontend copy would silently drift the first time it is.
+    """
+    rows = CONN.execute(
+        "SELECT id, name, position FROM section ORDER BY position"
+    ).fetchall()
+    subs = CONN.execute(
+        "SELECT section_id, name FROM subsection ORDER BY section_id, position"
+    ).fetchall()
+    by_section = {}
+    for s in subs:
+        by_section.setdefault(s["section_id"], []).append(s["name"])
+    out = []
+    for r in rows:
+        section = dict(r)
+        section["subsections"] = by_section.get(r["id"], [])
+        out.append(section)
+    return jsonify({"sections": out})
 
 
 def _unsorted_subsection_id():

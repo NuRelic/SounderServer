@@ -72,6 +72,26 @@
   nav button em{display:block;font-style:normal;font-size:22px;margin-bottom:2px}
   nav button.sel{color:var(--accent)}
   .empty{padding:48px 24px;text-align:center;color:var(--dim)}
+  /* Browse is dense rows, not photo cards — a recipe has to be addable with
+     nothing but a name and ingredients, so the picture can never be the hook. */
+  .thumb{width:46px;height:46px;border-radius:10px;flex:none;font-size:24px;
+    display:flex;align-items:center;justify-content:center;
+    background:linear-gradient(135deg,#2a3742,#1d2830);
+    background-size:cover;background-position:center}
+  /* the circle is 34px for looks; the box around it is the 44px you actually hit */
+  .plus{flex:none;width:44px;height:44px;display:flex;align-items:center;
+    justify-content:center}
+  .plus i{width:34px;height:34px;border-radius:50%;font-style:normal;font-size:21px;
+    line-height:31px;text-align:center;border:2px solid rgba(255,255,255,.28);
+    color:var(--dim)}
+  .plus.on i{border-color:var(--go);background:var(--go);color:#fff;font-size:17px}
+  .lbl{padding:14px 16px 5px;color:var(--dim);font-size:14px}
+  .pad{padding:0 16px}
+  .prose{padding:14px 16px;white-space:pre-wrap}
+  /* the filing panel, opened in place under the pantry row it belongs to */
+  .panel{background:#141920;border-bottom:1px solid var(--line);padding:2px 0 14px;
+    box-shadow:inset 0 8px 12px -10px #000}
+  .panel .btn{margin:14px 16px 0}
   .strip{display:flex;gap:8px;overflow-x:auto;padding:10px 16px;margin:0 -16px;
     border-bottom:1px solid var(--line);-webkit-overflow-scrolling:touch}
   .strip span{flex:none;display:inline-flex;align-items:center;min-height:44px;
@@ -220,7 +240,8 @@ const api = async (path, opts={}) => {
 };
 
 let TAB = 'recipes';
-let STATE = {recipes: [], list: null, pantry: [], version: -1, queued: new Set()};
+let STATE = {recipes: [], list: null, pantry: [], sections: [],
+             version: -1, queued: new Set()};
 
 document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
   TAB = b.dataset.tab;
@@ -235,10 +256,30 @@ function render(){
   // remember it so a background poll can't eat what someone is typing.
   const focused = document.activeElement && document.activeElement.id;
   $('#hdextra').innerHTML = '';
-  if (TAB === 'recipes') renderRecipes();
+  if (TAB === 'recipes') renderRecipes(focused);
   else if (TAB === 'list') renderList(focused);
-  else renderPantry();
+  else renderPantry(focused);
   measureHeader();
+}
+
+// Swap #main for a freshly built screen. Every screen ends this way.
+function paint(main){
+  $('#main').innerHTML = '';
+  $('#main').appendChild(main);
+  measureHeader();
+}
+
+// A search box in the header. It re-renders on every keystroke, which destroys
+// the field — hand the caret back, the way the list's add box does.
+function searchBox(id, placeholder, value, onchange, focused){
+  const box = el('input','search');
+  box.id = id;
+  box.placeholder = placeholder;
+  box.value = value;
+  box.oninput = () => onchange(box.value);
+  $('#hdextra').appendChild(box);
+  if (focused === id){ box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+  return box;
 }
 
 // Section headers stick below the page header, whose height changes with the
@@ -249,16 +290,400 @@ function measureHeader(){
 }
 window.addEventListener('resize', measureHeader);
 
-// Filled in by the recipes and pantry tasks; stubbed so the shell runs.
-function renderRecipes(){
-  $('#title').textContent = 'Recipes';
-  $('#count').textContent = STATE.recipes.length ? STATE.recipes.length + ' saved' : '';
-  $('#main').innerHTML = '<div class="empty">Recipes screen coming soon.</div>';
+// ---- recipes ----------------------------------------------------------------
+// Dense rows, seven to a screen. Thumbnail, name, the one line of provenance
+// that tells you whether you want it, and a ⊕ to queue it for the list.
+
+let RECIPE_FILTER = '';
+
+function recipeBits(r){
+  return [r.time_minutes ? r.time_minutes + ' min' : '',
+          r.servings ? 'serves ' + r.servings : '',
+          r.source_name || ''].filter(Boolean).join(' · ');
 }
-function renderPantry(){
+
+function thumb(r){
+  const t = el('div','thumb', r.photo_url ? '' : '🍽️');
+  // set as a property, never interpolated into markup — a recipe URL is
+  // user-typed and would otherwise be an injection point.
+  if (r.photo_url) t.style.backgroundImage = 'url("' + r.photo_url.replace(/["\\]/g,'') + '")';
+  return t;
+}
+
+function renderRecipes(focused){
+  $('#title').textContent = 'Recipes';
+  $('#count').textContent = STATE.queued.size
+    ? STATE.queued.size + ' selected'
+    : (STATE.recipes.length ? STATE.recipes.length + ' saved' : '');
+
+  searchBox('rsearch', 'Search recipes…', RECIPE_FILTER,
+            v => { RECIPE_FILTER = v; render(); }, focused);
+
+  const main = el('div');
+  const q = RECIPE_FILTER.trim().toLowerCase();
+  const shown = STATE.recipes.filter(r => !q ||
+    r.name.toLowerCase().includes(q) ||
+    (r.source_name || '').toLowerCase().includes(q));
+
+  if (!shown.length) main.appendChild(el('div','empty',
+    STATE.recipes.length ? 'No matches.' : 'No recipes yet.<br>Add one below.'));
+
+  shown.forEach(r => {
+    const row = el('div','row');
+    row.appendChild(thumb(r));
+
+    const nm = el('div','nm',
+      '<b>' + esc(r.name) + '</b><small>' + esc(recipeBits(r)) + '</small>');
+    row.appendChild(nm);
+
+    const queued = STATE.queued.has(r.id);
+    const plus = el('div','plus' + (queued ? ' on' : ''),
+                    '<i>' + (queued ? '✓' : '+') + '</i>');
+    plus.onclick = e => {
+      e.stopPropagation();
+      queued ? STATE.queued.delete(r.id) : STATE.queued.add(r.id);
+      render();
+    };
+    row.appendChild(plus);
+
+    // the whole row opens it; only the little circle queues it
+    row.onclick = () => openRecipe(r.id);
+    main.appendChild(row);
+  });
+
+  if (STATE.queued.size){
+    const go = el('button','btn', 'Add ' + STATE.queued.size + ' to list');
+    go.onclick = () => runAddSheets([...STATE.queued]);
+    main.appendChild(go);
+  }
+
+  const add = el('button','btn quiet','+ New recipe');
+  add.onclick = () => openRecipeEditor(null);
+  main.appendChild(add);
+
+  paint(main);
+}
+
+// One sheet per queued recipe, in sequence — you confirm each, then it moves on.
+async function runAddSheets(ids){
+  for (const id of ids){
+    const r = await api('/recipes/' + id);
+    if (r) await addSheet(r);
+    STATE.queued.delete(id);
+  }
+  const fresh = await api('/list');
+  if (fresh) { STATE.list = fresh; STATE.version = fresh.version; }
+  TAB = 'list';
+  document.querySelectorAll('nav button').forEach(
+    x => x.classList.toggle('sel', x.dataset.tab === 'list'));
+  render();
+}
+
+// Everything arrives checked, so the job in the kitchen is to uncheck what is
+// already in the fridge. Staples are the exception: they arrive off and folded,
+// so nobody re-decides about salt every single time.
+function addSheet(recipe){
+  return new Promise(resolve => {
+    $('#title').textContent = recipe.name;
+    $('#count').textContent = '';
+    $('#hdextra').innerHTML = '';
+
+    const main = el('div');
+    main.appendChild(el('div', null,
+      '<div style="padding:16px 16px 10px"><b style="font-size:20px">Add to store' +
+      ' list</b><small style="display:block;color:var(--dim);font-size:14px;' +
+      'margin-top:3px">Uncheck anything you already have</small></div>'));
+
+    const skip = new Set(recipe.ingredients.filter(i => i.is_staple).map(i => i.id));
+    const normal  = recipe.ingredients.filter(i => !i.is_staple);
+    const staples = recipe.ingredients.filter(i => i.is_staple);
+
+    const cta = el('button','btn','');
+    const paintCta = () => cta.textContent =
+      'Add ' + (recipe.ingredients.length - skip.size) + ' items to list';
+
+    const ingRow = i => {
+      const row = el('div','row');
+      const off = () => skip.has(i.id);
+      const box = el('div','bx' + (off() ? '' : ' on'), off() ? '' : '✓');
+      const nm  = el('div','nm','<b style="font-weight:400">' + esc(i.raw_text) + '</b>');
+      row.appendChild(box); row.appendChild(nm);
+      const dress = () => {
+        box.className = 'bx' + (off() ? '' : ' on');
+        box.textContent = off() ? '' : '✓';
+        nm.style.opacity = off() ? .35 : 1;
+        nm.style.textDecoration = off() ? 'line-through' : 'none';
+      };
+      row.onclick = () => { off() ? skip.delete(i.id) : skip.add(i.id); dress(); paintCta(); };
+      dress();
+      return row;
+    };
+
+    normal.forEach(i => main.appendChild(ingRow(i)));
+
+    if (staples.length){
+      const names = staples.map(s => s.pantry_name || s.raw_text).join(', ');
+      let open = false;
+      const holder = el('div');
+      const fold = el('div','fold', '');
+      const dress = () => fold.innerHTML = (open ? '▾ ' : '▸ ') +
+        esc(staples.length + ' staple' + (staples.length > 1 ? 's' : '') +
+            ' skipped — ' + names);
+      fold.onclick = () => {
+        open = !open;
+        holder.innerHTML = '';
+        if (open) staples.forEach(i => holder.appendChild(ingRow(i)));
+        dress(); measureHeader();
+      };
+      dress();
+      main.appendChild(fold);
+      main.appendChild(holder);
+    }
+
+    paintCta();
+    cta.onclick = async () => {
+      const r = await api('/list/add-recipe/' + recipe.id,
+                          {method:'POST', body:{skip:[...skip]}});
+      // On failure api() has already said so; stay put so the sheet is not lost.
+      if (!r) return;
+      STATE.list = r; STATE.version = r.version;
+      resolve();
+    };
+    main.appendChild(cta);
+
+    const cancel = el('button','btn quiet','Skip this one');
+    cancel.onclick = () => resolve();
+    main.appendChild(cancel);
+
+    paint(main);
+  });
+}
+
+async function openRecipe(id){
+  const r = await api('/recipes/' + id);
+  if (!r) { note('Could not open that recipe.'); return; }
+  $('#title').textContent = r.name;
+  $('#count').textContent = '';
+  $('#hdextra').innerHTML = '';
+
+  const main = el('div');
+  const bits = recipeBits(r);
+  if (bits) main.appendChild(el('div', null,
+    '<div style="padding:12px 16px 0;color:var(--dim);font-size:15px">' +
+    esc(bits) + '</div>'));
+  // esc() would not stop a "javascript:" href — that scheme needs none of the
+  // characters it escapes — so only ever link something that is plainly a URL.
+  if (/^https?:\/\//i.test(r.source_url || '')) main.appendChild(el('div', null,
+    '<div style="padding:10px 16px 2px"><a href="' + esc(r.source_url) +
+    '" target="_blank" rel="noopener" style="color:var(--accent)">' +
+    'open the original</a></div>'));
+
+  main.appendChild(el('div','sec','Ingredients'));
+  r.ingredients.forEach(i => main.appendChild(
+    el('div','row','<div class="nm"><b style="font-weight:400">' +
+       esc(i.raw_text) + '</b>' + (i.is_staple ?
+       '<small>staple — usually in the house</small>' : '') + '</div>')));
+
+  if (r.instructions && r.instructions.trim()){
+    main.appendChild(el('div','sec','Method'));
+    main.appendChild(el('div','prose', esc(r.instructions)));
+  }
+
+  const go = el('button','btn','Add to store list');
+  go.onclick = () => runAddSheets([r.id]);
+  main.appendChild(go);
+
+  const ed = el('button','btn quiet','Edit');
+  ed.onclick = () => openRecipeEditor(r);
+  main.appendChild(ed);
+
+  const back = el('button','btn quiet','Back to recipes');
+  back.onclick = () => render();
+  main.appendChild(back);
+
+  paint(main);
+}
+
+function openRecipeEditor(r){
+  $('#title').textContent = r ? 'Edit recipe' : 'New recipe';
+  $('#count').textContent = '';
+  $('#hdextra').innerHTML = '';
+
+  const main = el('div');
+  const field = (id, label, value, tag) => {
+    main.appendChild(el('div','lbl', esc(label)));
+    const wrap = el('div','pad');
+    const node = document.createElement(tag || 'input');
+    node.className = 'fld';
+    node.id = id;
+    if (tag === 'textarea') node.rows = 8;
+    node.value = value == null ? '' : String(value);
+    wrap.appendChild(node);
+    main.appendChild(wrap);
+    return node;
+  };
+
+  const name    = field('f_name',   'Name', r && r.name);
+  const source  = field('f_source', 'Source (smitten kitchen, Grandma…)', r && r.source_name);
+  const url     = field('f_url',    'Source URL', r && r.source_url);
+  const serves  = field('f_serves', 'Serves', r && r.servings);
+  const minutes = field('f_min',    'Minutes', r && r.time_minutes);
+  const ings    = field('f_ings',   'Ingredients — one per line',
+                        r ? r.ingredients.map(i => i.raw_text).join('\n') : '', 'textarea');
+  const method  = field('f_method', 'Method', r && r.instructions, 'textarea');
+  serves.inputMode = minutes.inputMode = 'numeric';
+
+  const save = el('button','btn', r ? 'Save' : 'Create');
+  save.onclick = async () => {
+    if (!name.value.trim()) { note('Give it a name first.'); name.focus(); return; }
+    const body = {
+      name: name.value.trim(),
+      source_name: source.value.trim() || null,
+      source_url: url.value.trim() || null,
+      servings: parseInt(serves.value, 10) || null,
+      time_minutes: parseInt(minutes.value, 10) || null,
+      instructions: method.value,
+      ingredients: ings.value.split('\n').map(s => s.trim()).filter(Boolean),
+    };
+    const saved = await api(r ? '/recipes/' + r.id : '/recipes',
+                            {method: r ? 'PUT' : 'POST', body});
+    if (!saved) return;                       // api() already explained why
+    STATE.recipes = (await api('/recipes'))?.recipes || STATE.recipes;
+    STATE.pantry = [];                        // filing may have gained new rows
+    TAB = 'recipes'; RECIPE_FILTER = '';
+    openRecipe(saved.id);
+  };
+  main.appendChild(save);
+
+  const cancel = el('button','btn quiet','Cancel');
+  cancel.onclick = () => { TAB = 'recipes'; render(); };
+  main.appendChild(cancel);
+
+  paint(main);
+}
+
+// ---- pantry -----------------------------------------------------------------
+// Rarely opened, load-bearing: filing here is what puts an item in the right
+// aisle forever, and the staple flag is what keeps salt off the list.
+
+let PANTRY_FILTER = '';
+let PANTRY_EDIT = null;      // id of the item whose panel is open
+
+function renderPantry(focused){
   $('#title').textContent = 'Pantry';
-  $('#count').textContent = STATE.pantry.length ? STATE.pantry.length + ' items' : '';
-  $('#main').innerHTML = '<div class="empty">Pantry screen coming soon.</div>';
+  $('#count').textContent = STATE.pantry.length + ' items';
+
+  searchBox('psearch', 'Find an item…', PANTRY_FILTER,
+            v => { PANTRY_FILTER = v; render(); }, focused);
+
+  const q = PANTRY_FILTER.trim().toLowerCase();
+  const shown = STATE.pantry.filter(p => !q || p.name.toLowerCase().includes(q));
+
+  const main = el('div');
+  if (!shown.length) main.appendChild(el('div','empty',
+    STATE.pantry.length ? 'No matches.' :
+    'Nothing here yet.<br>Ingredients file themselves as you add recipes.'));
+
+  let lastSection = null;
+  shown.forEach(p => {
+    if (p.section_name !== lastSection){
+      lastSection = p.section_name;
+      main.appendChild(el('div','sec', esc(lastSection)));
+    }
+    const bits = [p.subsection_name || 'unfiled',
+                  p.is_staple ? 'staple' : '',
+                  p.buy_unit || '',
+                  p.shaws_url ? 'Shaws ✓' : ''].filter(Boolean).join(' · ');
+    const row = el('div','row');
+    row.appendChild(el('div','nm',
+      '<b>' + esc(p.name) + '</b><small>' + esc(bits) + '</small>'));
+    row.appendChild(el('div','qty', PANTRY_EDIT === p.id ? '▾' : '›'));
+    row.onclick = () => { PANTRY_EDIT = PANTRY_EDIT === p.id ? null : p.id; render(); };
+    main.appendChild(row);
+    if (PANTRY_EDIT === p.id) main.appendChild(pantryPanel(p));
+  });
+
+  paint(main);
+}
+
+// A real form, in place, under the row. It replaces a prompt()/confirm() chain
+// from the plan: those are unusable one-handed and a blocking dialog also means
+// nothing can drive this screen but a pair of hands.
+function pantryPanel(p){
+  const panel = el('div','panel');
+
+  panel.appendChild(el('div','lbl','Where does it live in the store?'));
+  const sel = document.createElement('select');
+  sel.className = 'fld';
+  sel.id = 'p_sub';
+  const blank = document.createElement('option');
+  blank.value = ''; blank.textContent = '— unfiled —';
+  sel.appendChild(blank);
+  // The sub-category list is whatever the database says today, not a copy of
+  // seed.py: the layout is editable and a frontend copy would drift.
+  STATE.sections.forEach(s => {
+    const group = document.createElement('optgroup');
+    group.label = s.name;
+    (s.subsections || []).forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name; opt.textContent = name;
+      if (name === p.subsection_name) opt.selected = true;
+      group.appendChild(opt);
+    });
+    sel.appendChild(group);
+  });
+  sel.value = p.subsection_name || '';
+  const subWrap = el('div','pad'); subWrap.appendChild(sel);
+  panel.appendChild(subWrap);
+
+  let staple = !!p.is_staple;
+  const box = el('div','bx' + (staple ? ' on' : ''), staple ? '✓' : '');
+  const stapleRow = el('div','row');
+  stapleRow.style.marginTop = '10px';
+  stapleRow.appendChild(box);
+  stapleRow.appendChild(el('div','nm',
+    '<b>Always in the house</b><small>skipped by default when a recipe is added</small>'));
+  stapleRow.onclick = () => {
+    staple = !staple;
+    box.className = 'bx' + (staple ? ' on' : '');
+    box.textContent = staple ? '✓' : '';
+  };
+  panel.appendChild(stapleRow);
+
+  const textField = (id, label, value, placeholder) => {
+    panel.appendChild(el('div','lbl', esc(label)));
+    const node = document.createElement('input');
+    node.className = 'fld'; node.id = id;
+    node.value = value || '';
+    node.placeholder = placeholder || '';
+    const wrap = el('div','pad'); wrap.appendChild(node);
+    panel.appendChild(wrap);
+    return node;
+  };
+  const buy   = textField('p_buy', 'What do we buy?', p.buy_unit, 'e.g. 1 gal');
+  const shaws = textField('p_shaws', 'Shaws product link', p.shaws_url,
+                          'https://…  (makes the pickup export automatic)');
+
+  const save = el('button','btn','Save');
+  save.onclick = async () => {
+    const r = await api('/pantry/' + p.id, {method:'PATCH', body:{
+      subsection: sel.value || null,
+      is_staple: staple,
+      buy_unit: buy.value.trim() || null,
+      shaws_url: shaws.value.trim() || null,
+    }});
+    if (!r) return;
+    STATE.pantry = (await api('/pantry'))?.items || STATE.pantry;
+    PANTRY_EDIT = null;
+    render();
+  };
+  panel.appendChild(save);
+
+  const close = el('button','btn quiet','Cancel');
+  close.onclick = () => { PANTRY_EDIT = null; render(); };
+  panel.appendChild(close);
+
+  return panel;
 }
 
 // ---- store list -------------------------------------------------------------
@@ -404,8 +829,12 @@ function lineRow(l){
 async function refresh(){
   if (TAB === 'recipes' && !STATE.recipes.length)
     STATE.recipes = (await api('/recipes'))?.recipes || [];
-  if (TAB === 'pantry')
+  if (TAB === 'pantry'){
     STATE.pantry = (await api('/pantry'))?.items || [];
+    // the store layout, for the filing picker — seeded once, so fetch once
+    if (!STATE.sections.length)
+      STATE.sections = (await api('/sections'))?.sections || [];
+  }
   if (!STATE.list) STATE.list = await api('/list');
   if (STATE.list) STATE.version = STATE.list.version;
   render();
