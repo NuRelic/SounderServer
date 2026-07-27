@@ -985,7 +985,7 @@ def api_delete():
 
 @app.route("/api/edit", methods=["POST"])
 def api_edit():
-    """In-place trim + volume (overwrites the file). Same gate as Add."""
+    """Trim + volume. Overwrites in place, or with new_name saves a copy as a new clip. Same gate as Add."""
     if not can_edit():
         return jsonify({"ok": False, "error": "forbidden"}), 403
     body = request.get_json(silent=True) or {}
@@ -1006,18 +1006,31 @@ def api_edit():
     gain = max(0.0, min(8.0, gain))
     full = os.path.join(SOUND_DIR, fn)
     ext  = os.path.splitext(fn)[1].lower()
-    tmp  = full + ".edit" + ext
+    new_name = (body.get("new_name") or "").strip()   # non-empty => save a copy, keep the original
+    if new_name:
+        stem = secure_filename(new_name)
+        if not stem:
+            return jsonify({"ok": False, "error": "bad name"}), 400
+        dest_fn = stem + ext
+        out = os.path.join(SOUND_DIR, dest_fn); k = 1
+        while os.path.exists(out):                     # never clobber an existing clip
+            dest_fn = "%s_%d%s" % (stem, k, ext); out = os.path.join(SOUND_DIR, dest_fn); k += 1
+    else:
+        out = full + ".edit" + ext                     # trim to a temp file, then atomically replace
     cmd = ["ffmpeg", "-y", "-i", full, "-ss", str(start), "-t", str(end - start)]
     if abs(gain - 1.0) > 0.001:
         cmd += ["-af", "volume=" + str(round(gain, 3))]
-    cmd += [tmp]
+    cmd += [out]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
-    if r.returncode != 0 or not os.path.exists(tmp):
+    if r.returncode != 0 or not os.path.exists(out):
         return jsonify({"ok": False, "error": "ffmpeg failed"}), 500
-    os.replace(tmp, full)
+    if new_name:                          # copy saved as a brand-new clip; original left alone
+        scan_library()
+        return jsonify({"ok": True, "file": dest_fn})
+    os.replace(out, full)
     with _DUR_LOCK:                       # invalidate cached duration
         _DUR.pop(fn, None); _save(DUR_FILE, _DUR)
     scan_library()
@@ -1042,6 +1055,159 @@ def api_sound_type():
     return jsonify({"ok": True, "type": typ, "long": is_long(fn)})
 
 # ----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+# Stash board feedback bridge (operator clicks on the board -> queue -> the repo
+# machine's pull_feedback loop drains + applies via board_io.py). Mirrors the
+# worker-token pattern: a shared token (auto-generated to DATA_DIR on first run),
+# checked with compare_digest via the X-Stash-Token header. Additive only.
+# ----------------------------------------------------------------------------
+STASH_FB_FILE = os.path.join(DATA_DIR, "stash_feedback.json")
+STASH_FB_TOKEN_FILE = os.path.join(DATA_DIR, "stash_feedback_token")
+STASH_FB_TOKEN = (os.environ.get("STASH_FEEDBACK_TOKEN") or "").strip()
+if not STASH_FB_TOKEN:
+    try:
+        STASH_FB_TOKEN = open(STASH_FB_TOKEN_FILE).read().strip()
+    except OSError:
+        STASH_FB_TOKEN = _secrets.token_hex(24)
+        with open(STASH_FB_TOKEN_FILE, "w") as _f:
+            _f.write(STASH_FB_TOKEN)
+_STASH_FB_LOCK = threading.Lock()
+
+
+def _check_stash():
+    tok = request.headers.get("X-Stash-Token", "")
+    return bool(STASH_FB_TOKEN) and _secrets.compare_digest(tok, STASH_FB_TOKEN)
+
+
+def _stash_load():
+    try:
+        with open(STASH_FB_FILE) as _f:
+            return json.load(_f)
+    except (OSError, ValueError):
+        return []
+
+
+def _stash_save(items):
+    tmp = STASH_FB_FILE + ".tmp"
+    with open(tmp, "w") as _f:
+        json.dump(items, _f)
+    os.replace(tmp, STASH_FB_FILE)
+
+
+@app.route("/api/stash/feedback", methods=["POST"])
+def api_stash_feedback():
+    """Queue one operator intent from the board page. action in answer|ok|no."""
+    if not _check_stash():
+        return jsonify({"ok": False, "error": "bad token"}), 403
+    body = request.get_json(silent=True) or {}
+    ref = str(body.get("ref") or "").strip()[:12]
+    action = str(body.get("action") or "").strip().lower()
+    note = str(body.get("note") or "").strip()[:500]
+    if not ref or action not in ("answer", "ok", "no"):
+        return jsonify({"ok": False, "error": "need ref + action in answer|ok|no"}), 400
+    if action in ("answer", "no") and not note:
+        return jsonify({"ok": False, "error": "action %s needs a note" % action}), 400
+    with _STASH_FB_LOCK:
+        items = _stash_load()
+        items.append({"ref": ref, "action": action, "note": note, "ts": time.time()})
+        _stash_save(items)
+        n = len(items)
+    return jsonify({"ok": True, "queued": n})
+
+
+@app.route("/api/stash/feedback/drain")
+def api_stash_drain():
+    """The repo machine pulls + clears the queue (GET, token-gated). Returns items[]."""
+    if not _check_stash():
+        return jsonify({"ok": False, "error": "bad token"}), 403
+    with _STASH_FB_LOCK:
+        items = _stash_load()
+        _stash_save([])
+    return jsonify({"ok": True, "items": items})
+
+
+# ---------------------------------------------------------------------------
+# Content review annotations (abilities / consumables / relics / events pages).
+# Persistent per-page store keyed by item_id (last-write-wins), token-gated with
+# the same X-Stash-Token secret as the stash feedback queue above.
+#   POST /api/review/<page>  {item_id, status, note, rarity_override}  -> upsert
+#   GET  /api/review/<page>                                            -> {items:{id:{...}}}
+# ---------------------------------------------------------------------------
+REVIEW_DIR = os.path.join(DATA_DIR, "reviews")
+_REVIEW_LOCK = threading.Lock()
+_REVIEW_PAGES = {"abilities", "consumables", "relics", "events", "classes"}
+
+
+def _review_path(page):
+    if page not in _REVIEW_PAGES:
+        return None
+    os.makedirs(REVIEW_DIR, exist_ok=True)
+    return os.path.join(REVIEW_DIR, page + ".json")
+
+
+def _review_load(page):
+    p = _review_path(page)
+    if not p:
+        return None
+    try:
+        with open(p) as _f:
+            return json.load(_f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _review_save(page, data):
+    p = _review_path(page)
+    tmp = p + ".tmp"
+    with open(tmp, "w") as _f:
+        json.dump(data, _f)
+    os.replace(tmp, p)
+
+
+@app.route("/api/review/<page>", methods=["GET"])
+def api_review_get(page):
+    if not _check_stash():
+        return jsonify({"ok": False, "error": "bad token"}), 403
+    with _REVIEW_LOCK:
+        items = _review_load(page)
+    if items is None:
+        return jsonify({"ok": False, "error": "unknown page"}), 404
+    return jsonify({"ok": True, "items": items})
+
+
+@app.route("/api/review/<page>", methods=["POST"])
+def api_review_post(page):
+    if not _check_stash():
+        return jsonify({"ok": False, "error": "bad token"}), 403
+    if page not in _REVIEW_PAGES:
+        return jsonify({"ok": False, "error": "unknown page"}), 404
+    body = request.get_json(silent=True) or {}
+    iid = str(body.get("item_id") or "").strip()[:200]
+    if not iid:
+        return jsonify({"ok": False, "error": "need item_id"}), 400
+    status = str(body.get("status") or "open").strip().lower()
+    if status not in ("open", "revise", "lock"):
+        status = "open"
+    entry = {
+        "status": status,
+        "note": str(body.get("note") or "").strip()[:2000],
+        "rarity": str(body.get("rarity_override") or "").strip()[:24],
+        "ts": time.time(),
+    }
+    with _REVIEW_LOCK:
+        items = _review_load(page)
+        if items is None:
+            return jsonify({"ok": False, "error": "unknown page"}), 404
+        # Drop an item back to default (open, no note, no override) -> remove it.
+        if entry["status"] == "open" and not entry["note"] and not entry["rarity"]:
+            items.pop(iid, None)
+        else:
+            items[iid] = entry
+        _review_save(page, items)
+        n = len(items)
+    return jsonify({"ok": True, "count": n})
+
+
 if __name__ == "__main__":
     n = len(scan_library())
     catalog_sync()

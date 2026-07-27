@@ -199,8 +199,13 @@
   .orline{text-align:center;color:var(--dim);font-size:12px;margin:12px 0}
   #wave{width:100%;height:130px;background:var(--panel2);border-radius:8px;
     display:block;cursor:ew-resize;touch-action:none}
-  .wmeta{display:flex;gap:14px;align-items:center;margin-top:8px;font-size:12px;color:var(--dim)}
+  .wmeta{display:flex;gap:14px;align-items:center;margin-top:8px;font-size:12px;color:var(--dim);flex-wrap:wrap}
   .wmeta b{color:var(--txt)}
+  .wmeta .wfield{display:flex;align-items:center;gap:5px;text-transform:none;margin:0}
+  .wmeta input[type=number]{width:66px;background:var(--panel2);border:1px solid var(--line);
+    color:var(--txt);border-radius:6px;padding:4px 6px;font-size:12px;font-variant-numeric:tabular-nums}
+  .wmeta input[type=number]:focus{border-color:var(--accent);outline:none}
+  .wmeta .tplay{color:#ffd76a;font-variant-numeric:tabular-nums;min-width:66px;text-align:right;font-weight:600}
   /* add/edit */
   .addwrap{flex:1 1 auto;overflow:auto;padding:16px;max-width:720px}
   .addwrap h3{margin:18px 0 8px;font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
@@ -553,13 +558,14 @@
 <div class="modal-back" id="editModal">
   <div class="modal">
     <h2 id="editTitle">Edit clip</h2>
-    <p class="sub">Drag across the waveform to select what to keep. Save overwrites the file in place.</p>
+    <p class="sub">Drag the edges to resize, the middle to shift the whole selection, or empty space to draw a new one. You can also type exact start/end seconds. <b>Save as new clip</b> keeps the original and makes a copy under the Name below; <b>Overwrite</b> replaces this file.</p>
     <canvas id="wave" width="600" height="130"></canvas>
     <div class="wmeta">
-      <span>start <b id="tStart">0.00</b>s</span>
-      <span>end <b id="tEnd">0.00</b>s</span>
+      <label class="wfield">start <input type="number" id="inStart" min="0" step="0.05" value="0">s</label>
+      <label class="wfield">end <input type="number" id="inEnd" min="0" step="0.05" value="0">s</label>
       <span>keep <b id="tLen">0.00</b>s</span>
       <span class="sp" style="flex:1"></span>
+      <span class="tplay" id="tPlay"></span>
       <button class="mbtn" id="prevPlay">▶ Preview</button>
       <button class="mbtn" id="selFull">⤢ Full</button>
     </div>
@@ -577,7 +583,8 @@
       <button class="mbtn danger" id="editDelete">🗑 Delete</button>
       <span class="sp"></span>
       <button class="mbtn" id="editCancel">Cancel</button>
-      <button class="mbtn primary" id="editSave">Save (overwrite)</button>
+      <button class="mbtn" id="editSave">Overwrite</button>
+      <button class="mbtn primary" id="editSaveNew">＋ Save as new clip</button>
     </div>
     <div class="merr" id="editErr"></div>
   </div>
@@ -953,6 +960,7 @@ function favDnD(el, file){
 }
 // ---- clip editor (trim + volume, in-place) ----
 let EDITCUR=null, EDITBUF=null, EDITDUR=0, regStart=0, regEnd=0, prevAudio=null;
+let WAVEBMP=null, playPos=null, playRAF=null;   // cached waveform bitmap + preview playhead state
 // song/sound override segmented control
 let EDIT_TYPE = 'auto';
 function setTypeSeg(ty){ EDIT_TYPE=ty;
@@ -964,7 +972,7 @@ async function openEdit(s){
   setTypeSeg(s.long ? 'song' : 'sound');   // reflect the clip's current effective type
   $('#editDelete').style.display = ME.admin ? '' : 'none';   // removing clips is admin-only
   $('#editModal').classList.add('show');
-  EDITBUF=null; EDITDUR=0; regStart=0; regEnd=0;
+  EDITBUF=null; EDITDUR=0; regStart=0; regEnd=0; WAVEBMP=null; playPos=null;
   const cv=$('#wave');
   // size canvas to its displayed width for a crisp draw
   cv.width = cv.clientWidth || 600;
@@ -975,14 +983,18 @@ async function openEdit(s){
     const actx = new (window.AudioContext||window.webkitAudioContext)();
     EDITBUF = await actx.decodeAudioData(ab);
     EDITDUR = EDITBUF.duration; regStart=0; regEnd=EDITDUR;
-    drawWave();
+    $('#inStart').max=EDITDUR.toFixed(2); $('#inEnd').max=EDITDUR.toFixed(2);
+    buildWaveBitmap(); drawWave();
   }catch(e){
     g.clearRect(0,0,cv.width,cv.height); g.fillStyle='#ff8a8a'; g.fillText('could not decode audio',12,24);
   }
 }
-function drawWave(){
-  const cv=$('#wave'), w=cv.width, h=cv.height, g=cv.getContext('2d');
-  g.clearRect(0,0,w,h);
+// render the (expensive) waveform once into an offscreen bitmap so drawWave() can just
+// blit it every animation frame instead of rescanning all samples
+function buildWaveBitmap(){
+  const cv=$('#wave'), w=cv.width, h=cv.height;
+  const off=document.createElement('canvas'); off.width=w; off.height=h;
+  const g=off.getContext('2d');
   if(EDITBUF){
     const data=EDITBUF.getChannelData(0), step=Math.max(1,Math.floor(data.length/w));
     g.fillStyle='#39405a';
@@ -993,35 +1005,91 @@ function drawWave(){
       g.fillRect(x,y1,1,Math.max(1,y2-y1));
     }
   }
+  WAVEBMP=off;
+}
+function drawWave(){
+  const cv=$('#wave'), w=cv.width, h=cv.height, g=cv.getContext('2d');
+  g.clearRect(0,0,w,h);
+  if(WAVEBMP) g.drawImage(WAVEBMP,0,0);
   // dim outside selection + draw handles
   const xs = EDITDUR? regStart/EDITDUR*w : 0, xe = EDITDUR? regEnd/EDITDUR*w : w;
   g.fillStyle='rgba(13,15,20,.62)'; g.fillRect(0,0,xs,h); g.fillRect(xe,0,w-xe,h);
   g.fillStyle='rgba(124,108,255,.14)'; g.fillRect(xs,0,xe-xs,h);
   g.fillStyle='#7c6cff'; g.fillRect(xs-1,0,2,h); g.fillRect(xe-1,0,2,h);
-  $('#tStart').textContent=regStart.toFixed(2);
-  $('#tEnd').textContent=regEnd.toFixed(2);
+  // preview playhead (during ▶ Preview)
+  if(playPos!=null && EDITDUR){
+    const xp=Math.max(0,Math.min(w, playPos/EDITDUR*w));
+    g.fillStyle='#ffd76a'; g.fillRect(xp-1,0,2,h);
+    g.beginPath(); g.moveTo(xp-4,0); g.lineTo(xp+4,0); g.lineTo(xp,6); g.closePath(); g.fill();
+  }
+  const inS=$('#inStart'), inE=$('#inEnd');
+  if(document.activeElement!==inS) inS.value=regStart.toFixed(2);
+  if(document.activeElement!==inE) inE.value=regEnd.toFixed(2);
   $('#tLen').textContent=Math.max(0,regEnd-regStart).toFixed(2);
 }
-// drag across canvas to define the kept region
+// interact with the waveform: drag an edge to resize, the middle to shift the whole
+// region (keeps its length), or empty space to draw a fresh selection
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 (function(){
-  const cv=$('#wave'); let down=false, anchor=0;
-  const tAt=x=>{ const r=cv.getBoundingClientRect(); return Math.max(0,Math.min(1,(x-r.left)/r.width))*EDITDUR; };
-  cv.addEventListener('pointerdown',e=>{ if(!EDITDUR)return; down=true; anchor=tAt(e.clientX); regStart=anchor; regEnd=anchor; cv.setPointerCapture(e.pointerId); drawWave(); });
-  cv.addEventListener('pointermove',e=>{ if(!down)return; const t=tAt(e.clientX); regStart=Math.min(anchor,t); regEnd=Math.max(anchor,t); drawWave(); });
-  cv.addEventListener('pointerup',e=>{ if(!down)return; down=false; if(regEnd-regStart<0.05){ regStart=0; regEnd=EDITDUR; drawWave(); } });
+  const cv=$('#wave'); let down=false, mode='draw', anchor=0, grab=0;
+  const tAt=x=>{ const r=cv.getBoundingClientRect(); return clamp((x-r.left)/r.width,0,1)*EDITDUR; };
+  const tol=()=>{ const r=cv.getBoundingClientRect(); return (11/r.width)*EDITDUR; };
+  const pick=t=>{
+    if(EDITDUR && regEnd-regStart>0.02){
+      if(Math.abs(t-regStart)<=tol()) return 'start';
+      if(Math.abs(t-regEnd)<=tol())   return 'end';
+      if(t>regStart && t<regEnd)       return 'move';
+    }
+    return 'draw';
+  };
+  cv.addEventListener('pointerdown',e=>{ if(!EDITDUR)return; down=true; const t=tAt(e.clientX);
+    mode=pick(t);
+    if(mode==='draw'){ anchor=t; regStart=t; regEnd=t; }
+    else if(mode==='move'){ grab=t-regStart; }
+    cv.setPointerCapture(e.pointerId); drawWave(); });
+  cv.addEventListener('pointermove',e=>{
+    if(!down){ if(!EDITDUR)return; const m=pick(tAt(e.clientX));
+      cv.style.cursor = m==='move'?'grab' : m==='draw'?'crosshair' : 'ew-resize'; return; }
+    const t=tAt(e.clientX);
+    if(mode==='start')      regStart=clamp(t,0,regEnd-0.02);
+    else if(mode==='end')   regEnd=clamp(t,regStart+0.02,EDITDUR);
+    else if(mode==='move'){ const len=regEnd-regStart, ns=clamp(t-grab,0,EDITDUR-len); regStart=ns; regEnd=ns+len; }
+    else { regStart=Math.min(anchor,t); regEnd=Math.max(anchor,t); }
+    drawWave();
+  });
+  cv.addEventListener('pointerup',e=>{ if(!down)return; down=false;
+    if(mode==='draw' && regEnd-regStart<0.05){ regStart=0; regEnd=EDITDUR; drawWave(); } });
 })();
+// raw numeric entry for start / end (seconds)
+$('#inStart').addEventListener('input',()=>{ const v=parseFloat($('#inStart').value); if(isNaN(v))return;
+  regStart=clamp(v,0,Math.max(0,regEnd-0.02)); drawWave(); });
+$('#inEnd').addEventListener('input',()=>{ const v=parseFloat($('#inEnd').value); if(isNaN(v))return;
+  regEnd=clamp(v,regStart+0.02,EDITDUR); drawWave(); });
 $('#selFull').onclick=()=>{ regStart=0; regEnd=EDITDUR; drawWave(); };
 $('#vol').oninput=()=>{ $('#volLbl').textContent=$('#vol').value+'%'; if(prevAudio) prevAudio.volume=Math.min(1,$('#vol').value/100); };
+function stopPreview(){
+  if(prevAudio){ prevAudio.pause(); prevAudio=null; }
+  if(playRAF){ cancelAnimationFrame(playRAF); playRAF=null; }
+  playPos=null; $('#prevPlay').textContent='▶ Preview'; $('#tPlay').textContent=''; drawWave();
+}
 $('#prevPlay').onclick=()=>{
-  if(prevAudio){ prevAudio.pause(); prevAudio=null; $('#prevPlay').textContent='▶ Preview'; return; }
+  if(prevAudio){ stopPreview(); return; }
   prevAudio=new Audio(audioUrl(EDITCUR.file, EDITCUR.ver));
   prevAudio.volume=Math.min(1,$('#vol').value/100);
   prevAudio.currentTime=regStart;
   prevAudio.play().catch(()=>{});
   $('#prevPlay').textContent='⏸ Stop';
-  prevAudio.ontimeupdate=()=>{ if(prevAudio && prevAudio.currentTime>=regEnd){ prevAudio.pause(); prevAudio=null; $('#prevPlay').textContent='▶ Preview'; } };
+  const tick=()=>{                          // smooth playhead + timer while previewing
+    if(!prevAudio) return;
+    playPos=prevAudio.currentTime;
+    $('#tPlay').textContent='▶ '+playPos.toFixed(2)+'s';
+    if(playPos>=regEnd){ stopPreview(); return; }
+    drawWave();
+    playRAF=requestAnimationFrame(tick);
+  };
+  tick();
 };
-function closeEdit(){ if(prevAudio){prevAudio.pause();prevAudio=null;} $('#prevPlay').textContent='▶ Preview'; $('#editModal').classList.remove('show'); }
+function closeEdit(){ stopPreview(); $('#editModal').classList.remove('show'); }
 $('#editCancel').onclick=closeEdit;
 $('#editSave').onclick=async()=>{
   if(!EDITCUR) return;
@@ -1038,6 +1106,20 @@ $('#editSave').onclick=async()=>{
   }
   await fetch('/api/sound_type', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({file: EDITCUR.file, type: EDIT_TYPE})});
+  closeEdit(); await loadSounds();
+};
+$('#editSaveNew').onclick=async()=>{        // save the trim as a NEW clip; original untouched
+  if(!EDITCUR) return;
+  const nm=$('#editName').value.trim();
+  if(!nm){ $('#editErr').textContent='Enter a name for the new clip first.'; return; }
+  $('#editErr').textContent='Saving new clip…';
+  const gain=$('#vol').value/100;
+  const r=await fetch('/api/edit',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({file:EDITCUR.file, start:regStart, end:regEnd, gain, new_name:nm})});
+  const d=await r.json();
+  if(!d.ok){ $('#editErr').textContent=d.error||'save failed'; return; }
+  if(d.file){ await fetch('/api/sound_type',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({file:d.file, type:EDIT_TYPE})}); }
   closeEdit(); await loadSounds();
 };
 $('#editDelete').onclick=async()=>{
