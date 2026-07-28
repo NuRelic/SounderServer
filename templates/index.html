@@ -121,6 +121,15 @@
   .snd.dropbefore{box-shadow:-3px 0 0 var(--accent2)}
   .snd .nm{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.25;
     position:relative;z-index:1;pointer-events:none}
+  /* Full-name tooltip. One shared fixed-position node rather than a per-element
+     ::after: .snd is overflow:hidden so a child tooltip would be clipped, and
+     .snd .nm is pointer-events:none so it never sees :hover in the first place. */
+  #tip{position:fixed;left:0;top:0;z-index:200;pointer-events:none;opacity:0;
+    transition:opacity .09s;background:#05070c;border:1px solid #3a4260;color:var(--txt);
+    padding:5px 9px;border-radius:6px;font-size:12px;font-weight:600;white-space:nowrap;
+    box-shadow:0 6px 22px rgba(0,0,0,.7);max-width:min(92vw,560px);
+    overflow:hidden;text-overflow:ellipsis}
+  #tip.show{opacity:1}
   .snd .fmt{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;line-height:1;
     position:relative;z-index:1;pointer-events:none}
   .snd .meta{display:flex;gap:6px;align-items:baseline;font-size:10px;line-height:1;margin-top:4px;
@@ -538,6 +547,7 @@
 </div>
 
 <button class="feed-toggle" id="feedToggle" title="chat / feed">💬</button>
+<div id="tip"></div>
 
 <!-- login modal -->
 <div class="modal-back" id="loginModal">
@@ -623,6 +633,55 @@ function debounce(fn, ms){ let t; return function(){ clearTimeout(t); t=setTimeo
 let LANES = 2, LANE = 0, SONG_LANES = 1, ALLLETTER = null, SONGFILTER = 'all', SORT = 'plays';
 // tri-state sort: SORTFIELD=null → tab's natural order; otherwise SORTDIR='desc'|'asc'
 let SORTFIELD = null, SORTDIR = null, PREV = null;
+// ---- full-name tooltips ----
+// Any element carrying data-tip shows its full name on hover. Delegated from the
+// document so tiles and rows rebuilt by render() need no per-element wiring.
+const TIPEL = $('#tip');
+let tipFor = null, lastTouch = 0;
+function hideTip(){ if(tipFor){ TIPEL.classList.remove('show'); tipFor = null; } }
+function showTip(el){
+  const t = el.dataset.tip;
+  if(!t){ hideTip(); return; }
+  tipFor = el; TIPEL.textContent = t; TIPEL.classList.add('show');
+  const r = el.getBoundingClientRect(), b = TIPEL.getBoundingClientRect();
+  let x = r.left, y = r.bottom + 6;
+  if(x + b.width  > innerWidth  - 8) x = Math.max(8, innerWidth - 8 - b.width);
+  if(y + b.height > innerHeight - 8) y = r.top - b.height - 6;   // flip above
+  TIPEL.style.left = x + 'px';
+  TIPEL.style.top  = Math.max(8, y) + 'px';
+}
+document.addEventListener('mouseover', e => {
+  if(Date.now() - lastTouch < 800) return;   // taps synthesise mouseover; ignore them
+  const el = e.target.closest ? e.target.closest('[data-tip]') : null;
+  if(el !== tipFor){ el ? showTip(el) : hideTip(); }
+});
+document.addEventListener('touchstart', () => { lastTouch = Date.now(); hideTip(); }, {passive:true});
+window.addEventListener('scroll', hideTip, true);
+
+// ---- natural sort ----
+// Sort names so digit runs compare as numbers: sheik2 < sheik10, e1_ < e33_.
+// Plain localeCompare gets these wrong because it compares "1" to "2" and stops.
+// Keys are memoised — render() re-sorts ~2000 names on every filter keystroke.
+const _NATKEY = new Map();
+function natKey(s){
+  let k = _NATKEY.get(s);
+  if(!k){ k = String(s).split(/(\d+)/); _NATKEY.set(s, k); }
+  return k;                      // even slots are text, odd slots are digit runs
+}
+function natCmp(a, b){
+  const A = natKey(a), B = natKey(b), n = Math.min(A.length, B.length);
+  for(let i = 0; i < n; i++){
+    if(i & 1){                                        // digit run vs digit run
+      const d = Number(A[i]) - Number(B[i]);
+      if(d) return d;
+    } else {                                          // text vs text
+      const c = A[i].localeCompare(B[i], undefined, {sensitivity:'base'});
+      if(c) return c;
+    }
+  }
+  return A.length - B.length;
+}
+// ---- end natural sort ----
 const SORTS = [
   {key:'plays', lab:'🔥 Played', desc:'plays',     asc:'plays_asc'},
   {key:'name',  lab:'A–Z',       desc:'name_desc',  asc:'name'},   // ▲ A→Z
@@ -807,8 +866,8 @@ function render(){
   // ordering: explicit sort wins; otherwise per-tab natural order
   if(SORT==='plays')          list.sort((a,b)=> b.plays - a.plays);
   else if(SORT==='plays_asc') list.sort((a,b)=> a.plays - b.plays);
-  else if(SORT==='name')      list.sort((a,b)=> a.name.localeCompare(b.name));
-  else if(SORT==='name_desc') list.sort((a,b)=> b.name.localeCompare(a.name));
+  else if(SORT==='name')      list.sort((a,b)=> natCmp(a.name, b.name));
+  else if(SORT==='name_desc') list.sort((a,b)=> natCmp(b.name, a.name));
   else if(SORT==='newest')    list.sort((a,b)=> (b.ver||0) - (a.ver||0));   // ver = file mtime (added date)
   else if(SORT==='oldest')    list.sort((a,b)=> (a.ver||0) - (b.ver||0));
   else if(SORT==='long')      list.sort((a,b)=> b.dur - a.dur);
@@ -819,7 +878,7 @@ function render(){
     list.sort((a,b)=>{
       const da=di(a.file), db=di(b.file);
       if(da!==db) return da-db;                       // deck first, in deck order
-      return a.name.localeCompare(b.name);            // rest alphabetical
+      return natCmp(a.name, b.name);                  // rest alphabetical
     });
   }
   // (default for 'all' keeps the server's name-sorted order)
@@ -839,6 +898,7 @@ function render(){
       `<button class="star ${FAVSET.has(s.file)?'on':''}" title="favorite">★</button>`+
       `<button class="rm" title="${cediting?'delete clip':'remove from favorites'}">✕</button>`;
     el.dataset.file = s.file;
+    el.dataset.tip  = s.name;     // tile names ellipsize — hover shows the full one
     if(zone) el.dataset.zone = zone;
     // click behavior is handled by ONE delegated listener on #grid (see gridClick)
     if(editing) favDnD(el, s.file);
@@ -858,7 +918,7 @@ function render(){
     // Favorites edit: two zones split by a divider — deck (top, reorderable) and rest (A–Z)
     const inDeck = f => DECK.includes(f);
     const deckItems = DECK.map(f=>BYFILE[f]).filter(s=>s && FAVSET.has(s.file));
-    const restItems = list.filter(s=>!inDeck(s.file)).sort((a,b)=>a.name.localeCompare(b.name));
+    const restItems = list.filter(s=>!inDeck(s.file)).sort((a,b)=>natCmp(a.name, b.name));
     const span = el => { el.style.gridColumn='1/-1'; return el; };
     const head = (txt, cls) => { const h=document.createElement('div'); h.className='deckhead'+(cls?' '+cls:''); h.textContent=txt; h.dataset.zone=(cls==='rest'?'rest':'deck'); return span(h); };
     frag.appendChild(head('★ Your deck — drag to arrange',''));
@@ -1345,7 +1405,7 @@ function paintChannels(active){
     el.className='np-slot'+(s.song?' song':'');
     el.innerHTML=
       (canKill?`<button class="kill" title="stop this sound">✕</button>`:'')+
-      `<span class="cnm">${esc(a.name)}</span>`+
+      `<span class="cnm" data-tip="${esc(a.name)}">${esc(a.name)}</span>`+
       `<span class="by"${a.color?' style="color:'+a.color+'"':''}>${esc(a.by||'')}</span>`+
       `<span class="rem" data-end="${a.start+(a.dur||0)}"></span>`;
     if(canKill) el.querySelector('.kill').onclick=()=>killActive(a.token);
@@ -1584,7 +1644,7 @@ function feedItem(it){
     // favorite straight from the feed entry's file — no BYFILE lookup, so the star
     // renders even before the sound library finishes loading (toggleFav needs only .file).
     el.innerHTML = `<span class="u" style="color:${uc}">${esc(it.user)}</span> `+
-      `<span class="c">!${esc((it.name||'').toLowerCase())}</span>`+
+      `<span class="c" data-tip="${esc(it.name||'')}">!${esc((it.name||'').toLowerCase())}</span>`+
       (it.file?`<button class="fav${FAVSET.has(it.file)?' on':''}" data-file="${esc(it.file)}" title="favorite this sound">★</button>`:'')+
       `<span class="t">${t}</span>`;
     if(it.file){ const fb=el.querySelector('.fav'); fb.onclick=(e)=>{ e.stopPropagation(); toggleFav({file:it.file}); fb.classList.toggle('on', FAVSET.has(it.file)); }; }
@@ -1615,7 +1675,7 @@ function refreshLookup(){
     const ax=a.cmd===q?0:a.cmd.startsWith(q)?1:2, bx=b.cmd===q?0:b.cmd.startsWith(q)?1:2;
     if(ax!==bx) return ax-bx;
     const af=FAVSET.has(a.file), bf=FAVSET.has(b.file); if(af!==bf) return af?-1:1;
-    return a.name.localeCompare(b.name);
+    return natCmp(a.name, b.name);
   });
   lkItems = list.slice(0,12); lkSel = 0; paintLookup();
 }
@@ -1625,6 +1685,7 @@ function paintLookup(){
   lkItems.forEach((s,i)=>{
     const d=document.createElement('div');
     d.className='lk '+s.fmt+(i===lkSel?' sel':'');
+    d.dataset.tip = s.name;
     d.innerHTML=`<span class="nm">${esc(s.name)}</span><span class="fmt">${s.fmt}</span>`+
       (FAVSET.has(s.file)?'<span style="color:var(--fav)">★</span>':'');
     d.onmousedown=e=>{e.preventDefault(); pickLookup(i);};
@@ -1748,7 +1809,7 @@ function renderEdit(){
   box.innerHTML='';
   if(!list.length){ box.innerHTML='<div class="addhint">No matches.</div>'; return; }
   for(const s of list){
-    const row=document.createElement('div'); row.className='editrow';
+    const row=document.createElement('div'); row.className='editrow'; row.dataset.tip=s.name;
     row.innerHTML=`<span class="nm">${esc(s.name)}<span class="fmt" style="color:var(--dim)"> .${s.fmt}</span></span>`+
       `<button data-a="play">▶</button><button data-a="ren">rename</button>`+
       `<button data-a="del" class="del">delete</button>`;
