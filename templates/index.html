@@ -1645,7 +1645,7 @@ function feedItem(it){
     // favorite straight from the feed entry's file — no BYFILE lookup, so the star
     // renders even before the sound library finishes loading (toggleFav needs only .file).
     el.innerHTML = `<span class="u" style="color:${uc}">${esc(it.user)}</span> `+
-      `<span class="c" data-tip="${esc(it.name||'')}">!${esc((it.name||'').toLowerCase())}</span>`+
+      `<span class="c">!${esc((it.name||'').toLowerCase())}</span>`+
       (it.file?`<button class="fav${FAVSET.has(it.file)?' on':''}" data-file="${esc(it.file)}" title="favorite this sound">★</button>`:'')+
       `<span class="t">${t}</span>`;
     if(it.file){ const fb=el.querySelector('.fav'); fb.onclick=(e)=>{ e.stopPropagation(); toggleFav({file:it.file}); fb.classList.toggle('on', FAVSET.has(it.file)); }; }
