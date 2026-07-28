@@ -652,6 +652,7 @@ function showTip(el){
 }
 document.addEventListener('mouseover', e => {
   if(Date.now() - lastTouch < 800) return;   // taps synthesise mouseover; ignore them
+  if(document.querySelector('.snd.dragging')){ hideTip(); return; }   // not while reordering the deck
   const el = e.target.closest ? e.target.closest('[data-tip]') : null;
   if(el !== tipFor){ el ? showTip(el) : hideTip(); }
 });
