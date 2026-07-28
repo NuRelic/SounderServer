@@ -51,6 +51,7 @@ BOXVOL_FILE= os.path.join(DATA_DIR, "box_volume.json")
 FEED_FILE  = os.path.join(DATA_DIR, "feed_store.json")
 SYNC_FILE  = os.path.join(DATA_DIR, "sync.json")
 COLOR_FILE = os.path.join(DATA_DIR, "user_colors.json")
+TAGS_FILE  = os.path.join(DATA_DIR, "tags.json")
 _FEED_TTL  = 3 * 86400                              # keep feed 3 days
 YTDLP      = shutil.which("yt-dlp")
 
@@ -359,6 +360,97 @@ def fav_key(user):
     return ((user or "").strip().lower()[:40]) or "anon"
 def user_fav_rec(user):
     return _FAVS_BY_USER.setdefault(fav_key(user), {"favs": [], "deck": []})
+# ----------------------------------------------------------------------------
+# Tags — an advanced filter over the library, seeded once by seed_tags.py
+# ----------------------------------------------------------------------------
+# {"tags": {slug: {"label":..., "parent":...}}, "assign": {filename: [slug,...]}}
+# Keyed by filename like _LIBRARY and favorites, so rename must repoint and
+# delete must drop — see api_rename/api_delete. A clip assigned to a child is
+# NOT also assigned to its parent; parent membership is computed at read time,
+# so re-parenting a tag never rewrites assignments.
+_TAGS_LOCK = threading.Lock()
+
+def _norm_tags(v):
+    """Coerce whatever is on disk into {"tags": {...}, "assign": {...}}."""
+    v = v if isinstance(v, dict) else {}
+    tags = {}
+    for slug, rec in (v.get("tags") or {}).items():
+        if not isinstance(slug, str) or not isinstance(rec, dict):
+            continue
+        out = {"label": str(rec.get("label") or slug)}
+        parent = rec.get("parent")
+        if isinstance(parent, str) and parent and parent != slug:
+            out["parent"] = parent
+        tags[slug] = out
+    for rec in tags.values():                       # drop parents that don't exist
+        if rec.get("parent") not in tags:
+            rec.pop("parent", None)
+    assign = {}
+    for fn, slugs in (v.get("assign") or {}).items():
+        if not isinstance(fn, str):
+            continue
+        keep = _dedup([s for s in (slugs or []) if isinstance(s, str) and s in tags])
+        if keep:
+            assign[fn] = keep
+    return {"tags": tags, "assign": assign}
+
+_TAGS = _norm_tags(_load(TAGS_FILE, {}))
+
+def save_tags():
+    """Persist the tag store. Call with _TAGS_LOCK held."""
+    _save(TAGS_FILE, _TAGS)
+
+def _tag_children():
+    kids = {}
+    for slug, rec in _TAGS["tags"].items():
+        p = rec.get("parent")
+        if p:
+            kids.setdefault(p, []).append(slug)
+    return kids
+
+def tags_snapshot():
+    """Tags with counts rolled up through children, filtered to live files."""
+    with _LIB_LOCK:
+        live = set(_LIBRARY)
+    with _TAGS_LOCK:
+        tags = {s: dict(r) for s, r in _TAGS["tags"].items()}
+        assign = {f: list(s) for f, s in _TAGS["assign"].items() if f in live}
+    kids = {}
+    for slug, rec in tags.items():
+        p = rec.get("parent")
+        if p:
+            kids.setdefault(p, []).append(slug)
+    direct = {}                                  # slug -> set of files assigned to it
+    for fn, slugs in assign.items():
+        for s in slugs:
+            direct.setdefault(s, set()).add(fn)
+    out = []
+    for slug, rec in tags.items():
+        # a file tagged with both a child and its parent counts once
+        files = set(direct.get(slug, ()))
+        for kid in kids.get(slug, ()):
+            files |= direct.get(kid, set())
+        item = {"slug": slug, "label": rec["label"], "count": len(files),
+                "songs": sum(1 for f in files if is_long(f))}
+        if rec.get("parent"):
+            item["parent"] = rec["parent"]
+        out.append(item)
+    out.sort(key=lambda t: (-t["count"], t["label"].lower()))
+    return {"tags": out, "assign": assign}
+
+def tags_rename(old, new):
+    """Carry a renamed file's tags to its new name."""
+    with _TAGS_LOCK:
+        if old in _TAGS["assign"]:
+            _TAGS["assign"][new] = _TAGS["assign"].pop(old)
+            save_tags()
+
+def tags_forget(fn):
+    """Drop a deleted file's tags so it stops inflating counts."""
+    with _TAGS_LOCK:
+        if _TAGS["assign"].pop(fn, None) is not None:
+            save_tags()
+
 _lanes_cfg  = _load(LIMITS_FILE, {"lanes": 2, "song_lanes": 1})
 _LANES      = max(1, min(4, int(_lanes_cfg.get("lanes", 2))))        # 1-4 short (sound) lanes
 _SONG_LANES = max(1, min(2, int(_lanes_cfg.get("song_lanes", 1))))  # 1-2 long (song) lanes
@@ -577,6 +669,11 @@ def api_sounds():
             "nsfw": it["file"] in nsfw,
             "plays": plays.get(it["file"], 0)} for it in items]
     return jsonify({"count": len(out), "sounds": out, "scanning": _DUR_SCANNING})
+
+@app.route("/api/tags")
+def api_tags():
+    """Tag vocabulary + assignments. Open — filtering is playing, not editing."""
+    return jsonify(tags_snapshot())
 
 @app.route("/api/audio")
 def api_audio():
@@ -956,6 +1053,7 @@ def api_rename():
                 rec[k] = [new if f == old else f for f in rec[k]]; changed = True
     if changed: save_favs()
     catalog_rename(old, new)              # carry the soundid (and its play stats) to the new name
+    tags_rename(old, new)                 # …and its tags, or the clip silently unfiles itself
     with _DUR_LOCK:                       # move the cached duration so song/sound stays stable
         if old in _DUR:
             _DUR[new] = _DUR.pop(old); _save(DUR_FILE, _DUR)
@@ -980,6 +1078,7 @@ def api_delete():
             if fn in rec[k]:
                 rec[k] = [f for f in rec[k] if f != fn]; changed = True
     if changed: save_favs()
+    tags_forget(fn)                       # drop its tags so counts stay honest
     scan_library()
     return jsonify({"ok": True})
 
