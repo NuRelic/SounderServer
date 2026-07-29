@@ -60,7 +60,7 @@ LABELS = {
     "fmaseries": "Fullmetal Alchemist", "fma": "Fullmetal Alchemist",
     "fmab": "FMA: Brotherhood",
     "hotline": "Hotline Miami", "hm": "Hotline Miami", "hm2": "Hotline Miami 2",
-    "ut": "Undertale", "lk": "Letterkenny", "mew": "mewithoutYou",
+    "ut": "Undertale", "lk": "Letterkenny", "mew": "Mewgenics",
     "og": "OG", "oracle": "Oracle", "athf": "Aqua Teen Hunger Force",
     "rnm": "Rick & Morty", "nier": "NieR", "d": "Disney", "au": "Among Us",
     "dn": "Death Note", "sb": "SpongeBob",
