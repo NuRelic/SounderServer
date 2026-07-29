@@ -211,3 +211,26 @@ def test_merge_does_not_resurrect_a_deleted_tag():
     items = [{"name": f"butt_{i}", "file": f"butt_{i}.wav"} for i in range(3)]
     out, added = merge_into(store, items)
     assert "butt" not in out["tags"] and added == 0
+
+
+def test_merge_files_into_the_tag_that_already_owns_the_prefix():
+    # bb_* is Bob's Burgers, whose slug is bob-s-burgers. Re-deriving would
+    # invent a second tag called "bb"; the existing owner must win instead.
+    store = {"tags": {"bob-s-burgers": {"label": "Bob's Burgers"}},
+             "assign": {"bb_1.wav": ["bob-s-burgers"], "bb_2.wav": ["bob-s-burgers"],
+                        "bb_3.wav": ["bob-s-burgers"]}}
+    items = [{"name": f"bb_{i}", "file": f"bb_{i}.wav"} for i in (1, 2, 3, 4)]
+    out, added = merge_into(store, items)
+    assert "bb" not in out["tags"]
+    assert out["assign"]["bb_4.wav"] == ["bob-s-burgers"]
+    assert added == 1
+
+
+def test_merge_only_defers_to_an_unambiguous_owner():
+    # two tags split the prefix evenly — no owner, so the derived tag is used
+    store = {"tags": {"a": {"label": "A"}, "b": {"label": "B"}},
+             "assign": {"zz_1.wav": ["a"], "zz_2.wav": ["a"],
+                        "zz_3.wav": ["b"], "zz_4.wav": ["b"]}}
+    items = [{"name": f"zz_{i}", "file": f"zz_{i}.wav"} for i in range(1, 6)]
+    out, _ = merge_into(store, items)
+    assert out["assign"]["zz_5.wav"] == ["zz"]

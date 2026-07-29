@@ -108,3 +108,26 @@ def test_store_survives_a_reload_from_disk(app):
     reloaded = app._load(app.TAGS_FILE, {"tags": {}, "assign": {}})
     assert reloaded["tags"]["t"]["label"] == "T"
     assert reloaded["assign"]["short_sound.wav"] == ["t"]
+
+
+def test_retired_list_survives_a_save(app):
+    # seed_tags.py --merge reads "retired" to keep deliberately deleted tags
+    # dead. If the server drops the key on its next write, deleted tags come
+    # back the next time anyone runs a merge.
+    with app._TAGS_LOCK:
+        app._TAGS["retired"] = ["sfx"]
+        app.save_tags()
+    assert app._load(app.TAGS_FILE, {}).get("retired") == ["sfx"]
+
+
+def test_retired_list_is_loaded_from_disk(app, tmp_path):
+    import json
+    json.dump({"tags": {"x": {"label": "X"}}, "assign": {}, "retired": ["sfx", "ts"]},
+              open(app.TAGS_FILE, "w"))
+    got = app._norm_tags(app._load(app.TAGS_FILE, {}))
+    assert got["retired"] == ["sfx", "ts"]
+
+
+def test_retired_is_absent_when_the_store_has_none(app):
+    got = app._norm_tags({"tags": {}, "assign": {}})
+    assert "retired" not in got

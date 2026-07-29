@@ -365,7 +365,20 @@ sane.
 - **The seed is only as good as the stop-word list.** Mitigated by reviewing
   rejects by hand and by the fact that every mistake is fixable in the editor.
 - **`data/tags.json` is excluded from rsync** along with the rest of `data/`,
-  so it is prod-owned state. The importer runs on prod once, and the result
-  should be pulled back and kept somewhere recoverable.
+  so it is prod-owned state. *Resolved:* `backup_tags.py` pulls it into
+  `backups/tags.json` and can commit; `save_tags()` also keeps 24 throttled
+  rolling snapshots in `data/tags-history/`. Prod stays authoritative — the
+  repo copy is a backup, never a source.
+- **Tagging decays as the library grows.** Every clip added by upload or URL
+  fetch used to land untagged forever. *Resolved:* `tags_autotag()` files new
+  clips from a prefix index learned from existing assignments, hooked into all
+  three paths a file can arrive by. It only acts on an unambiguous prefix and
+  never touches a clip that already has tags.
+- **Re-deriving can undo curation.** The seed refused to overwrite, so it
+  could not be re-run at all. *Resolved:* `--merge` is additive — it defers to
+  whichever tag already owns a prefix (so `bb_*` files join Bob's Burgers
+  rather than growing a duplicate `bb` tag) and honours a `retired` list so a
+  deliberately deleted tag cannot come back. The server carries `retired`
+  through `_norm_tags()`, or the next save would erase it.
 - **`static/` on prod is not in the repo.** Mockups live there and are not
   version-controlled. Fine for mockups; nothing load-bearing goes there.

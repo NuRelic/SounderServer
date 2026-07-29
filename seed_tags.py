@@ -166,11 +166,38 @@ def merge_into(store, items):
     if "retired" in store:
         out["retired"] = sorted(retired)
 
+    # Which tag already owns each prefix, judged by what is filed under it.
+    # Without this, re-deriving invents a second tag whenever curation renamed
+    # the slug away from the prefix — bb_* would grow a "bb" tag beside the
+    # existing "bob-s-burgers".
+    counts = {}
+    for fn, slugs in out["assign"].items():
+        stem = fn.rsplit(".", 1)[0]
+        if "_" not in stem:
+            continue
+        p = stem.split("_")[0].lower()
+        for s in slugs:
+            counts.setdefault(p, {})
+            counts[p][s] = counts[p].get(s, 0) + 1
+    owner = {}
+    for p, d in counts.items():
+        slug, n = max(d.items(), key=lambda kv: kv[1])
+        if n >= 3 and n / sum(d.values()) >= 0.8:
+            owner[p] = slug
+
     fresh = derive(items)
     added = 0
     for fn, slugs in fresh["assign"].items():
         if fn in out["assign"]:
             continue                       # already filed, by hand or earlier
+        stem = fn.rsplit(".", 1)[0]
+        held = owner.get(stem.split("_")[0].lower()) if "_" in stem else None
+        if held:
+            if held in retired:
+                continue
+            out["assign"][fn] = [held]     # defer to the tag that owns this prefix
+            added += 1
+            continue
         keep = [s for s in slugs if s not in retired]
         if not keep:
             continue

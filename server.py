@@ -392,7 +392,14 @@ def _norm_tags(v):
         keep = _dedup([s for s in (slugs or []) if isinstance(s, str) and s in tags])
         if keep:
             assign[fn] = keep
-    return {"tags": tags, "assign": assign}
+    out = {"tags": tags, "assign": assign}
+    # Carried through untouched: seed_tags.py --merge reads this to keep
+    # deliberately deleted tags from coming back. Dropping it here would let
+    # the next save silently erase the list.
+    retired = [s for s in (v.get("retired") or []) if isinstance(s, str)]
+    if retired:
+        out["retired"] = _dedup(retired)
+    return out
 
 _TAGS = _norm_tags(_load(TAGS_FILE, {}))
 
