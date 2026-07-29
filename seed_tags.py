@@ -151,6 +151,44 @@ def derive(items):
     return {"tags": tags, "assign": assign}
 
 
+def merge_into(store, items):
+    """Fold newly-matching clips into an existing store. Returns (store, added).
+
+    Additive only. Existing labels, parents and assignments are never touched,
+    because by the time this runs a human has renamed slugs, merged franchises
+    and deleted tags on purpose — and re-deriving would silently undo all of
+    it. Tags listed under "retired" stay dead so a deleted tag cannot come
+    back the next time this runs.
+    """
+    out = {"tags": dict(store.get("tags") or {}),
+           "assign": {k: list(v) for k, v in (store.get("assign") or {}).items()}}
+    retired = set(store.get("retired") or [])
+    if "retired" in store:
+        out["retired"] = sorted(retired)
+
+    fresh = derive(items)
+    added = 0
+    for fn, slugs in fresh["assign"].items():
+        if fn in out["assign"]:
+            continue                       # already filed, by hand or earlier
+        keep = [s for s in slugs if s not in retired]
+        if not keep:
+            continue
+        for s in keep:
+            if s not in out["tags"]:
+                rec = dict(fresh["tags"].get(s) or {"label": s})
+                parent = rec.get("parent")
+                if parent in retired:
+                    rec.pop("parent", None)
+                elif parent and parent not in out["tags"]:
+                    prec = dict(fresh["tags"].get(parent) or {"label": parent})
+                    out["tags"][parent] = prec
+                out["tags"][s] = rec
+        out["assign"][fn] = keep
+        added += 1
+    return out, added
+
+
 def rejected(items):
     """Groups big enough to be tags but dropped as stop-words — review these."""
     groups = collections.defaultdict(list)
@@ -174,10 +212,33 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--from-url", default="https://sounderserver.party")
     ap.add_argument("--write", action="store_true", help="write data/tags.json")
+    ap.add_argument("--merge", action="store_true",
+                    help="fold new clips into an existing tags.json (additive; safe to re-run)")
     ap.add_argument("--data-dir", default=os.environ.get("DATA_DIR", "data"))
     a = ap.parse_args(argv)
 
     names = _load_names(a.from_url)
+    path = os.path.join(a.data_dir, "tags.json")
+
+    if a.merge:
+        if not os.path.exists(path):
+            print(f"no {path} to merge into — run without --merge first", file=sys.stderr)
+            return 1
+        store = json.load(open(path))
+        before = len(store.get("assign") or {})
+        out, added = merge_into(store, names)
+        print(f"{len(names)} clips: {before} already filed, {added} newly matched "
+              f"-> {len(out['assign'])} assigned, {len(out['tags'])} tags")
+        if not a.write:
+            print("(dry run — pass --write to save)")
+            return 0
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(out, f, indent=1)
+        os.replace(tmp, path)
+        print(f"updated {path}")
+        return 0
+
     out = derive(names)
     tops = [s for s, t in out["tags"].items() if "parent" not in t]
     print(f"{len(names)} clips -> {len(out['tags'])} tags "
@@ -193,9 +254,9 @@ def main(argv=None):
         print("\n(dry run — pass --write to save)")
         return 0
 
-    path = os.path.join(a.data_dir, "tags.json")
     if os.path.exists(path):
-        print(f"\nrefusing to overwrite {path} — move it aside first", file=sys.stderr)
+        print(f"\nrefusing to overwrite {path} — use --merge, or move it aside",
+              file=sys.stderr)
         return 1
     tmp = path + ".tmp"
     with open(tmp, "w") as f:

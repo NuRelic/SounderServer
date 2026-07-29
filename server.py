@@ -396,9 +396,89 @@ def _norm_tags(v):
 
 _TAGS = _norm_tags(_load(TAGS_FILE, {}))
 
+TAG_HISTORY_DIR   = os.path.join(DATA_DIR, "tags-history")
+TAG_HISTORY_KEEP  = 24            # rolling snapshots kept on disk
+TAG_HISTORY_EVERY = 3600          # at most one snapshot an hour
+_tag_hist_last = [0.0]
+
+def _prune_tag_history():
+    try:
+        snaps = sorted(os.listdir(TAG_HISTORY_DIR))
+    except OSError:
+        return
+    for old in snaps[:-TAG_HISTORY_KEEP]:
+        try: os.remove(os.path.join(TAG_HISTORY_DIR, old))
+        except OSError: pass
+
+def _snapshot_tags():
+    """Throttled rolling copy of the tag store.
+
+    Curating tags is hours of human judgement that lives in one JSON file, and
+    a bad bulk edit is indistinguishable from a good one until you look. This
+    is on-box insurance only — see backup_tags.py for the off-box copy, which
+    is what actually survives losing the disk.
+    """
+    now = time.time()
+    if now - _tag_hist_last[0] < TAG_HISTORY_EVERY:
+        return
+    _tag_hist_last[0] = now
+    try:
+        os.makedirs(TAG_HISTORY_DIR, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
+        _save(os.path.join(TAG_HISTORY_DIR, "tags-%s.json" % stamp), _TAGS)
+        _prune_tag_history()
+    except OSError:
+        pass
+
 def save_tags():
     """Persist the tag store. Call with _TAGS_LOCK held."""
     _save(TAGS_FILE, _TAGS)
+    _snapshot_tags()
+
+def tag_prefix_index():
+    """filename prefix -> tag slug, learned from what is actually assigned.
+
+    Deliberately not derived from slugs: once tags got real names the two
+    stopped matching (Bob's Burgers is slug `bob-s-burgers`, files `bb_*`).
+    A prefix only counts when one tag clearly owns it, so ambiguous prefixes
+    like `the_` never produce a guess.
+    """
+    counts = {}
+    with _TAGS_LOCK:
+        assign = {f: list(s) for f, s in _TAGS["assign"].items()}
+    for fn, slugs in assign.items():
+        stem = os.path.splitext(fn)[0]
+        if "_" not in stem:
+            continue
+        p = stem.split("_")[0].lower()
+        for s in slugs:
+            counts.setdefault(p, {})
+            counts[p][s] = counts[p].get(s, 0) + 1
+    idx = {}
+    for p, d in counts.items():
+        slug, n = max(d.items(), key=lambda kv: kv[1])
+        if n >= 3 and n / sum(d.values()) >= 0.8:
+            idx[p] = slug
+    return idx
+
+def tags_autotag(fn):
+    """Tag a newly added clip from its prefix. Returns the slugs applied.
+
+    Never touches a clip that already has tags — a human decision always wins.
+    """
+    stem = os.path.splitext(fn)[0]
+    if "_" not in stem:
+        return []
+    slug = tag_prefix_index().get(stem.split("_")[0].lower())
+    if not slug:
+        return []
+    with _TAGS_LOCK:
+        if _TAGS["assign"].get(fn) or slug not in _TAGS["tags"]:
+            return []
+        _TAGS["assign"][fn] = [slug]
+        save_tags()
+    log_event("log", "system", text="auto-tagged %s -> %s" % (stem, slug))
+    return [slug]
 
 def _tag_children():
     kids = {}
@@ -988,6 +1068,7 @@ def api_upload():
         return jsonify({"ok": False, "error": "name exists"}), 409
     f.save(dest)
     scan_library()
+    tags_autotag(name)                    # new clips inherit their prefix's tag
     return jsonify({"ok": True, "file": name})
 
 # ---------------------------------------------------------------------------
@@ -1058,6 +1139,8 @@ def _run_local(jid):
         _set_job(jid, status="error", error=_gate_msg(r.stderr)); return
     new = [f for f in (set(os.listdir(SOUND_DIR)) - before) if f.lower().endswith((".mp3", ".wav"))]
     scan_library()
+    for f in new:
+        tags_autotag(f)                   # new clips inherit their prefix's tag
     _set_job(jid, status="done", file=(new[0] if new else None))
 
 def _fallback_loop():
@@ -1128,6 +1211,7 @@ def api_worker_result(jid):
         dest = os.path.join(SOUND_DIR, "%s_%d%s" % (base, n, ext)); n += 1
     f.save(dest)
     scan_library()
+    tags_autotag(os.path.basename(dest))  # new clips inherit their prefix's tag
     _set_job(jid, status="done", file=os.path.basename(dest))
     return jsonify({"ok": True, "file": os.path.basename(dest)})
 

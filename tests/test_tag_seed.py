@@ -156,3 +156,58 @@ def test_bare_parent_sweep_is_keyed_by_filename_too():
         {"name": "dcc_class_selection", "file": "dcc_class_selection.mp3"},
     ])
     assert got["assign"]["dcc_class_selection.mp3"] == ["dcc"]
+
+
+# ---- merge mode -----------------------------------------------------------
+# The seed refuses to overwrite an existing tags.json, so it cannot be re-run
+# as the library grows. merge_into() adds what is new without ever disturbing
+# curation that has already happened by hand.
+
+from seed_tags import merge_into
+
+
+def test_merge_adds_a_newly_matching_clip():
+    store = {"tags": {"zz": {"label": "ZZ"}}, "assign": {"zz_one.wav": ["zz"]}}
+    items = [{"name": f"zz_{i}", "file": f"zz_{i}.wav"} for i in ("one", "two", "three")]
+    out, added = merge_into(store, items)
+    assert added == 2
+    assert set(out["assign"]) == {"zz_one.wav", "zz_two.wav", "zz_three.wav"}
+
+
+def test_merge_never_touches_a_hand_edited_label():
+    store = {"tags": {"mew": {"label": "Mewgenics"}}, "assign": {}}
+    items = [{"name": f"mew_{i}", "file": f"mew_{i}.wav"} for i in range(3)]
+    out, _ = merge_into(store, items)
+    assert out["tags"]["mew"]["label"] == "Mewgenics"      # not reset to the seed label
+
+
+def test_merge_never_moves_an_already_assigned_clip():
+    store = {"tags": {"zz": {"label": "ZZ"}, "other": {"label": "Other"}},
+             "assign": {"zz_one.wav": ["other"]}}
+    items = [{"name": f"zz_{i}", "file": f"zz_{i}.wav"} for i in ("one", "two", "three")]
+    out, _ = merge_into(store, items)
+    assert out["assign"]["zz_one.wav"] == ["other"]        # curation wins
+
+
+def test_merge_preserves_an_existing_parent():
+    store = {"tags": {"hm": {"label": "Hotline Miami", "parent": "hotline"},
+                      "hotline": {"label": "Hotline Miami"}}, "assign": {}}
+    items = [{"name": f"hm_{i}", "file": f"hm_{i}.wav"} for i in range(3)]
+    out, _ = merge_into(store, items)
+    assert out["tags"]["hm"]["parent"] == "hotline"
+
+
+def test_merge_is_idempotent():
+    store = {"tags": {}, "assign": {}}
+    items = [{"name": f"zz_{i}", "file": f"zz_{i}.wav"} for i in range(3)]
+    once, a1 = merge_into(store, items)
+    twice, a2 = merge_into(once, items)
+    assert a2 == 0 and once == twice
+
+
+def test_merge_does_not_resurrect_a_deleted_tag():
+    # 'butt' was deliberately dropped; re-running the seed must not bring it back
+    store = {"tags": {}, "assign": {}, "retired": ["butt"]}
+    items = [{"name": f"butt_{i}", "file": f"butt_{i}.wav"} for i in range(3)]
+    out, added = merge_into(store, items)
+    assert "butt" not in out["tags"] and added == 0
