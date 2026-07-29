@@ -675,6 +675,117 @@ def api_tags():
     """Tag vocabulary + assignments. Open — filtering is playing, not editing."""
     return jsonify(tags_snapshot())
 
+def _slugify(label):
+    out = "".join(c if c.isalnum() else "-" for c in (label or "").strip().lower())
+    while "--" in out:
+        out = out.replace("--", "-")
+    return out.strip("-")[:48]
+
+@app.route("/api/tags", methods=["POST"])
+def api_tags_edit():
+    """Create / rename / re-parent / merge / delete a tag. Same gate as Add/Edit."""
+    if not can_edit():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    body = request.get_json(silent=True) or {}
+    action = (body.get("action") or "").strip().lower()
+    slug   = (body.get("slug") or "").strip()
+    with _TAGS_LOCK:
+        tags, assign = _TAGS["tags"], _TAGS["assign"]
+        kids_of = lambda s: [k for k, r in tags.items() if r.get("parent") == s]
+
+        if action == "create":
+            label = (body.get("label") or "").strip()
+            new = _slugify(label)
+            if not label or not new:
+                return jsonify({"ok": False, "error": "need a label"}), 400
+            if new in tags:
+                return jsonify({"ok": False, "error": "that tag already exists"}), 409
+            tags[new] = {"label": label}
+            save_tags()
+            return jsonify({"ok": True, "slug": new})
+
+        if slug not in tags:
+            return jsonify({"ok": False, "error": "unknown tag"}), 404
+
+        if action == "rename":
+            label = (body.get("label") or "").strip()
+            if not label:
+                return jsonify({"ok": False, "error": "need a label"}), 400
+            tags[slug]["label"] = label
+
+        elif action == "reparent":
+            parent = body.get("parent") or None
+            if parent is not None:
+                if parent == slug:
+                    return jsonify({"ok": False, "error": "a tag cannot parent itself"}), 400
+                if parent not in tags:
+                    return jsonify({"ok": False, "error": "unknown parent"}), 404
+                # one level only: the parent must be top-level, and a tag that
+                # already has children cannot itself become a child
+                if tags[parent].get("parent"):
+                    return jsonify({"ok": False, "error": "tags only nest one level"}), 400
+                if kids_of(slug):
+                    return jsonify({"ok": False, "error": "that tag has sub-tags"}), 400
+                tags[slug]["parent"] = parent
+            else:
+                tags[slug].pop("parent", None)
+
+        elif action == "merge":
+            into = (body.get("into") or "").strip()
+            if into == slug:
+                return jsonify({"ok": False, "error": "cannot merge a tag into itself"}), 400
+            if into not in tags:
+                return jsonify({"ok": False, "error": "unknown target"}), 404
+            for fn, ss in list(assign.items()):
+                if slug in ss:
+                    assign[fn] = _dedup([into if s == slug else s for s in ss])
+            for k in kids_of(slug):               # children follow their parent
+                tags[k]["parent"] = into
+            tags.pop(slug, None)
+            if tags[into].get("parent") and kids_of(into):
+                tags[into].pop("parent", None)    # absorbing children promotes it
+
+        elif action == "delete":
+            for k in kids_of(slug):               # children survive, promoted
+                tags[k].pop("parent", None)
+            for fn, ss in list(assign.items()):
+                keep = [s for s in ss if s != slug]
+                if keep:
+                    assign[fn] = keep
+                else:
+                    assign.pop(fn)
+            tags.pop(slug, None)
+
+        else:
+            return jsonify({"ok": False, "error": "unknown action"}), 400
+
+        save_tags()
+    return jsonify({"ok": True})
+
+@app.route("/api/tags/assign", methods=["POST"])
+def api_tags_assign():
+    """Replace one clip's tags outright."""
+    if not can_edit():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    body = request.get_json(silent=True) or {}
+    fn = body.get("file")
+    if fn not in _LIBRARY:
+        return jsonify({"ok": False, "error": "unknown file"}), 404
+    want = body.get("tags")
+    if not isinstance(want, list):
+        return jsonify({"ok": False, "error": "tags must be a list"}), 400
+    with _TAGS_LOCK:
+        unknown = [s for s in want if s not in _TAGS["tags"]]
+        if unknown:
+            return jsonify({"ok": False, "error": "unknown tag: " + unknown[0]}), 400
+        keep = _dedup([s for s in want if isinstance(s, str)])
+        if keep:
+            _TAGS["assign"][fn] = keep
+        else:
+            _TAGS["assign"].pop(fn, None)
+        save_tags()
+    return jsonify({"ok": True})
+
 @app.route("/api/audio")
 def api_audio():
     fn = request.args.get("f", "")

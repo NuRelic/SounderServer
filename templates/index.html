@@ -151,6 +151,31 @@
     border-radius:999px;padding:3px 10px;cursor:pointer;font:inherit;font-size:12px}
   .tagkids button.on{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
   .tagempty{grid-column:1/-1;color:var(--dim);padding:18px 4px;font-size:13px}
+  /* tag editor rows (Tags tab, editors only) */
+  .trow{grid-column:1/-1;display:flex;gap:6px;align-items:center;flex-wrap:wrap;
+    background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 9px}
+  .trow.kid{margin-left:22px}
+  .trow input,.trow select{background:var(--bg);border:1px solid var(--line);color:var(--txt);
+    border-radius:6px;padding:5px 8px;font:inherit;font-size:13px}
+  .trow input.tlab{flex:1;min-width:130px;font-weight:600}
+  .trow .tn{font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums;min-width:56px}
+  .trow .slug{font-size:10px;color:var(--dim);font-family:ui-monospace,Menlo,monospace;
+    background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:2px 5px}
+  .trow button{background:var(--panel);border:1px solid var(--line);color:var(--txt);
+    border-radius:6px;padding:5px 9px;cursor:pointer;font:inherit;font-size:12px}
+  .trow button.del{color:#ff8a8a}
+  .trow button:hover{border-color:var(--accent)}
+  .tagnew{grid-column:1/-1;display:flex;gap:6px;align-items:center;margin-bottom:4px}
+  .tagnew input{flex:1;background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+    border-radius:6px;padding:6px 9px;font:inherit}
+  /* per-clip tag picker in the edit modal */
+  .tagpick{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  .tagpick-cur{display:flex;gap:5px;flex-wrap:wrap}
+  .tagpick-cur span{display:inline-flex;align-items:center;gap:5px;background:var(--accent);
+    color:#fff;border-radius:999px;padding:3px 6px 3px 10px;font-size:12px;font-weight:600}
+  .tagpick-cur span b{cursor:pointer;font-weight:700;opacity:.8}
+  .tagpick select{background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+    border-radius:6px;padding:5px 8px;font:inherit;font-size:13px}
   .snd .fmt{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;line-height:1;
     position:relative;z-index:1;pointer-events:none}
   .snd .meta{display:flex;gap:6px;align-items:baseline;font-size:10px;line-height:1;margin-top:4px;
@@ -501,6 +526,7 @@
       <div class="grp sorters" id="sorters"></div>
       <div class="grp rightgrp">
         <span class="count" id="shown"></span>
+        <button class="btn-edit" id="tagEditToggle" style="display:none">✏️ Edit tags</button>
         <button class="btn-edit" id="ceditToggle" style="display:none">✏️ Edit</button>
         <button class="btn-edit" id="editToggle" style="display:none">✏️ Edit layout</button>
       </div>
@@ -617,6 +643,11 @@
     <div class="volrow"><button class="vstep" id="volDn" title="quieter">−</button><input type="range" id="vol" min="0" max="300" value="100"><button class="vstep" id="volUp" title="louder">+</button></div>
     <label>Name</label>
     <input type="text" id="editName">
+    <label>Tags</label>
+    <div class="tagpick" id="tagPick">
+      <div class="tagpick-cur" id="tagPickCur"></div>
+      <select id="tagPickAdd"></select>
+    </div>
     <div class="mrow">
       <button class="mbtn danger" id="editDelete">🗑 Delete</button>
       <span class="sp"></span>
@@ -680,6 +711,22 @@ function tagMembers(slug){
   return SOUNDS.filter(s=>(TAGASSIGN[s.file]||[]).some(x=>want.has(x)));
 }
 function clearTagSel(){ TAGSEL = null; TAGKID = null; }
+let TAGEDIT = false;
+// every tag write goes through here: POST, reload, re-render
+async function tagPost(url, body){
+  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'},
+                              body: JSON.stringify(body)});
+  const d = await r.json().catch(()=>({ok:false, error:'bad response'}));
+  if(!d.ok){ alert(d.error || 'failed'); return false; }
+  await loadTags(); render();
+  return true;
+}
+function tagsSortedForPicker(){
+  // children read as "Parent · Child" so a flat <select> stays unambiguous
+  return TAGS.map(t=>({slug:t.slug, count:t.count,
+      text: (t.parent ? ((tagBy(t.parent)||{}).label || t.parent) + ' · ' : '') + t.label}))
+    .sort((a,b)=>natCmp(a.text, b.text));
+}
 
 // ---- full-name tooltips ----
 // Any element carrying data-tip shows its full name on hover. Delegated from the
@@ -882,7 +929,71 @@ async function loadSounds(){
 // ---- tag board ----
 // Cards render into #grid so they inherit its responsive columns; gridClick
 // bails on anything that isn't a .snd, so a direct onclick here is safe.
+// editor rows: one per tag, children indented under their parent
+function renderTagEditor(){
+  const grid = $('#grid');
+  grid.innerHTML = '';
+  const tops = TAGS.filter(t=>!t.parent);
+  $('#shown').textContent = TAGS.length + ' tags · editing';
+  const frag = document.createDocumentFragment();
+
+  const nw = document.createElement('div');
+  nw.className = 'tagnew';
+  nw.innerHTML = `<input id="tagNewLab" placeholder="new tag name…"><button class="mbtn" id="tagNewGo">＋ Add tag</button>`;
+  frag.appendChild(nw);
+
+  const row = (t, isKid) => {
+    const el = document.createElement('div');
+    el.className = 'trow' + (isKid ? ' kid' : '');
+    const parentOpts = ['<option value="">— top level —</option>'].concat(
+      TAGS.filter(p=>!p.parent && p.slug!==t.slug)
+          .map(p=>`<option value="${esc(p.slug)}"${t.parent===p.slug?' selected':''}>${esc(p.label)}</option>`)
+    ).join('');
+    const mergeOpts = ['<option value="">merge into…</option>'].concat(
+      TAGS.filter(p=>p.slug!==t.slug).map(p=>`<option value="${esc(p.slug)}">${esc(p.label)}</option>`)
+    ).join('');
+    el.innerHTML =
+      `<span class="slug">${esc(t.slug)}</span>`+
+      `<input class="tlab" value="${esc(t.label)}">`+
+      `<span class="tn">${t.count} clip${t.count===1?'':'s'}</span>`+
+      `<select class="tpar">${parentOpts}</select>`+
+      `<select class="tmrg">${mergeOpts}</select>`+
+      `<button class="del">✕</button>`;
+    const lab = el.querySelector('.tlab');
+    lab.onblur = () => {
+      const v = lab.value.trim();
+      if(v && v !== t.label) tagPost('/api/tags', {action:'rename', slug:t.slug, label:v});
+    };
+    lab.onkeydown = e => { if(e.key==='Enter') lab.blur(); };
+    el.querySelector('.tpar').onchange = e =>
+      tagPost('/api/tags', {action:'reparent', slug:t.slug, parent:e.target.value || null});
+    el.querySelector('.tmrg').onchange = e => {
+      const into = e.target.value; if(!into) return;
+      const name = (tagBy(into)||{}).label || into;
+      if(confirm(`Merge "${t.label}" into "${name}"? Its ${t.count} clip(s) move over and "${t.label}" goes away.`))
+        tagPost('/api/tags', {action:'merge', slug:t.slug, into});
+      else e.target.value = '';
+    };
+    el.querySelector('.del').onclick = () => {
+      if(confirm(`Delete the tag "${t.label}"? Clips keep their files — they just lose this tag.`))
+        tagPost('/api/tags', {action:'delete', slug:t.slug});
+    };
+    return el;
+  };
+
+  for(const t of tops){
+    frag.appendChild(row(t, false));
+    for(const k of tagKids(t.slug)) frag.appendChild(row(k, true));
+  }
+  grid.appendChild(frag);
+  $('#tagNewGo').onclick = async () => {
+    const v = $('#tagNewLab').value.trim();
+    if(!v) return;
+    if(await tagPost('/api/tags', {action:'create', label:v})) $('#tagNewLab').value = '';
+  };
+}
 function renderTagBoard(){
+  if(TAGEDIT && ME.can_edit){ renderTagEditor(); return; }
   const grid = $('#grid');
   grid.innerHTML = '';
   const tops = TAGS.filter(t=>!t.parent);
@@ -928,6 +1039,7 @@ function paintTagBar(){
   for(const k of kids) box.appendChild(chip(k.label + ' · ' + k.count, k.slug));
 }
 $('#tagBack').onclick = () => { clearTagSel(); render(); };
+$('#tagEditToggle').onclick = () => { TAGEDIT = !TAGEDIT; render(); };
 
 // ---- render board ----
 function render(){
@@ -944,6 +1056,10 @@ function render(){
   $('#addwrap').style.display = TAB==='add' ? 'block' : 'none';
   $('#editToggle').style.display  = (TAB==='fav' && !EDITMODE && !CEDIT) ? 'inline-block' : 'none';
   $('#ceditToggle').style.display = ((TAB==='all'||TAB==='fav') && ME.can_edit && !CEDIT && !EDITMODE) ? 'inline-block' : 'none';
+  const tagEditBtn = $('#tagEditToggle');
+  tagEditBtn.style.display = (tagBoard && ME.can_edit) ? 'inline-block' : 'none';
+  tagEditBtn.classList.toggle('on', TAGEDIT);
+  tagEditBtn.textContent = TAGEDIT ? '✓ Done' : '✏️ Edit tags';
   $('#editbar').classList.toggle('show', editing);
   $('#cbar').classList.toggle('show', cediting);
   grid.classList.toggle('editing', anyEdit);
@@ -1136,6 +1252,7 @@ async function openEdit(s){
   EDITCUR=s; $('#editErr').textContent=''; $('#editTitle').textContent='Edit · '+s.name;
   $('#editName').value=s.name; $('#vol').value=100; $('#volLbl').textContent='100%';
   setTypeSeg(s.long ? 'song' : 'sound');   // reflect the clip's current effective type
+  EDITTAGS = (TAGASSIGN[s.file] || []).slice(); paintTagPick();
   $('#editDelete').style.display = ME.admin ? '' : 'none';   // removing clips is admin-only
   $('#editModal').classList.add('show');
   EDITBUF=null; EDITDUR=0; regStart=0; regEnd=0; WAVEBMP=null; playPos=null;
@@ -1255,6 +1372,38 @@ $('#prevPlay').onclick=()=>{
   };
   tick();
 };
+// ---- per-clip tag picker (edit modal) ----
+// EDITTAGS is staged locally and written on save, so cancelling changes nothing.
+let EDITTAGS = [];
+function paintTagPick(){
+  const cur = $('#tagPickCur'), add = $('#tagPickAdd');
+  cur.innerHTML = '';
+  for(const slug of EDITTAGS){
+    const t = tagBy(slug);
+    const el = document.createElement('span');
+    el.innerHTML = esc(t ? t.label : slug) + ' <b>✕</b>';
+    el.querySelector('b').onclick = () => {
+      EDITTAGS = EDITTAGS.filter(s=>s!==slug); paintTagPick();
+    };
+    cur.appendChild(el);
+  }
+  const opts = tagsSortedForPicker().filter(o=>!EDITTAGS.includes(o.slug));
+  add.innerHTML = '<option value="">+ add a tag…</option>' +
+    opts.map(o=>`<option value="${esc(o.slug)}">${esc(o.text)}</option>`).join('');
+  add.disabled = !opts.length;
+}
+$('#tagPickAdd').onchange = e => {
+  const v = e.target.value;
+  if(v && !EDITTAGS.includes(v)) EDITTAGS.push(v);
+  paintTagPick();
+};
+async function saveEditTags(file){
+  const before = (TAGASSIGN[file] || []).slice().sort().join('|');
+  if(EDITTAGS.slice().sort().join('|') === before) return;   // nothing changed
+  await fetch('/api/tags/assign', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({file, tags: EDITTAGS})});
+  await loadTags();
+}
 function closeEdit(){ stopPreview(); $('#editModal').classList.remove('show'); }
 $('#editCancel').onclick=closeEdit;
 $('#editSave').onclick=async()=>{
@@ -1272,6 +1421,9 @@ $('#editSave').onclick=async()=>{
   }
   await fetch('/api/sound_type', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({file: EDITCUR.file, type: EDIT_TYPE})});
+  // tags key off the filename, so apply them to whatever the file is called now
+  await saveEditTags(newName && newName!==EDITCUR.name
+    ? newName + '.' + EDITCUR.fmt : EDITCUR.file);
   closeEdit(); await loadSounds();
 };
 $('#editSaveNew').onclick=async()=>{        // save the trim as a NEW clip; original untouched
@@ -1285,7 +1437,8 @@ $('#editSaveNew').onclick=async()=>{        // save the trim as a NEW clip; orig
   const d=await r.json();
   if(!d.ok){ $('#editErr').textContent=d.error||'save failed'; return; }
   if(d.file){ await fetch('/api/sound_type',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({file:d.file, type:EDIT_TYPE})}); }
+    body:JSON.stringify({file:d.file, type:EDIT_TYPE})});
+    await saveEditTags(d.file); }        // the copy inherits the tags shown in the picker
   closeEdit(); await loadSounds();
 };
 $('#editDelete').onclick=async()=>{
