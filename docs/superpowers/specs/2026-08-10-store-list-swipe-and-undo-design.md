@@ -64,14 +64,18 @@ while the finger is down so tracking stays 1:1.
 
 ### Tap
 
-Tapping the row body no longer changes state. Two deliberate paths remain:
+**No tap anywhere on the row changes state, and the checkbox is gone.** A 26px
+target sitting beside a name you are reading in a moving cart is the same
+problem in miniature, and it carried no information a row's position and
+strikethrough don't already carry: everything outside a fold is unchecked by
+definition.
 
-- The 26px `.bx` checkbox stays tappable and toggles the line. It is small and
-  at the row's leading edge, which is not where a scrolling thumb lands. This is
-  also the mouse and keyboard-accessible path.
-- A tap anywhere else on the row nudges it ~8px in its actionable direction and
-  springs back, revealing a sliver of the green panel. It commits nothing; it
-  teaches the gesture in place of a dead tap.
+A tap nudges the row ~8px in its actionable direction and springs back,
+revealing a sliver of the action panel. It commits nothing; it teaches the
+gesture in place of a dead tap. The swipe is the only way to check a line off.
+
+The `.bx` class stays in the stylesheet — the add-sheet skip list and the pantry
+staple toggle still use it. Only store-list rows drop it.
 
 ### Undo bar
 
@@ -122,5 +126,5 @@ manual, driving the real page in Chrome at phone width:
    that one.
 7. A `poll()` cycle (4s) elapses with the bar up — bar survives and still
    undoes correctly.
-8. Tap the row name — nudge only, nothing committed.
-9. Tap the checkbox — commits, same as a swipe, with the undo bar.
+8. Tap anywhere on a row — nudge only, nothing committed, no checkbox present.
+9. The pantry staple toggle and the add-sheet skip list still show their boxes.

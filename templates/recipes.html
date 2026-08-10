@@ -910,9 +910,8 @@ function swipeWrap(row, dir, label, commit){
       return;
     }
     if (dead) { dead = false; return; }
-    // a tap: the checkbox is the deliberate small target, everything else just
-    // gets a nudge that shows which way the row wants to go
-    if (e.target.closest && e.target.closest('.bx')) { commit(); return; }
+    // a tap: never commits. There is no small target to hit either — a nudge
+    // that shows which way the row wants to go is all a tap can do.
     row.style.transition = '';
     dx = dir * 8; draw();
     setTimeout(rest, 150);
@@ -923,9 +922,11 @@ function swipeWrap(row, dir, label, commit){
   return wrap;
 }
 
+// No checkbox: a 26px target next to a name you are reading in a moving cart is
+// the fat-finger problem in miniature, and it said nothing a row's position and
+// strikethrough don't already say. The swipe is the only way to check a line off.
 function lineRow(l){
   const row = el('div','row');
-  row.appendChild(el('div', 'bx' + (l.checked ? ' on' : ''), l.checked ? '✓' : ''));
 
   const sub = [l.sources.join(' · '),
                l.buy_unit ? '→ ' + l.buy_unit : '',
