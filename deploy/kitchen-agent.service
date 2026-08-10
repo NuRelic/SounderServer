@@ -7,6 +7,12 @@ Wants=network-online.target
 User=pi
 Environment=SS_AUDIODEV=hw:CARD=Device,DEV=0
 Environment=SS_PASSWORD=CHANGE_ME_play_password
+# Bypass Cloudflare, which intermittently tar-pits this agent's constant polling.
+# The agent connects to this IP but still does SNI + cert validation for the real
+# hostname, so it's a DNS override, not a security downgrade — and unlike the old
+# /etc/hosts pin it survives reboots (cloud-init rewrites /etc/hosts every boot).
+# Wrong/stale IP is safe: the agent auto-falls back to normal DNS.
+Environment=SS_ORIGIN_IP=149.28.114.237
 ExecStart=/usr/bin/python3 -u /home/pi/kitchen_agent.py
 Restart=always
 RestartSec=3
