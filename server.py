@@ -117,10 +117,20 @@ def _load(path, default):
         return default
 
 def _save(path, obj):
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(obj, f)
-    os.replace(tmp, path)
+    # Per-writer tmp name. With a shared "<path>.tmp", two threads saving the same
+    # file raced: the first one's os.replace() moved the tmp away, and the second
+    # blew up with FileNotFoundError (hit in production on /api/box_volume, which
+    # waitress can serve on two threads at once). os.replace is atomic, so unique
+    # tmps make concurrent saves safe — last writer wins, as before.
+    tmp = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())
+    try:
+        with open(tmp, "w") as f:
+            json.dump(obj, f)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            try: os.remove(tmp)
+            except OSError: pass
 
 # ----------------------------------------------------------------------------
 # Library index
