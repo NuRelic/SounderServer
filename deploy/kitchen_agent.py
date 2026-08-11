@@ -15,17 +15,36 @@ The kitchen plays INSTANTLY (it's the live output); synced browsers lag by the
 sync buffer, so the room leads. Reversible: this just replaces soundboard.service
 as the thing that owns the audio device.
 
-Env: SS_SERVER, SS_PASSWORD, SS_AUDIODEV (default hw:3,0), SS_DRIVER (default alsa),
-     SS_ORIGIN_IP (pin the server's IP, bypassing Cloudflare — see _PinnedHTTPSConnection).
-Set SS_DRIVER=dummy to test login/polling with no real audio output.
+Runs on any cheap Linux box with an audio out — see deploy/setup_node.sh, which
+provisions a fresh Raspberry Pi OS Lite install into a working node.
+
+Env:
+  SS_NAME         room name shown in the server's online list (default "kitchen").
+                  A SECOND node must set this or it collides with the kitchen.
+  SS_SERVER       base URL (default https://sounderserver.party)
+  SS_ORIGIN_IP    pin the server's IP, bypassing Cloudflare — see _PinnedHTTPSConnection
+  SS_AUDIODEV     ALSA device (default hw:3,0). Prefer hw:CARD=<name> — card
+                  NUMBERS move between reboots and a wrong one crash-loops the agent.
+  SS_DRIVER       SDL audio driver (default alsa). Set "dummy" to test with no audio.
+  SS_CACHE_DIR    audio cache location (default ~/kitchen_cache)
+  SS_CACHE_CAP_MB cache size cap in MB (default 2048)
+  SS_DL_DEADLINE  total seconds allowed for one download (default 180)
+  SS_BLIND_WARN   log a warning when polling stalls this long (default 2.0s)
+  SS_SONG_GAIN / SS_SONG_DUCK / SS_SOUND_GAIN   per-node mix levels, 0..1
+  SS_PASSWORD     optional; NOT needed to listen. Leave unset on a box you don't own.
 """
 import os, time, json, hashlib, shutil, socket, threading, queue, http.client, ssl
 import urllib.request, urllib.parse, urllib.error, http.cookiejar
 
 SERVER   = os.environ.get("SS_SERVER", "https://sounderserver.party")
 PASSWORD = os.environ.get("SS_PASSWORD", "")   # set via env / the systemd unit
-CACHE    = os.path.expanduser("~/kitchen_cache")
-CACHE_CAP = 2 * 1024**3          # keep the SD-card cache under ~2 GB
+# Which room this box is. Shows up in the server's "who's online" list, so a
+# second node in another house MUST set this or it collides with the kitchen.
+NODE     = (os.environ.get("SS_NAME", "kitchen").strip() or "kitchen")[:40]
+CACHE    = os.path.expanduser(os.environ.get("SS_CACHE_DIR", "~/kitchen_cache"))
+# Cache cap. Every eviction means a later re-download, and on a small/slow card
+# you want this well under the free space. Tunable for cheaper nodes.
+CACHE_CAP = int(os.environ.get("SS_CACHE_CAP_MB", "2048")) * 1024**2
 POLL     = 0.35
 # Cloudflare intermittently tar-pits this agent's ~3 req/s of constant polling
 # (fast TTFB, total time randomly ballooning to seconds) which turns into blind
@@ -166,7 +185,7 @@ class _PollConn:
 _poll_conn = _PollConn()
 
 def get_active():
-    return _poll_conn.get_json("/api/active?u=kitchen")
+    return _poll_conn.get_json("/api/active?u=" + urllib.parse.quote(NODE))
 
 # ---------------------------------------------------------------------------
 # Cache + background downloads
@@ -346,8 +365,10 @@ def try_login():
 
 def run():
     global _pin_fails, _pin_until
-    print("connecting to", SERVER,
-          ("(origin-pinned %s)" % ORIGIN_IP) if ORIGIN_IP else "(via DNS)", "...")
+    print("node %r -> %s %s | audio %s | cache %s cap %dMB"
+          % (NODE, SERVER, ("(origin-pinned %s)" % ORIGIN_IP) if ORIGIN_IP else "(via DNS)",
+             os.environ.get("AUDIODEV", os.environ["SDL_AUDIODRIVER"]),
+             CACHE, CACHE_CAP // 1024**2))
     threading.Thread(target=_download_worker, daemon=True, name="dl").start()
     try_login()
     print("kitchen agent running. Ctrl-C to stop.")
