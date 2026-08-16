@@ -157,3 +157,77 @@ def test_clue_writes_need_an_editing_session(reader_client):
     assert reader_client.post("/lamulana/api/clues", json={"title": "a"}).status_code == 403
     assert reader_client.patch("/lamulana/api/clues/1", json={}).status_code == 403
     assert reader_client.delete("/lamulana/api/clues/1").status_code == 403
+
+
+# --- Bad input must 400, never reach SQLite as a 500 ------------------------
+
+def test_create_rejects_a_nonexistent_area_id(editor_client):
+    r = editor_client.post("/lamulana/api/clues", json={"title": "a", "area_id": 999999})
+    assert r.status_code == 400
+
+
+def test_patch_rejects_a_nonexistent_area_id(editor_client):
+    cid = editor_client.post("/lamulana/api/clues", json={"title": "a"}
+                              ).get_json()["clue"]["id"]
+    r = editor_client.patch(f"/lamulana/api/clues/{cid}", json={"area_id": 999999})
+    assert r.status_code == 400
+
+
+def test_patch_empty_string_area_id_clears_the_area(editor_client):
+    """An empty <select> posts "", which means "no area", not a bad id."""
+    area = _area_id(editor_client, "Annwfn")
+    cid = editor_client.post("/lamulana/api/clues", json={"title": "a", "area_id": area}
+                              ).get_json()["clue"]["id"]
+    r = editor_client.patch(f"/lamulana/api/clues/{cid}", json={"area_id": ""})
+    assert r.status_code == 200
+    clue = r.get_json()["clue"]
+    assert clue["area_id"] is None
+    assert clue["area"] is None
+
+
+def test_a_valid_area_id_still_works(editor_client):
+    area = _area_id(editor_client, "Valhalla")
+    cid = editor_client.post("/lamulana/api/clues", json={"title": "a"}
+                              ).get_json()["clue"]["id"]
+    r = editor_client.patch(f"/lamulana/api/clues/{cid}", json={"area_id": area})
+    assert r.status_code == 200
+    clue = r.get_json()["clue"]
+    assert clue["area_id"] == area
+    assert clue["area"] == "Valhalla"
+
+
+def test_patch_rejects_a_null_body(editor_client):
+    cid = editor_client.post("/lamulana/api/clues", json={"title": "a"}
+                              ).get_json()["clue"]["id"]
+    r = editor_client.patch(f"/lamulana/api/clues/{cid}", json={"body": None})
+    assert r.status_code == 400
+
+
+def test_create_rejects_a_non_string_title(editor_client):
+    r = editor_client.post("/lamulana/api/clues", json={"title": 123})
+    assert r.status_code == 400
+
+
+def test_patch_rejects_a_non_string_title(editor_client):
+    cid = editor_client.post("/lamulana/api/clues", json={"title": "a"}
+                              ).get_json()["clue"]["id"]
+    r = editor_client.patch(f"/lamulana/api/clues/{cid}", json={"title": 123})
+    assert r.status_code == 400
+
+
+# --- Search treats % and _ as literal characters, not LIKE wildcards --------
+
+def test_search_percent_is_literal_not_a_wildcard(editor_client):
+    editor_client.post("/lamulana/api/clues", json={"title": "no punctuation here"})
+    editor_client.post("/lamulana/api/clues", json={"title": "100% done"})
+    got = editor_client.get("/lamulana/api/clues",
+                             query_string={"q": "100%"}).get_json()["clues"]
+    assert [c["title"] for c in got] == ["100% done"]
+
+
+def test_search_underscore_is_literal_not_a_wildcard(editor_client):
+    editor_client.post("/lamulana/api/clues", json={"title": "no punctuation here"})
+    editor_client.post("/lamulana/api/clues", json={"title": "a_b marker"})
+    got = editor_client.get("/lamulana/api/clues",
+                             query_string={"q": "_"}).get_json()["clues"]
+    assert [c["title"] for c in got] == ["a_b marker"]

@@ -1204,7 +1204,83 @@ def test_clue_writes_need_an_editing_session(reader_client):
     assert reader_client.post("/lamulana/api/clues", json={"title": "a"}).status_code == 403
     assert reader_client.patch("/lamulana/api/clues/1", json={}).status_code == 403
     assert reader_client.delete("/lamulana/api/clues/1").status_code == 403
+
+
+# --- Bad input must 400, never reach SQLite as a 500 ------------------------
+
+def test_create_rejects_a_nonexistent_area_id(editor_client):
+    r = editor_client.post("/lamulana/api/clues", json={"title": "a", "area_id": 999999})
+    assert r.status_code == 400
+
+
+def test_patch_rejects_a_nonexistent_area_id(editor_client):
+    cid = editor_client.post("/lamulana/api/clues", json={"title": "a"}
+                              ).get_json()["clue"]["id"]
+    r = editor_client.patch(f"/lamulana/api/clues/{cid}", json={"area_id": 999999})
+    assert r.status_code == 400
+
+
+def test_patch_empty_string_area_id_clears_the_area(editor_client):
+    """An empty <select> posts "", which means "no area", not a bad id."""
+    area = _area_id(editor_client, "Annwfn")
+    cid = editor_client.post("/lamulana/api/clues", json={"title": "a", "area_id": area}
+                              ).get_json()["clue"]["id"]
+    r = editor_client.patch(f"/lamulana/api/clues/{cid}", json={"area_id": ""})
+    assert r.status_code == 200
+    clue = r.get_json()["clue"]
+    assert clue["area_id"] is None
+    assert clue["area"] is None
+
+
+def test_a_valid_area_id_still_works(editor_client):
+    area = _area_id(editor_client, "Valhalla")
+    cid = editor_client.post("/lamulana/api/clues", json={"title": "a"}
+                              ).get_json()["clue"]["id"]
+    r = editor_client.patch(f"/lamulana/api/clues/{cid}", json={"area_id": area})
+    assert r.status_code == 200
+    clue = r.get_json()["clue"]
+    assert clue["area_id"] == area
+    assert clue["area"] == "Valhalla"
+
+
+def test_patch_rejects_a_null_body(editor_client):
+    cid = editor_client.post("/lamulana/api/clues", json={"title": "a"}
+                              ).get_json()["clue"]["id"]
+    r = editor_client.patch(f"/lamulana/api/clues/{cid}", json={"body": None})
+    assert r.status_code == 400
+
+
+def test_create_rejects_a_non_string_title(editor_client):
+    r = editor_client.post("/lamulana/api/clues", json={"title": 123})
+    assert r.status_code == 400
+
+
+def test_patch_rejects_a_non_string_title(editor_client):
+    cid = editor_client.post("/lamulana/api/clues", json={"title": "a"}
+                              ).get_json()["clue"]["id"]
+    r = editor_client.patch(f"/lamulana/api/clues/{cid}", json={"title": 123})
+    assert r.status_code == 400
+
+
+# --- Search treats % and _ as literal characters, not LIKE wildcards --------
+
+def test_search_percent_is_literal_not_a_wildcard(editor_client):
+    editor_client.post("/lamulana/api/clues", json={"title": "no punctuation here"})
+    editor_client.post("/lamulana/api/clues", json={"title": "100% done"})
+    got = editor_client.get("/lamulana/api/clues",
+                             query_string={"q": "100%"}).get_json()["clues"]
+    assert [c["title"] for c in got] == ["100% done"]
+
+
+def test_search_underscore_is_literal_not_a_wildcard(editor_client):
+    editor_client.post("/lamulana/api/clues", json={"title": "no punctuation here"})
+    editor_client.post("/lamulana/api/clues", json={"title": "a_b marker"})
+    got = editor_client.get("/lamulana/api/clues",
+                             query_string={"q": "_"}).get_json()["clues"]
+    assert [c["title"] for c in got] == ["a_b marker"]
 ```
+
+Note (post-implementation spec review): the first pass of this task committed clean on the tests above, but calling the routes directly with malformed input found five 500s the tests didn't cover -- a non-string `title`, a null `body`, and a dangling or empty-string `area_id` all reached SQLite instead of being rejected at the route -- plus `%`/`_` in a search query acting as LIKE wildcards instead of literal characters. The nine tests above and the `_clue_field_error`/`_like_escape` helpers in Step 3 are the fix, folded into this task rather than tracked as a separate one since nothing here is reachable without the routes Step 3 adds.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1227,6 +1303,14 @@ CLUE_SELECT = """
 """
 
 
+def _like_escape(word):
+    """Treat %, _ and \\ as literal characters in a search box, not wildcards.
+
+    Someone typing "100%" means the string, not "100 followed by anything".
+    """
+    return word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _search_terms(q, columns):
     """(sql_clause, params) ANDing every word in `q` across `columns`.
 
@@ -1238,8 +1322,8 @@ def _search_terms(q, columns):
     if not words:
         return "", []
     blob = " || ' ' || ".join(f"COALESCE({c}, '')" for c in columns)
-    clause = " AND ".join([f"{blob} LIKE ?"] * len(words))
-    return clause, [f"%{w}%" for w in words]
+    clause = " AND ".join([f"{blob} LIKE ? ESCAPE '\\'"] * len(words))
+    return clause, [f"%{_like_escape(w)}%" for w in words]
 
 
 def _threads_for_clues(ids):
@@ -1273,6 +1357,33 @@ def _one_clue(clue_id):
     return _clue_json([row])[0] if row else None
 
 
+def _clue_field_error(b):
+    """(jsonify, 400) if `b` has a bad title/body/room/interpretation/area_id, else None.
+
+    Runs before create/patch touch the database, so a wrong JSON type comes
+    back as a 400 here instead of surfacing later as `.strip()` raising on a
+    non-string title, or SQLite raising a NOT NULL/FOREIGN KEY
+    IntegrityError for a null body or a dangling area_id -- both would
+    otherwise reach the caller as an unhandled 500. Shared by
+    api_clue_create and api_clue_patch. Mutates `b["area_id"]` from "" to
+    None in place -- an empty <select> means "no area", not an error -- so
+    callers can use b.get("area_id") directly afterward.
+    """
+    for field in ("title", "body"):
+        if field in b and not isinstance(b[field], str):
+            return jsonify({"error": f"{field} must be a string"}), 400
+    for field in ("room", "interpretation"):
+        if field in b and b[field] is not None and not isinstance(b[field], str):
+            return jsonify({"error": f"{field} must be a string or null"}), 400
+    if "area_id" in b:
+        if b["area_id"] == "":
+            b["area_id"] = None
+        if b["area_id"] is not None and not _conn().execute(
+                "SELECT 1 FROM area WHERE id = ?", (b["area_id"],)).fetchone():
+            return jsonify({"error": "no such area"}), 400
+    return None
+
+
 @bp.route("/api/clues")
 def api_clues():
     where, params = [], []
@@ -1298,6 +1409,8 @@ def api_clue_create():
     if (err := need_edit()):
         return err
     b = _body()
+    if (err := _clue_field_error(b)):
+        return err
     title = (b.get("title") or "").strip()
     if not title:
         return jsonify({"error": "title required"}), 400
@@ -1326,6 +1439,8 @@ def api_clue_patch(clue_id):
     if (err := need_edit()):
         return err
     b = _body()
+    if (err := _clue_field_error(b)):
+        return err
     if "state" in b and b["state"] not in CLUE_STATES:
         return jsonify({"error": "bad state"}), 400
     if "source" in b and b["source"] not in CLUE_SOURCES:
@@ -1349,6 +1464,9 @@ def api_clue_patch(clue_id):
 def api_clue_delete(clue_id):
     if (err := need_edit()):
         return err
+    # Deliberately 200s even if clue_id never existed, unlike PATCH's 404:
+    # delete is idempotent and the frontend only cares that the row is gone
+    # afterward, not whether this call was the one that removed it.
     with _db.LOCK:
         _conn().execute("DELETE FROM clue WHERE id = ?", (clue_id,))
         _conn().commit()
@@ -1368,7 +1486,10 @@ def api_rooms():
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `.venv/bin/python -m pytest tests/test_lamulana_api.py -v`
-Expected: PASS, 10 passed
+Expected: PASS, 20 passed (4 pre-existing bootstrap/page tests + 16 clue tests
+added by this task; the earlier "10 passed" in this doc undercounted the
+pre-existing tests -- the real number before the post-implementation fixes
+above was 11)
 
 - [ ] **Step 5: Commit**
 

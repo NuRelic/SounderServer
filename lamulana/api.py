@@ -118,6 +118,14 @@ CLUE_SELECT = """
 """
 
 
+def _like_escape(word):
+    """Treat %, _ and \\ as literal characters in a search box, not wildcards.
+
+    Someone typing "100%" means the string, not "100 followed by anything".
+    """
+    return word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _search_terms(q, columns):
     """(sql_clause, params) ANDing every word in `q` across `columns`.
 
@@ -129,8 +137,8 @@ def _search_terms(q, columns):
     if not words:
         return "", []
     blob = " || ' ' || ".join(f"COALESCE({c}, '')" for c in columns)
-    clause = " AND ".join([f"{blob} LIKE ?"] * len(words))
-    return clause, [f"%{w}%" for w in words]
+    clause = " AND ".join([f"{blob} LIKE ? ESCAPE '\\'"] * len(words))
+    return clause, [f"%{_like_escape(w)}%" for w in words]
 
 
 def _threads_for_clues(ids):
@@ -164,6 +172,33 @@ def _one_clue(clue_id):
     return _clue_json([row])[0] if row else None
 
 
+def _clue_field_error(b):
+    """(jsonify, 400) if `b` has a bad title/body/room/interpretation/area_id, else None.
+
+    Runs before create/patch touch the database, so a wrong JSON type comes
+    back as a 400 here instead of surfacing later as `.strip()` raising on a
+    non-string title, or SQLite raising a NOT NULL/FOREIGN KEY
+    IntegrityError for a null body or a dangling area_id -- both would
+    otherwise reach the caller as an unhandled 500. Shared by
+    api_clue_create and api_clue_patch. Mutates `b["area_id"]` from "" to
+    None in place -- an empty <select> means "no area", not an error -- so
+    callers can use b.get("area_id") directly afterward.
+    """
+    for field in ("title", "body"):
+        if field in b and not isinstance(b[field], str):
+            return jsonify({"error": f"{field} must be a string"}), 400
+    for field in ("room", "interpretation"):
+        if field in b and b[field] is not None and not isinstance(b[field], str):
+            return jsonify({"error": f"{field} must be a string or null"}), 400
+    if "area_id" in b:
+        if b["area_id"] == "":
+            b["area_id"] = None
+        if b["area_id"] is not None and not _conn().execute(
+                "SELECT 1 FROM area WHERE id = ?", (b["area_id"],)).fetchone():
+            return jsonify({"error": "no such area"}), 400
+    return None
+
+
 @bp.route("/api/clues")
 def api_clues():
     where, params = [], []
@@ -189,6 +224,8 @@ def api_clue_create():
     if (err := need_edit()):
         return err
     b = _body()
+    if (err := _clue_field_error(b)):
+        return err
     title = (b.get("title") or "").strip()
     if not title:
         return jsonify({"error": "title required"}), 400
@@ -217,6 +254,8 @@ def api_clue_patch(clue_id):
     if (err := need_edit()):
         return err
     b = _body()
+    if (err := _clue_field_error(b)):
+        return err
     if "state" in b and b["state"] not in CLUE_STATES:
         return jsonify({"error": "bad state"}), 400
     if "source" in b and b["source"] not in CLUE_SOURCES:
@@ -240,6 +279,9 @@ def api_clue_patch(clue_id):
 def api_clue_delete(clue_id):
     if (err := need_edit()):
         return err
+    # Deliberately 200s even if clue_id never existed, unlike PATCH's 404:
+    # delete is idempotent and the frontend only cares that the row is gone
+    # afterward, not whether this call was the one that removed it.
     with _db.LOCK:
         _conn().execute("DELETE FROM clue WHERE id = ?", (clue_id,))
         _conn().commit()
