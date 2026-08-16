@@ -207,8 +207,7 @@ the most-travelled path in the app — two keystrokes and a paste.
 | `n` | new clue (quick capture) |
 | `N` | new thread |
 | `/` | focus search |
-| `j` / `k` | move selection in the list |
-| `Enter` | open selected in the detail pane |
+| `j` / `k` | move selection in the list (opens it in the detail pane immediately) |
 | `l` | link selected clue to a thread (picker) |
 | `1` `2` `3` | switch tab |
 | `Esc` | close modal or clear search |

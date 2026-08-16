@@ -68,10 +68,12 @@
   .pill.used{background:var(--used);color:var(--dim)}
   .pill.open{background:var(--understood);color:#12100c}
   .pill.solved{background:var(--used);color:var(--dim)}
+  .kindtag{display:inline-block;font-size:10px;letter-spacing:.07em;text-transform:uppercase;
+    color:var(--dim);margin-right:6px;vertical-align:1px}
 
   .detail{flex:1;overflow-y:auto;padding:20px 26px 60px;min-width:0}
+  .titlefld{font-size:20px;font-weight:600;margin:0 0 4px;padding:6px 9px}
   .detail .empty{color:var(--dim);margin-top:40px}
-  .detail h2{font-size:20px;margin:0 0 4px;font-weight:600}
   .detail .where{color:var(--dim);font-size:13px;margin-bottom:16px}
   .detail .quote{background:var(--panel);border-left:2px solid var(--accent);
     padding:11px 14px;margin:0 0 16px;white-space:pre-wrap;font-size:15px;
@@ -96,12 +98,16 @@
   .modal .box{background:var(--panel);border:1px solid var(--line);border-radius:12px;
     width:min(560px,92vw);padding:18px 20px 20px;max-height:80vh;overflow-y:auto}
   .modal h3{margin:0 0 14px;font-size:16px;font-weight:600}
-  .modal .two{display:flex;gap:10px}
-  .modal .two > *{flex:1;min-width:0}
+  .two{display:flex;gap:10px}
+  .two > *{flex:1;min-width:0}
 
   .keys{position:fixed;bottom:0;left:0;right:0;padding:5px 16px;font-size:11px;
     color:var(--dim);background:var(--panel);border-top:1px solid var(--line)}
   .keys b{color:var(--txt);font-weight:500}
+
+  .toast{position:fixed;left:16px;bottom:16px;z-index:30;max-width:420px;
+    background:#3a2822;border:1px solid #7a5230;color:var(--txt);
+    padding:10px 14px;border-radius:10px;font-size:13px;box-shadow:0 4px 18px rgba(0,0,0,.4)}
 </style>
 </head>
 <body>
@@ -138,9 +144,10 @@ const S = {
   areas: [], areaById: {},
   clues: [], threads: [], checklist: [],
   counts: {},
-  filterArea: null, filterState: null,
-  selected: null,          // id within the active tab
-  detail: null,            // the loaded thread detail, when on the threads tab
+  filterArea: null, filterState: null, filterSource: null,
+  selected: null,          // id within the active tab (or within the search results)
+  selectedKind: null,      // 'clue' | 'thread' — which list `selected` refers to
+  detail: null,            // the loaded thread detail, when a thread is selected
   query: '',
   canEdit: false,
 };
@@ -153,15 +160,46 @@ const el = (tag, cls, txt) => {
   return n;
 };
 
+// Any non-403 error response still carries a body — {"error": "..."} — so a
+// 400/404/409/500 gets surfaced as a toast and a clean `null` return, rather
+// than callers destructuring a rejected response and throwing mid-render (a
+// dropped WHERE, a duplicate checklist row, a stale id all used to freeze the
+// page this way instead of just failing loudly).
 async function api(path, opts) {
-  const r = await fetch('/lamulana/api/' + path, {
-    headers: {'Content-Type': 'application/json'},
-    ...opts,
-  });
+  let r, data;
+  try {
+    r = await fetch('/lamulana/api/' + path, {
+      headers: {'Content-Type': 'application/json'},
+      ...opts,
+    });
+    data = await r.json();
+  } catch (e) {
+    toast('No connection — that did not go through.');
+    return null;
+  }
   if (r.status === 403) { alertOnce(); return null; }
-  return r.json();
+  if (!r.ok) {
+    toast((data && data.error) || ('That did not work (' + r.status + ').'));
+    return null;
+  }
+  return data;
 }
 
+let toastTimer = null;
+function toast(msg) {
+  const old = document.querySelector('.toast');
+  if (old) old.remove();
+  const t = el('div', 'toast', msg);
+  document.body.appendChild(t);
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.remove(), 4500);
+}
+
+// For the rare case a session goes read-only *after* load (it expired while
+// the page was open): the buttons this session was handed at boot are still
+// in the DOM, so a click still needs to say something. Boot-time read-only
+// is handled directly in boot() below instead — there is no button to
+// silently fail, because none is ever rendered.
 let warned = false;
 function alertOnce() {
   if (warned) return;
@@ -171,16 +209,27 @@ function alertOnce() {
 
 async function boot() {
   const data = await api('bootstrap');
+  if (!data) return;  // api() already told the user why
   S.areas = data.areas;
   S.areaById = Object.fromEntries(data.areas.map(a => [a.id, a.name]));
   S.checklist = data.checklist;
   S.counts = data.counts;
   const me = await (await fetch('/api/me')).json();
   S.canEdit = !!me.can_edit;
-  if (!S.canEdit) alertOnce();
+  if (!S.canEdit) {
+    // Set directly, not via alertOnce(): alertOnce's job is to react to a
+    // 403 that arrives *after* load, and burning its one-shot `warned` flag
+    // here would make every later 403 (Save, Delete, a checklist toggle...)
+    // hit the early return and do nothing. Read-only is already known at
+    // this point, and the write controls below are never rendered for it,
+    // so nothing will call alertOnce() until a session that started
+    // editable stops being one.
+    $('.who').textContent = 'read-only — log in on the soundboard to edit';
+    $('.keys').style.display = 'none';
+  }
   const rooms = await api('rooms');
   $('#roomlist').innerHTML = '';
-  rooms.rooms.forEach(r => {
+  (rooms ? rooms.rooms : []).forEach(r => {
     const o = document.createElement('option'); o.value = r;
     $('#roomlist').appendChild(o);
   });
@@ -188,22 +237,37 @@ async function boot() {
 }
 
 async function refresh() {
-  if (S.tab === 'clues') {
+  // A live search overrides tab-scoped filtering entirely: /api/search has
+  // no area/state/source params, and it returns both kinds regardless of
+  // which tab is active, so a hit shows up no matter where you searched from.
+  if (S.query) {
+    const data = await api('search?q=' + encodeURIComponent(S.query));
+    if (data) { S.clues = data.clues; S.threads = data.threads; }
+  } else if (S.tab === 'clues') {
     const p = new URLSearchParams();
     if (S.filterArea) p.set('area', S.filterArea);
     if (S.filterState) p.set('state', S.filterState);
-    if (S.query) p.set('q', S.query);
-    S.clues = (await api('clues?' + p)).clues;
+    if (S.filterSource) p.set('source', S.filterSource);
+    const data = await api('clues?' + p);
+    if (data) S.clues = data.clues;
   } else if (S.tab === 'threads') {
     const p = new URLSearchParams();
     if (S.filterArea) p.set('area', S.filterArea);
     if (S.filterState) p.set('state', S.filterState);
-    if (S.query) p.set('q', S.query);
-    S.threads = (await api('threads?' + p)).threads;
+    const data = await api('threads?' + p);
+    if (data) S.threads = data.threads;
   } else {
-    S.checklist = (await api('checklist')).groups;
+    const data = await api('checklist');
+    if (data) S.checklist = data.groups;
   }
-  S.counts = (await api('bootstrap')).counts;
+  // Deliberately still a second request every refresh, now that the rail
+  // actually renders these counts (it didn't, before this pass) and they
+  // have to reflect whatever write just happened — a state change, a new
+  // clue, a solved thread. bootstrap is a handful of small GROUP BY queries
+  // against a few hundred rows at most, so the redundant areas/checklist
+  // payload that rides along is not worth a second endpoint to avoid.
+  const boot = await api('bootstrap');
+  if (boot) S.counts = boot.counts;
   render();
 }
 
@@ -218,30 +282,56 @@ function render() {
   renderDetail();
 }
 
+// The rail filters the *active tab's* list, which a live search overrides
+// (see refresh()) — filtering on top of a search result the rail's own
+// area/state buttons don't apply to would be misleading, so it hides
+// whenever a query is set, the same way it already hides on Progress.
 function renderRail() {
   const rail = $('.rail');
   rail.innerHTML = '';
-  if (S.tab === 'progress') return;
+  const hide = S.tab === 'progress' || !!S.query;
+  rail.style.display = hide ? 'none' : '';
+  if (hide) return;
+
+  const stateCounts = S.tab === 'clues' ? S.counts.clue_state : S.counts.thread_state;
+  const areaCounts = S.tab === 'clues' ? S.counts.clue_area : S.counts.thread_area;
+  const total = Object.values(stateCounts || {}).reduce((a, b) => a + b, 0);
 
   const states = S.tab === 'clues'
     ? [['raw', 'Raw'], ['understood', 'Understood'], ['used', 'Used']]
     : [['open', 'Open'], ['solved', 'Solved']];
 
   rail.appendChild(el('h3', null, 'State'));
-  rail.appendChild(railButton('All', null, S.filterState === null,
+  rail.appendChild(railButton('All', total, S.filterState === null,
     () => { S.filterState = null; S.selected = null; refresh(); }));
   states.forEach(([key, label]) => {
-    rail.appendChild(railButton(label, null, S.filterState === key,
+    rail.appendChild(railButton(label, (stateCounts && stateCounts[key]) || 0,
+      S.filterState === key,
       () => { S.filterState = key; S.selected = null; refresh(); }));
   });
 
   rail.appendChild(el('h3', null, 'Area'));
-  rail.appendChild(railButton('Everywhere', null, S.filterArea === null,
+  rail.appendChild(railButton('Everywhere', total, S.filterArea === null,
     () => { S.filterArea = null; S.selected = null; refresh(); }));
   S.areas.forEach(a => {
-    rail.appendChild(railButton(a.name, null, S.filterArea === a.id,
+    rail.appendChild(railButton(a.name, (areaCounts && areaCounts[a.id]) || 0,
+      S.filterArea === a.id,
       () => { S.filterArea = a.id; S.selected = null; refresh(); }));
   });
+
+  // Source is a clue-only concept (see CLUE_SOURCES in lamulana/api.py) —
+  // there is nothing to filter on the Threads tab. api_clues has always
+  // accepted ?source=; nothing in the page offered it until now.
+  if (S.tab === 'clues') {
+    rail.appendChild(el('h3', null, 'Source'));
+    rail.appendChild(railButton('Any', null, S.filterSource === null,
+      () => { S.filterSource = null; S.selected = null; refresh(); }));
+    [['tablet', 'Tablet'], ['npc', 'NPC'], ['mail', 'Mail'], ['other', 'Other']]
+      .forEach(([v, label]) => {
+        rail.appendChild(railButton(label, null, S.filterSource === v,
+          () => { S.filterSource = v; S.selected = null; refresh(); }));
+      });
+  }
 }
 
 function railButton(label, count, on, onclick) {
@@ -252,38 +342,65 @@ function railButton(label, count, on, onclick) {
   return b;
 }
 
+// The rows currently on screen, tagged with which kind each one is — the one
+// place that answers "what's visible" for both renderList and the j/k
+// keyboard nav, so the two can never disagree about order or contents.
+// Outside a search this is just the active tab's own list; during a search
+// it's clues and threads concatenated, regardless of tab (see refresh()).
+function visibleRows() {
+  if (S.query) {
+    return [
+      ...S.clues.map(row => ({id: row.id, kind: 'clue', row})),
+      ...S.threads.map(row => ({id: row.id, kind: 'thread', row})),
+    ];
+  }
+  if (S.tab === 'clues') return S.clues.map(row => ({id: row.id, kind: 'clue', row}));
+  if (S.tab === 'threads') return S.threads.map(row => ({id: row.id, kind: 'thread', row}));
+  return [];
+}
+
 function renderList() {
   const list = $('.list');
   list.innerHTML = '';
-  list.style.display = S.tab === 'progress' ? 'none' : '';
-  if (S.tab === 'progress') return;
+  const show = S.tab !== 'progress' || !!S.query;
+  list.style.display = show ? '' : 'none';
+  if (!show) return;
 
-  const rows = S.tab === 'clues' ? S.clues : S.threads;
+  const rows = visibleRows();
   if (!rows.length) {
     list.appendChild(el('div', 'empty',
       S.query ? 'Nothing matches.' : 'Nothing here yet.'));
     return;
   }
-  rows.forEach(r => {
-    const row = el('div', 'row' + (S.selected === r.id ? ' on' : ''));
+  rows.forEach(({id, kind, row: r}) => {
+    const row = el('div', 'row' +
+      (S.selected === id && S.selectedKind === kind ? ' on' : ''));
     const title = el('b');
     title.appendChild(el('span', 'pill ' + r.state, r.state));
+    // Only a live search mixes both kinds in one list; outside of it the
+    // active tab already says which kind you're looking at.
+    if (S.query) title.appendChild(el('span', 'kindtag', kind));
     title.appendChild(document.createTextNode(r.title));
     row.appendChild(title);
     const bits = [];
     if (r.area) bits.push(r.area + (r.room ? ' ' + r.room : ''));
-    if (S.tab === 'clues' && r.threads.length) bits.push(r.threads.length + ' linked');
-    if (S.tab === 'threads' && r.clue_count) bits.push(r.clue_count + ' clues');
+    if (kind === 'clue' && r.threads && r.threads.length) bits.push(r.threads.length + ' linked');
+    if (kind === 'thread' && r.clue_count) bits.push(r.clue_count + ' clues');
     row.appendChild(el('small', null, bits.join(' · ')));
-    row.onclick = () => select(r.id);
+    row.onclick = () => select(id, kind);
     list.appendChild(row);
   });
 }
 
-async function select(id) {
+async function select(id, kind) {
+  kind = kind || (S.tab === 'threads' ? 'thread' : 'clue');
   S.selected = id;
-  if (S.tab === 'threads') {
-    S.detail = (await api('threads/' + id)).thread;
+  S.selectedKind = kind;
+  if (kind === 'thread') {
+    const data = await api('threads/' + id);
+    S.detail = data ? data.thread : null;
+  } else {
+    S.detail = null;
   }
   render();
 }
@@ -291,30 +408,74 @@ async function select(id) {
 function renderDetail() {
   const d = $('.detail');
   d.innerHTML = '';
-  if (S.tab === 'progress') { renderProgress(d); return; }
+  if (S.tab === 'progress' && !S.query) { renderProgress(d); return; }
   if (!S.selected) {
-    d.appendChild(el('div', 'empty', S.tab === 'clues'
-      ? 'Select a clue, or press n to record one.'
-      : 'Select a thread, or press N to open one.'));
+    d.appendChild(el('div', 'empty', S.query
+      ? 'Select a result.'
+      : (S.tab === 'clues'
+          ? 'Select a clue, or press n to record one.'
+          : 'Select a thread, or press N to open one.')));
     return;
   }
-  if (S.tab === 'clues') renderClueDetail(d);
-  else renderThreadDetail(d);
+  if (S.selectedKind === 'thread') renderThreadDetail(d);
+  else renderClueDetail(d);
 }
 
 function renderClueDetail(d) {
   const c = S.clues.find(x => x.id === S.selected);
   if (!c) { d.appendChild(el('div', 'empty', 'Gone.')); return; }
+  const editable = S.canEdit;
 
-  d.appendChild(el('h2', null, c.title));
-  d.appendChild(el('div', 'where',
-    [c.area, c.room, c.source].filter(Boolean).join(' · ')));
-  if (c.body) d.appendChild(el('div', 'quote', c.body));
+  // Title, body, room, area and source used to be set once at capture and
+  // never again — a mistyped tablet transcription or a clue filed under the
+  // wrong area had no way back short of delete-and-retype. PATCH has always
+  // taken all five; they just weren't reachable from here.
+  const title = el('input', 'fld titlefld');
+  title.value = c.title;
+  title.disabled = !editable;
+  d.appendChild(title);
+
+  d.appendChild(el('label', null, 'Where'));
+  const two = el('div', 'two');
+  const area = el('select', 'fld');
+  const blankArea = area.appendChild(el('option', null, '— area —'));
+  blankArea.value = '';
+  S.areas.forEach(a => {
+    const o = el('option', null, a.name); o.value = a.id;
+    if (c.area_id === a.id) o.selected = true;
+    area.appendChild(o);
+  });
+  area.disabled = !editable;
+  const room = el('input', 'fld');
+  room.placeholder = 'Room (E-3)';
+  room.value = c.room || '';
+  room.setAttribute('list', 'roomlist');
+  room.disabled = !editable;
+  two.append(area, room);
+  d.appendChild(two);
+
+  d.appendChild(el('label', null, 'Source'));
+  const source = el('select', 'fld');
+  [['tablet', 'Tablet'], ['npc', 'NPC'], ['mail', 'Mail'],
+   ['other', 'Other']].forEach(([v, label]) => {
+    const o = el('option', null, label); o.value = v;
+    if (c.source === v) o.selected = true;
+    source.appendChild(o);
+  });
+  source.disabled = !editable;
+  d.appendChild(source);
+
+  d.appendChild(el('label', null, 'Body — the text, as the game gave it'));
+  const body = el('textarea', 'fld');
+  body.value = c.body || '';
+  body.disabled = !editable;
+  d.appendChild(body);
 
   d.appendChild(el('label', null, 'What I think it means'));
   const interp = el('textarea', 'fld');
   interp.value = c.interpretation || '';
   interp.placeholder = 'Nothing yet.';
+  interp.disabled = !editable;
   d.appendChild(interp);
 
   d.appendChild(el('label', null, 'State'));
@@ -326,6 +487,7 @@ function renderClueDetail(d) {
     if (c.state === v) o.selected = true;
     state.appendChild(o);
   });
+  state.disabled = !editable;
   d.appendChild(state);
 
   if (c.threads.length) {
@@ -335,27 +497,31 @@ function renderClueDetail(d) {
       row.style.cursor = 'pointer';
       row.appendChild(el('span', 'pill ' + t.state, t.state));
       row.appendChild(document.createTextNode(t.title));
-      row.onclick = () => { S.tab = 'threads'; S.filterState = null; refresh()
-        .then(() => select(t.id)); };
+      row.onclick = () => { S.tab = 'threads'; S.filterState = null; S.query = '';
+        $('.search').value = ''; refresh().then(() => select(t.id, 'thread')); };
       d.appendChild(row);
     });
   }
 
+  // Read-only sessions get none of this: a Save button that silently does
+  // nothing on click is worse than no button at all.
+  if (!editable) return;
+
   const btns = el('div', 'btns');
   const save = el('button', 'btn go', 'Save');
   save.onclick = async () => {
-    if (!S.canEdit) return alertOnce();
-    await api('clues/' + c.id, {method: 'PATCH', body: JSON.stringify({
+    const res = await api('clues/' + c.id, {method: 'PATCH', body: JSON.stringify({
+      title: title.value, body: body.value, room: room.value,
+      area_id: area.value ? +area.value : null, source: source.value,
       interpretation: interp.value, state: state.value})});
-    refresh();
+    if (res) refresh();
   };
   const link = el('button', 'btn', 'Link to a thread');
   link.onclick = () => linkPicker(c.id);
   const del = el('button', 'btn danger', 'Delete');
   del.onclick = async () => {
-    if (!S.canEdit) return alertOnce();
-    await api('clues/' + c.id, {method: 'DELETE'});
-    S.selected = null; refresh();
+    const res = await api('clues/' + c.id, {method: 'DELETE'});
+    if (res) { S.selected = null; refresh(); }
   };
   btns.append(save, link, del);
   d.appendChild(btns);
@@ -384,7 +550,7 @@ function newClue() {
   modal('Record a clue', (box, close) => {
     const two = el('div', 'two');
     const area = el('select', 'fld');
-    area.appendChild(el('option', null, '— area —'));
+    area.appendChild(el('option', null, '— area —')).value = '';
     S.areas.forEach(a => {
       const o = el('option', null, a.name); o.value = a.id;
       if (String(a.id) === localStorage.getItem(LAST_AREA)) o.selected = true;
@@ -430,7 +596,7 @@ function newClue() {
       S.tab = 'clues'; S.filterState = null; S.filterArea = null;
       S.query = ''; $('.search').value = '';
       await refresh();
-      if (res && res.clue) select(res.clue.id);
+      if (res && res.clue) select(res.clue.id, 'clue');
     };
     const cancel = el('button', 'btn', 'Cancel');
     cancel.onclick = close;
@@ -444,7 +610,7 @@ function newThread() {
   if (!S.canEdit) return alertOnce();
   modal('Open a thread', (box, close) => {
     const area = el('select', 'fld');
-    area.appendChild(el('option', null, '— area —'));
+    area.appendChild(el('option', null, '— area —')).value = '';
     S.areas.forEach(a => {
       const o = el('option', null, a.name); o.value = a.id;
       if (String(a.id) === localStorage.getItem(LAST_AREA)) o.selected = true;
@@ -474,7 +640,7 @@ function newThread() {
       S.tab = 'threads'; S.filterState = null; S.filterArea = null;
       S.query = ''; $('.search').value = '';
       await refresh();
-      if (res && res.thread) select(res.thread.id);
+      if (res && res.thread) select(res.thread.id, 'thread');
     };
     const cancel = el('button', 'btn', 'Cancel');
     cancel.onclick = close;
@@ -486,7 +652,8 @@ function newThread() {
 
 async function linkPicker(clueId) {
   if (!S.canEdit) return alertOnce();
-  const all = (await api('threads')).threads;
+  const data = await api('threads');
+  const all = data ? data.threads : [];
   modal('Link to a thread', (box, close) => {
     if (!all.length) {
       box.appendChild(el('div', 'empty', 'No threads yet — press N to open one.'));
@@ -498,9 +665,9 @@ async function linkPicker(clueId) {
       row.appendChild(el('span', 'pill ' + t.state, t.state));
       row.appendChild(document.createTextNode(t.title));
       row.onclick = async () => {
-        await api('link', {method: 'POST',
+        const res = await api('link', {method: 'POST',
           body: JSON.stringify({clue_id: clueId, thread_id: t.id})});
-        close(); refresh();
+        if (res) { close(); refresh(); }
       };
       box.appendChild(row);
     });
@@ -510,17 +677,34 @@ async function linkPicker(clueId) {
 function renderThreadDetail(d) {
   const t = S.detail;
   if (!t || t.id !== S.selected) { d.appendChild(el('div', 'empty', 'Loading…')); return; }
+  const editable = S.canEdit;
 
-  d.appendChild(el('h2', null, t.title));
+  const title = el('input', 'fld titlefld');
+  title.value = t.title;
+  title.disabled = !editable;
+  d.appendChild(title);
+
   const where = el('div', 'where');
   where.appendChild(el('span', 'pill ' + t.state, t.state));
-  where.appendChild(document.createTextNode(t.area || 'no area'));
   d.appendChild(where);
+
+  d.appendChild(el('label', null, 'Area'));
+  const area = el('select', 'fld');
+  const blankArea = area.appendChild(el('option', null, '— area —'));
+  blankArea.value = '';
+  S.areas.forEach(a => {
+    const o = el('option', null, a.name); o.value = a.id;
+    if (t.area_id === a.id) o.selected = true;
+    area.appendChild(o);
+  });
+  area.disabled = !editable;
+  d.appendChild(area);
 
   d.appendChild(el('label', null, 'Notes'));
   const body = el('textarea', 'fld');
   body.value = t.body || '';
   body.placeholder = 'What you have tried, what you suspect you need';
+  body.disabled = !editable;
   d.appendChild(body);
 
   if (t.state === 'solved' && t.solution) {
@@ -541,7 +725,7 @@ function renderThreadDetail(d) {
     const name = el('b', null, c.title);
     name.style.cursor = 'pointer';
     name.onclick = () => { S.tab = 'clues'; S.filterState = null; S.filterArea = null;
-      refresh().then(() => select(c.id)); };
+      S.query = ''; $('.search').value = ''; refresh().then(() => select(c.id, 'clue')); };
     head.appendChild(name);
     const from = el('small', null, '  ' + [c.area, c.room].filter(Boolean).join(' '));
     from.style.color = 'var(--dim)';
@@ -554,25 +738,27 @@ function renderThreadDetail(d) {
       i.style.fontSize = '13px';
       wrap.appendChild(i);
     }
-    const unlink = el('button', 'btn', 'Unlink');
-    unlink.style.marginTop = '6px';
-    unlink.onclick = async () => {
-      if (!S.canEdit) return alertOnce();
-      await api('link', {method: 'DELETE',
-        body: JSON.stringify({clue_id: c.id, thread_id: t.id})});
-      select(t.id);
-    };
-    wrap.appendChild(unlink);
+    if (editable) {
+      const unlink = el('button', 'btn', 'Unlink');
+      unlink.style.marginTop = '6px';
+      unlink.onclick = async () => {
+        const res = await api('link', {method: 'DELETE',
+          body: JSON.stringify({clue_id: c.id, thread_id: t.id})});
+        if (res) select(t.id, 'thread');
+      };
+      wrap.appendChild(unlink);
+    }
     d.appendChild(wrap);
   });
 
+  if (!editable) return;
+
   const btns = el('div', 'btns');
-  const save = el('button', 'btn go', 'Save notes');
+  const save = el('button', 'btn go', 'Save');
   save.onclick = async () => {
-    if (!S.canEdit) return alertOnce();
-    await api('threads/' + t.id, {method: 'PATCH',
-      body: JSON.stringify({body: body.value})});
-    select(t.id); refresh();
+    const res = await api('threads/' + t.id, {method: 'PATCH', body: JSON.stringify({
+      title: title.value, area_id: area.value ? +area.value : null, body: body.value})});
+    if (res) { await select(t.id, 'thread'); refresh(); }
   };
   btns.appendChild(save);
 
@@ -583,19 +769,17 @@ function renderThreadDetail(d) {
   } else {
     const reopen = el('button', 'btn', 'Reopen');
     reopen.onclick = async () => {
-      if (!S.canEdit) return alertOnce();
-      await api('threads/' + t.id, {method: 'PATCH',
+      const res = await api('threads/' + t.id, {method: 'PATCH',
         body: JSON.stringify({state: 'open'})});
-      select(t.id); refresh();
+      if (res) { await select(t.id, 'thread'); refresh(); }
     };
     btns.appendChild(reopen);
   }
 
   const del = el('button', 'btn danger', 'Delete');
   del.onclick = async () => {
-    if (!S.canEdit) return alertOnce();
-    await api('threads/' + t.id, {method: 'DELETE'});
-    S.selected = null; S.detail = null; refresh();
+    const res = await api('threads/' + t.id, {method: 'DELETE'});
+    if (res) { S.selected = null; S.detail = null; refresh(); }
   };
   btns.appendChild(del);
   d.appendChild(btns);
@@ -630,9 +814,10 @@ function solveDialog(t) {
     const btns = el('div', 'btns');
     const go = el('button', 'btn go', 'Solved');
     go.onclick = async () => {
-      await api('threads/' + t.id + '/solve', {method: 'POST',
+      const res = await api('threads/' + t.id + '/solve', {method: 'POST',
         body: JSON.stringify({solution: sol.value, mark_clues_used: mark.checked})});
-      close(); await select(t.id); refresh();
+      if (!res) return;
+      close(); await select(t.id, 'thread'); refresh();
     };
     const cancel = el('button', 'btn', 'Cancel');
     cancel.onclick = close;
@@ -642,6 +827,7 @@ function solveDialog(t) {
 }
 
 function renderProgress(d) {
+  const editable = S.canEdit;
   S.checklist.forEach(group => {
     const done = group.items.filter(i => i.done).length;
     const h = el('label', null, group.group + ' — ' + done + '/' + group.items.length);
@@ -654,11 +840,11 @@ function renderProgress(d) {
       const box = el('input');
       box.type = 'checkbox';
       box.checked = item.done;
+      box.disabled = !editable;
       box.onchange = async () => {
-        if (!S.canEdit) { box.checked = item.done; return alertOnce(); }
-        await api('checklist/' + item.id, {method: 'PATCH',
+        const res = await api('checklist/' + item.id, {method: 'PATCH',
           body: JSON.stringify({done: box.checked})});
-        refresh();
+        if (res) refresh(); else box.checked = item.done;
       };
       const name = el('span', null, item.name);
       if (item.done) name.style.color = 'var(--dim)';
@@ -667,24 +853,43 @@ function renderProgress(d) {
       note.placeholder = 'note';
       note.style.flex = '0 0 200px';
       note.style.marginLeft = 'auto';
+      note.disabled = !editable;
       note.onchange = async () => {
-        if (!S.canEdit) { note.value = item.note || ''; return alertOnce(); }
-        await api('checklist/' + item.id, {method: 'PATCH',
+        const res = await api('checklist/' + item.id, {method: 'PATCH',
           body: JSON.stringify({note: note.value})});
+        if (!res) note.value = item.note || '';
       };
       row.append(box, name, note);
+      if (editable) {
+        const del = el('button', 'btn danger', '×');
+        del.title = 'Remove this row';
+        del.style.padding = '2px 9px';
+        del.style.minWidth = '0';
+        del.onclick = async () => {
+          const res = await api('checklist/' + item.id, {method: 'DELETE'});
+          if (res) refresh();
+        };
+        row.appendChild(del);
+      }
       d.appendChild(row);
     });
 
-    const add = el('button', 'btn', '+ add a row');
-    add.style.margin = '8px 0 4px';
-    add.onclick = () => {
-      if (!S.canEdit) return alertOnce();
-      const name = prompt('Add to ' + group.group + ':');
-      if (name) api('checklist', {method: 'POST',
-        body: JSON.stringify({group: group.group, name})}).then(refresh);
-    };
-    d.appendChild(add);
+    if (editable) {
+      const add = el('button', 'btn', '+ add a row');
+      add.style.margin = '8px 0 4px';
+      add.onclick = () => {
+        const name = prompt('Add to ' + group.group + ':');
+        if (!name) return;
+        // A duplicate name comes back as a 409 with {"error": "already on
+        // the list"} -- api() already turns that into a toast, so the only
+        // job left here is to not refresh (and not pretend it worked) when
+        // it fails.
+        api('checklist', {method: 'POST',
+          body: JSON.stringify({group: group.group, name})})
+          .then(res => { if (res) refresh(); });
+      };
+      d.appendChild(add);
+    }
   });
 }
 
@@ -698,8 +903,10 @@ document.querySelectorAll('.tabs button').forEach(b => {
 function setTab(tab) {
   S.tab = tab;
   S.selected = null;
+  S.selectedKind = null;
   S.detail = null;
   S.filterState = null;
+  S.filterSource = null;
   refresh();
 }
 
@@ -730,20 +937,32 @@ document.addEventListener('keydown', e => {
   if (typing() || e.metaKey || e.ctrlKey || e.altKey) return;
   if (document.querySelector('.modal')) return;
 
-  const rows = S.tab === 'clues' ? S.clues : S.threads;
-  const at = rows.findIndex(r => r.id === S.selected);
+  // Shares its ordering with renderList() via visibleRows(), so j/k always
+  // moves through exactly what's on screen -- the tab's own list normally,
+  // both kinds together during a live search.
+  const rows = visibleRows();
+  const at = rows.findIndex(r => r.id === S.selected && r.kind === S.selectedKind);
 
   switch (e.key) {
     case '/': e.preventDefault(); $('.search').focus(); break;
-    case 'n': e.preventDefault(); newClue(); break;
-    case 'N': e.preventDefault(); newThread(); break;
+    // n/N/l are write shortcuts with no visible button backing them (quick
+    // capture and the link picker are keyboard-only); the footer that lists
+    // them is hidden for a read-only session (see boot()), so the keys stay
+    // just as invisible and do nothing rather than popping a modal that can
+    // only ever refuse to save.
+    case 'n': if (S.canEdit) { e.preventDefault(); newClue(); } break;
+    case 'N': if (S.canEdit) { e.preventDefault(); newThread(); } break;
     case '1': setTab('clues'); break;
     case '2': setTab('threads'); break;
     case '3': setTab('progress'); break;
-    case 'j': if (rows.length) select(rows[Math.min(at + 1, rows.length - 1)].id); break;
-    case 'k': if (rows.length) select(rows[Math.max(at - 1, 0)].id); break;
+    case 'j': if (rows.length) { const r = rows[Math.min(at + 1, rows.length - 1)];
+      select(r.id, r.kind); } break;
+    case 'k': if (rows.length) { const r = rows[Math.max(at - 1, 0)];
+      select(r.id, r.kind); } break;
     case 'l':
-      if (S.tab === 'clues' && S.selected) { e.preventDefault(); linkPicker(S.selected); }
+      if (S.canEdit && S.selectedKind === 'clue' && S.selected) {
+        e.preventDefault(); linkPicker(S.selected);
+      }
       break;
   }
 });

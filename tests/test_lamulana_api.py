@@ -33,7 +33,46 @@ def test_bootstrap_counts_distinguish_their_sources(client, app):
                  " VALUES ('u', 'solved', 0, 0)")
     conn.commit()
     counts = client.get("/lamulana/api/bootstrap").get_json()["counts"]
-    assert counts == {"clues": 2, "clues_understood": 1, "threads_open": 1}
+    assert counts == {
+        "clue_state": {"raw": 1, "understood": 1, "used": 0},
+        "thread_state": {"open": 1, "solved": 1},
+        "clue_area": {},
+        "thread_area": {},
+    }
+
+
+def test_bootstrap_area_counts_distinguish_clues_from_threads(editor_client):
+    """A shared area holding both a clue and a thread must not let one kind's
+    count leak into the other's -- the failure mode a single UNION ALL query
+    with a dropped `kind` discriminator would produce.
+    """
+    ann = _area_id(editor_client, "Annwfn")
+    val = _area_id(editor_client, "Valhalla")
+    editor_client.post("/lamulana/api/clues", json={"title": "a", "area_id": ann})
+    editor_client.post("/lamulana/api/clues", json={"title": "b", "area_id": ann})
+    editor_client.post("/lamulana/api/threads", json={"title": "t", "area_id": ann})
+    editor_client.post("/lamulana/api/threads", json={"title": "u", "area_id": val})
+    counts = editor_client.get("/lamulana/api/bootstrap").get_json()["counts"]
+    # JSON object keys are always strings; area ids round-trip as str(id).
+    assert counts["clue_area"] == {str(ann): 2}
+    assert counts["thread_area"] == {str(ann): 1, str(val): 1}
+
+
+def test_bootstrap_state_counts_update_after_a_state_change(editor_client):
+    """Counts must reflect current rows, not a snapshot from create time."""
+    cid = editor_client.post("/lamulana/api/clues", json={"title": "a"}
+                              ).get_json()["clue"]["id"]
+    tid = editor_client.post("/lamulana/api/threads", json={"title": "t"}
+                              ).get_json()["thread"]["id"]
+    before = editor_client.get("/lamulana/api/bootstrap").get_json()["counts"]
+    assert before["clue_state"] == {"raw": 1, "understood": 0, "used": 0}
+    assert before["thread_state"] == {"open": 1, "solved": 0}
+
+    editor_client.patch(f"/lamulana/api/clues/{cid}", json={"state": "understood"})
+    editor_client.patch(f"/lamulana/api/threads/{tid}", json={"state": "solved"})
+    after = editor_client.get("/lamulana/api/bootstrap").get_json()["counts"]
+    assert after["clue_state"] == {"raw": 0, "understood": 1, "used": 0}
+    assert after["thread_state"] == {"open": 0, "solved": 1}
 
 
 def test_soundboard_survives_a_broken_tracker_database(tmp_path, monkeypatch):
@@ -275,6 +314,14 @@ def test_clues_area_and_state_filters_and_together(editor_client):
     assert [c["title"] for c in got] == ["b"]
 
 
+def test_clues_filter_by_source(editor_client):
+    editor_client.post("/lamulana/api/clues", json={"title": "a", "source": "npc"})
+    editor_client.post("/lamulana/api/clues", json={"title": "b", "source": "tablet"})
+    got = editor_client.get("/lamulana/api/clues",
+                             query_string={"source": "npc"}).get_json()["clues"]
+    assert [c["title"] for c in got] == ["a"]
+
+
 # --- /api/rooms --------------------------------------------------------------
 
 def test_rooms_lists_distinct_nonempty_names_sorted(editor_client):
@@ -350,9 +397,11 @@ def test_thread_detail_404s_when_missing(editor_client):
 def test_thread_detail_inlines_linked_clues(editor_client):
     """The headline feature of this commit, exercised with real rows.
 
-    Linking doesn't exist until Task 6, so the clue_thread rows are inserted
-    directly, the way test_bootstrap_counts_distinguish_their_sources inserts
-    straight into clue/thread above. This is what proves the appended JOIN in
+    The clue_thread rows are inserted directly rather than via POST /api/link,
+    the way test_bootstrap_counts_distinguish_their_sources inserts straight
+    into clue/thread above, so this test stays independent of the link route
+    and exercises only the detail view's own JOIN. This is what proves the
+    appended JOIN in
     api_thread_detail composes with CLUE_SELECT's own LEFT JOIN area rather
     than colliding with it, that clue_count matches the linked rows, and that
     a clue linked to a *different* thread does not leak in.

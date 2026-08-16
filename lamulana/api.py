@@ -4,9 +4,11 @@ Read it in order: helpers, then clues, then threads, then the link between them,
 then search and the checklist. The thread routes are the ones with real behavior
 -- solving a thread reaches back into the clues that fed it.
 
-Clue CRUD lands in Task 4. Thread CRUD and the detail view that inlines
-clues land in Task 5. The link between them and search are still ahead in
-Tasks 6-8 -- if you came here looking for those, they are not written yet.
+Everything named in docs/superpowers/specs/2026-08-16-lamulana-tracker-design.md's
+HTTP surface table is implemented here: clue CRUD, thread CRUD and its
+clue-inlining detail view, the many-to-many link between clues and threads
+(and the solve route that spends the clues it fed), search across both kinds,
+and the checklist. templates/lamulana.html is the only caller.
 """
 
 import os
@@ -74,14 +76,47 @@ def api_bootstrap():
     areas = [dict(r) for r in _conn().execute(
         "SELECT id, name, position FROM area ORDER BY position"
     ).fetchall()]
-    counts = {
-        "clues": _conn().execute("SELECT COUNT(*) FROM clue").fetchone()[0],
-        "clues_understood": _conn().execute(
-            "SELECT COUNT(*) FROM clue WHERE state = 'understood'").fetchone()[0],
-        "threads_open": _conn().execute(
-            "SELECT COUNT(*) FROM thread WHERE state = 'open'").fetchone()[0],
+    return jsonify({"areas": areas, "checklist": _checklist_groups(), "counts": _counts()})
+
+
+def _counts():
+    """Per-area and per-state row counts for clues and threads, for the rail.
+
+    Two GROUP BY queries -- clue and thread rows UNIONed together with a
+    `kind` discriminator column, rather than four separate queries -- so
+    adding a third countable table later means adding one more branch to the
+    UNION, not a whole new pair of queries.
+    """
+    area_rows = _conn().execute("""
+        SELECT 'clue' AS kind, area_id, COUNT(*) AS n FROM clue GROUP BY area_id
+        UNION ALL
+        SELECT 'thread' AS kind, area_id, COUNT(*) AS n FROM thread GROUP BY area_id
+    """).fetchall()
+    state_rows = _conn().execute("""
+        SELECT 'clue' AS kind, state, COUNT(*) AS n FROM clue GROUP BY state
+        UNION ALL
+        SELECT 'thread' AS kind, state, COUNT(*) AS n FROM thread GROUP BY state
+    """).fetchall()
+
+    clue_area, thread_area = {}, {}
+    for r in area_rows:
+        if r["area_id"] is None:
+            continue  # the rail has no "no area" chip to hang this on
+        (clue_area if r["kind"] == "clue" else thread_area)[r["area_id"]] = r["n"]
+
+    # Every known state starts at 0 so the rail never has to guess whether a
+    # missing key means "zero" or "not fetched yet".
+    clue_state = {s: 0 for s in CLUE_STATES}
+    thread_state = {s: 0 for s in THREAD_STATES}
+    for r in state_rows:
+        (clue_state if r["kind"] == "clue" else thread_state)[r["state"]] = r["n"]
+
+    return {
+        "clue_state": clue_state,
+        "thread_state": thread_state,
+        "clue_area": clue_area,
+        "thread_area": thread_area,
     }
-    return jsonify({"areas": areas, "checklist": _checklist_groups(), "counts": counts})
 
 
 # Group name -> its index in seed.CHECKLIST, i.e. the authored progression
@@ -121,7 +156,7 @@ def _checklist_groups():
 # Deliberately stops after the FROM/JOIN, with no WHERE: callers append their
 # own WHERE onto this (never the other way around -- a WHERE cannot precede a
 # JOIN), so list and single-row lookups share one FROM clause instead of two
-# copies that could drift apart. Task 5's thread routes follow the same shape.
+# copies that could drift apart. THREAD_SELECT below follows the same shape.
 CLUE_SELECT = """
     SELECT c.id, c.title, c.body, c.area_id, a.name AS area, c.room, c.source,
            c.interpretation, c.state, c.created_at, c.updated_at
@@ -685,8 +720,8 @@ def _one_item(item_id):
     # Deliberately asymmetric with _checklist_groups()'s items: those fold
     # group_name into the wrapper and drop it from the item, but a PATCH/POST
     # response has no wrapper to hang it on, so the item keeps its own
-    # "group" key here. Task 8's frontend should not assume a PATCH response
-    # and a GET item are the same shape.
+    # "group" key here. templates/lamulana.html should not assume a PATCH
+    # response and a GET item are the same shape.
     item["group"] = item.pop("group_name")
     item["done"] = bool(item["done"])
     return item
