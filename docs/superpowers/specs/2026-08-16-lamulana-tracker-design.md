@@ -131,9 +131,16 @@ way a trigger-maintained index can.
 
 ### Migrations
 
-`init_schema()` calls `migrate()`, mirroring `recipes/db.py`: a `_sync_columns`
-pass that ALTERs in columns added to `SCHEMA` after a database already exists,
-and an explicit `MIGRATIONS` list for changes that cannot express.
+`init_schema()` calls `migrate()`, which walks an ordered, append-only
+`MIGRATIONS` list and records its position in a `meta` table.
+
+This is deliberately simpler than `recipes/db.py`, which additionally reflects
+`SCHEMA` against the live database and ALTERs in missing columns. That engine
+exists because recipes already had databases deployed in the house when columns
+started being added to it. No `lamulana.db` exists anywhere yet, so every schema
+change from here is a `MIGRATIONS` entry written with full knowledge of what is
+on disk. If that stops being true, the right move is to extract recipes' engine
+into a module both packages import — not to copy it.
 
 ## HTTP surface
 
