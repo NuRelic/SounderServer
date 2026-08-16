@@ -84,3 +84,76 @@ def test_soundboard_survives_a_broken_tracker_database(tmp_path, monkeypatch):
                     if m in ("recipes", "lamulana")
                     or m.startswith(("recipes.", "lamulana."))]:
             del sys.modules[mod]
+
+
+def _area_id(client, name):
+    for a in client.get("/lamulana/api/bootstrap").get_json()["areas"]:
+        if a["name"] == name:
+            return a["id"]
+    raise AssertionError(f"no area named {name}")
+
+
+def test_create_clue_returns_it_in_full(editor_client):
+    area = _area_id(editor_client, "Annwfn")
+    r = editor_client.post("/lamulana/api/clues", json={
+        "title": "twin serpents",
+        "body": "Where the twin serpents meet, the child sleeps.",
+        "area_id": area,
+        "room": "E-3",
+    })
+    assert r.status_code == 200
+    clue = r.get_json()["clue"]
+    assert clue["title"] == "twin serpents"
+    assert clue["area"] == "Annwfn"
+    assert clue["state"] == "raw"
+    assert clue["source"] == "tablet"
+    assert clue["threads"] == []
+    assert clue["id"] > 0
+
+
+def test_clue_state_moves_through_the_lifecycle(editor_client):
+    cid = editor_client.post("/lamulana/api/clues", json={"title": "a"}
+                              ).get_json()["clue"]["id"]
+    r = editor_client.patch(f"/lamulana/api/clues/{cid}",
+                             json={"state": "understood",
+                                   "interpretation": "means the ankh in Valhalla"})
+    assert r.get_json()["clue"]["state"] == "understood"
+    assert r.get_json()["clue"]["interpretation"] == "means the ankh in Valhalla"
+    r = editor_client.patch(f"/lamulana/api/clues/{cid}", json={"state": "used"})
+    assert r.get_json()["clue"]["state"] == "used"
+
+
+def test_bad_state_is_rejected(editor_client):
+    cid = editor_client.post("/lamulana/api/clues", json={"title": "a"}
+                              ).get_json()["clue"]["id"]
+    r = editor_client.patch(f"/lamulana/api/clues/{cid}", json={"state": "solved"})
+    assert r.status_code == 400
+
+
+def test_clue_requires_a_title(editor_client):
+    assert editor_client.post("/lamulana/api/clues", json={"body": "x"}).status_code == 400
+
+
+def test_clues_filter_by_area_and_state(editor_client):
+    ann = _area_id(editor_client, "Annwfn")
+    val = _area_id(editor_client, "Valhalla")
+    editor_client.post("/lamulana/api/clues", json={"title": "a", "area_id": ann})
+    editor_client.post("/lamulana/api/clues", json={"title": "b", "area_id": val,
+                                                     "state": "understood"})
+    got = editor_client.get(f"/lamulana/api/clues?area={ann}").get_json()["clues"]
+    assert [c["title"] for c in got] == ["a"]
+    got = editor_client.get("/lamulana/api/clues?state=understood").get_json()["clues"]
+    assert [c["title"] for c in got] == ["b"]
+
+
+def test_delete_clue(editor_client):
+    cid = editor_client.post("/lamulana/api/clues", json={"title": "a"}
+                              ).get_json()["clue"]["id"]
+    assert editor_client.delete(f"/lamulana/api/clues/{cid}").status_code == 200
+    assert editor_client.get("/lamulana/api/clues").get_json()["clues"] == []
+
+
+def test_clue_writes_need_an_editing_session(reader_client):
+    assert reader_client.post("/lamulana/api/clues", json={"title": "a"}).status_code == 403
+    assert reader_client.patch("/lamulana/api/clues/1", json={}).status_code == 403
+    assert reader_client.delete("/lamulana/api/clues/1").status_code == 403
