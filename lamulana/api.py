@@ -4,9 +4,9 @@ Read it in order: helpers, then clues, then threads, then the link between them,
 then search and the checklist. The thread routes are the ones with real behavior
 -- solving a thread reaches back into the clues that fed it.
 
-Clue CRUD lands in Task 4. Threads, the link between them, and search are
-still ahead in Tasks 5-8 -- if you came here looking for them, they are not
-written yet.
+Clue CRUD lands in Task 4. Thread CRUD and the detail view that inlines
+clues land in Task 5. The link between them and search are still ahead in
+Tasks 6-8 -- if you came here looking for those, they are not written yet.
 """
 
 import os
@@ -28,11 +28,11 @@ DATA_DIR = os.environ.get(
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, "lamulana.db")
 
-# Validate request bodies for the clue routes below and the thread routes
-# still to come in Task 5. Must match the CHECK constraints on clue.state /
-# clue.source in lamulana/db.py's SCHEMA -- adding a value to one without the
-# other means either a legal value 400s here or an illegal one reaches
-# SQLite and 500s on the CHECK, depending on which side you forgot.
+# Validate request bodies for the clue routes and the thread routes below.
+# Must match the CHECK constraints on clue.state / clue.source in
+# lamulana/db.py's SCHEMA -- adding a value to one without the other means
+# either a legal value 400s here or an illegal one reaches SQLite and 500s
+# on the CHECK, depending on which side you forgot.
 CLUE_STATES = ("raw", "understood", "used")
 CLUE_SOURCES = ("tablet", "npc", "mail", "other")
 THREAD_STATES = ("open", "solved")
@@ -199,9 +199,9 @@ CLUE_FIELDS = {
     "source": set(CLUE_SOURCES),
 }
 
-# Not read yet -- Task 5's thread create/patch routes are the first callers.
-# Defined here, next to CLUE_FIELDS, so the two field lists stay side by side
-# for whoever adds a column to either table.
+# Read by the thread create/patch routes below. Defined here, next to
+# CLUE_FIELDS, so the two field lists stay side by side for whoever adds a
+# column to either table.
 THREAD_FIELDS = {
     "title": str,
     "body": (str, type(None)),
@@ -349,7 +349,6 @@ def api_clue_delete(clue_id):
     return jsonify({"ok": True})
 
 
-
 # ---------------------------------------------------------------------------
 # Threads
 # ---------------------------------------------------------------------------
@@ -399,10 +398,14 @@ def api_thread_detail(thread_id):
     thread = _one_thread(thread_id)
     if not thread:
         return jsonify({"error": "no such thread"}), 404
+    # Explicit CASE, not `ORDER BY c.state`: alphabetical order of
+    # raw/understood/used happens to match lifecycle order today, but that's
+    # a coincidence a renamed or added state would silently break.
     rows = _conn().execute(CLUE_SELECT + """
         JOIN clue_thread ct ON ct.clue_id = c.id
         WHERE ct.thread_id = ?
-        ORDER BY c.state, c.id
+        ORDER BY CASE c.state WHEN 'raw' THEN 0 WHEN 'understood' THEN 1
+                              WHEN 'used' THEN 2 ELSE 3 END, c.id
     """, (thread_id,)).fetchall()
     thread["clues"] = _clue_json(rows)
     return jsonify({"thread": thread})
@@ -412,6 +415,10 @@ def api_thread_detail(thread_id):
 def api_thread_create():
     if (err := need_edit()):
         return err
+    # THREAD_FIELDS has no "state": a thread is always born open, so create
+    # has nothing to branch on the way PATCH does with solved_at -- unlike
+    # PATCH, there is no raw-body "state" check here, and a "state" key in
+    # the POST body is silently ignored rather than 400ing.
     b, err = _clean_body(_body(), THREAD_FIELDS)
     if err:
         return err
@@ -421,9 +428,9 @@ def api_thread_create():
     now = _now()
     with _db.LOCK:
         cur = _conn().execute("""
-            INSERT INTO thread (title, area_id, body, state, created_at, updated_at)
-            VALUES (?, ?, ?, 'open', ?, ?)
-        """, (title, b.get("area_id"), b.get("body"), now, now))
+            INSERT INTO thread (title, area_id, body, solution, state, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'open', ?, ?)
+        """, (title, b.get("area_id"), b.get("body"), b.get("solution"), now, now))
         _conn().commit()
     return jsonify({"thread": _one_thread(cur.lastrowid)})
 
@@ -449,20 +456,24 @@ def api_thread_patch(thread_id):
         return jsonify({"error": "title required"}), 400
     if not b:
         return jsonify({"error": "nothing to change"}), 400
+    now = _now()
     sets = ", ".join(f"{f} = ?" for f in b)
-    params = list(b.values()) + [_now(), thread_id]
+    params = list(b.values()) + [now, thread_id]
     # The existence check and the write are the same locked UPDATE (rowcount
     # tells them apart) rather than a SELECT before the lock followed by the
     # UPDATE inside it: a concurrent DELETE landing in that gap would have
     # left this returning 200 with a thread that no longer exists -- the same
-    # fix Task 4 applied to clue PATCH.
+    # fix Task 4 applied to clue PATCH. That closes the gap for the write
+    # itself; the _one_thread() re-read below still happens after the lock is
+    # released, so a DELETE landing in that narrower window can still turn a
+    # successful PATCH into a 200 with a null thread -- same as clue PATCH.
     with _db.LOCK:
         cur = _conn().execute(f"UPDATE thread SET {sets}, updated_at = ? WHERE id = ?", params)
         if cur.rowcount:
             if b.get("state") == "solved":
                 _conn().execute(
                     "UPDATE thread SET solved_at = ? WHERE id = ? AND solved_at IS NULL",
-                    (_now(), thread_id))
+                    (now, thread_id))
             if b.get("state") == "open":
                 _conn().execute("UPDATE thread SET solved_at = NULL WHERE id = ?",
                                 (thread_id,))

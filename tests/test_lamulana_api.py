@@ -1,4 +1,5 @@
 import importlib
+import itertools
 import os
 import pathlib
 import stat
@@ -325,6 +326,16 @@ def test_create_thread(editor_client):
     assert t["clue_count"] == 0
 
 
+def test_create_thread_keeps_the_solution_field(editor_client):
+    """_clean_body type-checks "solution" via THREAD_FIELDS, so a bad value
+    400s -- but the INSERT column list has to actually include the column,
+    or a valid value silently comes back null. This is that round trip.
+    """
+    r = editor_client.post("/lamulana/api/threads",
+                            json={"title": "a", "solution": "ring the four bells"})
+    assert r.get_json()["thread"]["solution"] == "ring the four bells"
+
+
 def test_thread_detail_has_no_clues_yet(editor_client):
     tid = editor_client.post("/lamulana/api/threads", json={"title": "t"}
                               ).get_json()["thread"]["id"]
@@ -336,6 +347,45 @@ def test_thread_detail_404s_when_missing(editor_client):
     assert editor_client.get("/lamulana/api/threads/9999").status_code == 404
 
 
+def test_thread_detail_inlines_linked_clues(editor_client):
+    """The headline feature of this commit, exercised with real rows.
+
+    Linking doesn't exist until Task 6, so the clue_thread rows are inserted
+    directly, the way test_bootstrap_counts_distinguish_their_sources inserts
+    straight into clue/thread above. This is what proves the appended JOIN in
+    api_thread_detail composes with CLUE_SELECT's own LEFT JOIN area rather
+    than colliding with it, that clue_count matches the linked rows, and that
+    a clue linked to a *different* thread does not leak in.
+    """
+    conn = sys.modules["lamulana.api"]._conn()
+    area = _area_id(editor_client, "Immortal Battlefield")
+    tid = editor_client.post("/lamulana/api/threads", json={"title": "t"}
+                              ).get_json()["thread"]["id"]
+    other_tid = editor_client.post("/lamulana/api/threads", json={"title": "other"}
+                                    ).get_json()["thread"]["id"]
+    cid1 = editor_client.post("/lamulana/api/clues", json={
+        "title": "clue one", "area_id": area, "state": "understood"},
+    ).get_json()["clue"]["id"]
+    cid2 = editor_client.post("/lamulana/api/clues", json={"title": "clue two"}
+                               ).get_json()["clue"]["id"]
+    other_cid = editor_client.post("/lamulana/api/clues", json={"title": "unrelated clue"}
+                                    ).get_json()["clue"]["id"]
+    conn.execute("INSERT INTO clue_thread (clue_id, thread_id) VALUES (?, ?)", (cid1, tid))
+    conn.execute("INSERT INTO clue_thread (clue_id, thread_id) VALUES (?, ?)", (cid2, tid))
+    conn.execute("INSERT INTO clue_thread (clue_id, thread_id) VALUES (?, ?)",
+                 (other_cid, other_tid))
+    conn.commit()
+
+    thread = editor_client.get(f"/lamulana/api/threads/{tid}").get_json()["thread"]
+    assert thread["clue_count"] == len(thread["clues"]) == 2
+    by_id = {c["id"]: c for c in thread["clues"]}
+    assert set(by_id) == {cid1, cid2}
+    assert other_cid not in by_id
+    # LEFT JOIN area (from CLUE_SELECT) still resolves through the appended
+    # INNER JOIN clue_thread rather than being shadowed by it.
+    assert by_id[cid1]["area"] == "Immortal Battlefield"
+
+
 def test_threads_filter_by_state(editor_client):
     editor_client.post("/lamulana/api/threads", json={"title": "open one"})
     tid = editor_client.post("/lamulana/api/threads", json={"title": "done one"}
@@ -345,10 +395,90 @@ def test_threads_filter_by_state(editor_client):
     assert [t["title"] for t in got] == ["open one"]
 
 
-def test_thread_writes_need_an_editing_session(reader_client):
-    assert reader_client.post("/lamulana/api/threads", json={"title": "a"}).status_code == 403
-    assert reader_client.patch("/lamulana/api/threads/1", json={}).status_code == 403
-    assert reader_client.delete("/lamulana/api/threads/1").status_code == 403
+def test_threads_order_open_first_then_most_recently_touched(editor_client):
+    """Pins updated_at by hand so ordering doesn't depend on wall-clock timing."""
+    conn = sys.modules["lamulana.api"]._conn()
+    a = editor_client.post("/lamulana/api/threads", json={"title": "solved recent"}
+                            ).get_json()["thread"]["id"]
+    b = editor_client.post("/lamulana/api/threads", json={"title": "open old"}
+                            ).get_json()["thread"]["id"]
+    c = editor_client.post("/lamulana/api/threads", json={"title": "open new"}
+                            ).get_json()["thread"]["id"]
+    conn.execute("UPDATE thread SET state = 'solved', updated_at = 100 WHERE id = ?", (a,))
+    conn.execute("UPDATE thread SET state = 'open', updated_at = 10 WHERE id = ?", (b,))
+    conn.execute("UPDATE thread SET state = 'open', updated_at = 50 WHERE id = ?", (c,))
+    conn.commit()
+    got = editor_client.get("/lamulana/api/threads").get_json()["threads"]
+    assert [t["title"] for t in got] == ["open new", "open old", "solved recent"]
+
+
+def test_solved_at_bookkeeping(editor_client, monkeypatch):
+    """Every call below lands in the same wall-clock second in practice, which
+    would let a broken guard (or a dropped "AND solved_at IS NULL") pass by
+    accident -- _now() returning the same integer twice either way. Fake it
+    to hand out a new value on every call instead, so "unchanged" and "fresh"
+    below are both real assertions about which branch ran, not artifacts of
+    clock resolution.
+    """
+    api = sys.modules["lamulana.api"]
+    counter = itertools.count(1000, 1000)
+    monkeypatch.setattr(api, "_now", lambda: next(counter))
+
+    tid = editor_client.post("/lamulana/api/threads", json={"title": "a"}
+                              ).get_json()["thread"]["id"]
+    thread = editor_client.get(f"/lamulana/api/threads/{tid}").get_json()["thread"]
+    assert thread["solved_at"] is None
+
+    t = editor_client.patch(f"/lamulana/api/threads/{tid}",
+                             json={"state": "solved"}).get_json()["thread"]
+    assert t["state"] == "solved"
+    first_solved_at = t["solved_at"]
+    assert first_solved_at is not None
+
+    # A second PATCH to "solved" must not stomp the original timestamp -- the
+    # "AND solved_at IS NULL" guard in api_thread_patch is what makes this
+    # true. Each PATCH below burns a fresh, distinct value off the counter,
+    # so if the guard were deleted this would come back different and fail.
+    t = editor_client.patch(f"/lamulana/api/threads/{tid}",
+                             json={"state": "solved"}).get_json()["thread"]
+    assert t["solved_at"] == first_solved_at
+
+    # An unrelated field edit must leave solved_at alone.
+    t = editor_client.patch(f"/lamulana/api/threads/{tid}",
+                             json={"body": "unrelated edit"}).get_json()["thread"]
+    assert t["solved_at"] == first_solved_at
+
+    # Reopening clears it.
+    t = editor_client.patch(f"/lamulana/api/threads/{tid}",
+                             json={"state": "open"}).get_json()["thread"]
+    assert t["state"] == "open"
+    assert t["solved_at"] is None
+
+    # Re-solving after a reopen sets a fresh timestamp, distinct from the
+    # first one, rather than leaving it null or silently refusing to re-solve.
+    t = editor_client.patch(f"/lamulana/api/threads/{tid}",
+                             json={"state": "solved"}).get_json()["thread"]
+    assert t["solved_at"] is not None
+    assert t["solved_at"] != first_solved_at
+
+
+def test_thread_writes_need_an_editing_session(editor_client, reader_client):
+    """403 must mean "rejected", not just "nothing happened to happen".
+
+    Thread id 1 may not exist in a fresh test database, so a 403 there is
+    indistinguishable from "there was nothing to change" -- the same gap
+    test_clue_writes_need_an_editing_session above was rewritten to close.
+    Create a real thread as the editor and prove the reader's rejected calls
+    left it untouched.
+    """
+    tid = editor_client.post("/lamulana/api/threads", json={"title": "a"}
+                              ).get_json()["thread"]["id"]
+    assert reader_client.post("/lamulana/api/threads", json={"title": "b"}).status_code == 403
+    assert reader_client.patch(f"/lamulana/api/threads/{tid}",
+                                json={"title": "changed"}).status_code == 403
+    assert reader_client.delete(f"/lamulana/api/threads/{tid}").status_code == 403
+    got = editor_client.get("/lamulana/api/threads").get_json()["threads"]
+    assert [t["title"] for t in got] == ["a"]
 
 
 # --- Bad input must 400, never reach SQLite as a 500 (same gap Task 4 found
