@@ -688,6 +688,66 @@ function renderProgress(d) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Header and keyboard
+// ---------------------------------------------------------------------------
+document.querySelectorAll('.tabs button').forEach(b => {
+  b.onclick = () => setTab(b.dataset.tab);
+});
+
+function setTab(tab) {
+  S.tab = tab;
+  S.selected = null;
+  S.detail = null;
+  S.filterState = null;
+  refresh();
+}
+
+let searchTimer = null;
+$('.search').addEventListener('input', e => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    S.query = e.target.value.trim();
+    S.selected = null;
+    refresh();
+  }, 180);
+});
+
+function typing() {
+  const t = document.activeElement && document.activeElement.tagName;
+  return t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT';
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    const m = document.querySelector('.modal');
+    if (m) { m.remove(); return; }
+    if (document.activeElement === $('.search')) {
+      $('.search').value = ''; S.query = ''; $('.search').blur(); refresh();
+    }
+    return;
+  }
+  if (typing() || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (document.querySelector('.modal')) return;
+
+  const rows = S.tab === 'clues' ? S.clues : S.threads;
+  const at = rows.findIndex(r => r.id === S.selected);
+
+  switch (e.key) {
+    case '/': e.preventDefault(); $('.search').focus(); break;
+    case 'n': e.preventDefault(); newClue(); break;
+    case 'N': e.preventDefault(); newThread(); break;
+    case '1': setTab('clues'); break;
+    case '2': setTab('threads'); break;
+    case '3': setTab('progress'); break;
+    case 'j': if (rows.length) select(rows[Math.min(at + 1, rows.length - 1)].id); break;
+    case 'k': if (rows.length) select(rows[Math.max(at - 1, 0)].id); break;
+    case 'l':
+      if (S.tab === 'clues' && S.selected) { e.preventDefault(); linkPicker(S.selected); }
+      break;
+  }
+});
+
 boot();
 </script>
 </body>
