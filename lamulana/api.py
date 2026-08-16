@@ -29,7 +29,10 @@ os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, "lamulana.db")
 
 # Validate request bodies for the clue routes below and the thread routes
-# still to come in Task 5.
+# still to come in Task 5. Must match the CHECK constraints on clue.state /
+# clue.source in lamulana/db.py's SCHEMA -- adding a value to one without the
+# other means either a legal value 400s here or an illegal one reaches
+# SQLite and 500s on the CHECK, depending on which side you forgot.
 CLUE_STATES = ("raw", "understood", "used")
 CLUE_SOURCES = ("tablet", "npc", "mail", "other")
 THREAD_STATES = ("open", "solved")
@@ -49,7 +52,10 @@ _db.seed_all(_conn())
 
 
 def _body():
-    return request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
+    # A JSON array or bare string parses fine and then dies on .get; every
+    # route below assumes an object, so anything else is an empty body.
+    return data if isinstance(data, dict) else {}
 
 
 def _now():
@@ -111,6 +117,10 @@ def _checklist_groups():
 # Clues
 # ---------------------------------------------------------------------------
 
+# Deliberately stops after the FROM/JOIN, with no WHERE: callers append their
+# own WHERE onto this (never the other way around -- a WHERE cannot precede a
+# JOIN), so list and single-row lookups share one FROM clause instead of two
+# copies that could drift apart. Task 5's thread routes follow the same shape.
 CLUE_SELECT = """
     SELECT c.id, c.title, c.body, c.area_id, a.name AS area, c.room, c.source,
            c.interpretation, c.state, c.created_at, c.updated_at
@@ -172,31 +182,89 @@ def _one_clue(clue_id):
     return _clue_json([row])[0] if row else None
 
 
-def _clue_field_error(b):
-    """(jsonify, 400) if `b` has a bad title/body/room/interpretation/area_id, else None.
+# Field specs for _clean_body(), one per writable table. A spec value is a
+# type or tuple of types checked with isinstance() (include type(None) for a
+# nullable column), a set of literal values for an enum column -- kept as a
+# set rather than reusing CLUE_STATES/CLUE_SOURCES's tuples directly so
+# _clean_body can tell "isinstance-me" specs from "membership-check-me"
+# specs apart by Python type alone -- or the string "area" for a nullable
+# foreign key into the `area` table.
+CLUE_FIELDS = {
+    "title": str,
+    "body": str,
+    "room": (str, type(None)),
+    "interpretation": (str, type(None)),
+    "area_id": "area",
+    "state": set(CLUE_STATES),
+    "source": set(CLUE_SOURCES),
+}
 
-    Runs before create/patch touch the database, so a wrong JSON type comes
-    back as a 400 here instead of surfacing later as `.strip()` raising on a
-    non-string title, or SQLite raising a NOT NULL/FOREIGN KEY
-    IntegrityError for a null body or a dangling area_id -- both would
-    otherwise reach the caller as an unhandled 500. Shared by
-    api_clue_create and api_clue_patch. Mutates `b["area_id"]` from "" to
-    None in place -- an empty <select> means "no area", not an error -- so
-    callers can use b.get("area_id") directly afterward.
+# Not read yet -- Task 5's thread create/patch routes are the first callers.
+# Defined here, next to CLUE_FIELDS, so the two field lists stay side by side
+# for whoever adds a column to either table.
+THREAD_FIELDS = {
+    "title": str,
+    "body": (str, type(None)),
+    "solution": (str, type(None)),
+    "area_id": "area",
+}
+
+
+def _clean_body(body, fields):
+    """Validate and normalize a JSON body against a field spec (see e.g. CLUE_FIELDS).
+
+    Returns `(clean_body, None)` on success, or `(None, (response, 400))` on
+    the first field that fails -- `response` already names the field, so
+    callers just write `b, err = _clean_body(_body(), FIELDS); if err: return err`.
+
+    This is the one place a wrong JSON type or a dangling foreign key gets
+    caught, so every route that writes a table gets the same protection
+    against reaching SQLite as a 500: `.strip()` raising on a non-string
+    title, a NOT NULL IntegrityError on a null body, a FOREIGN KEY
+    IntegrityError on a dangling area_id, or a ProgrammingError from binding
+    a list/dict, or a wrong-but-truthy area_id like `True` silently binding
+    as SQLite integer 1 (`bool` is an `int` subclass).
+
+    Returns a new dict rather than mutating `body` in place: PATCH builds its
+    SQL params straight from what this returns (`list(clean.values())`), so
+    the normalization below has to be something every caller is actually
+    handed, not a side effect that a reordered or short-circuited check
+    could silently skip.
+
+    An empty string normalizes to None wherever None is an accepted value for
+    that field -- an empty form field means "cleared", the same signal
+    whether the field is a nullable id or a nullable text column -- and is
+    left alone otherwise. That keeps `body: ""` (a string-only, non-nullable
+    field: "empty body" is a real, intentional state) as the empty string it
+    is, rather than becoming a null this function would then reject.
+
+    Unknown keys in `body` are silently dropped: callers select what they
+    write from the return value (`for f in clean`), never from the raw
+    request body, so an extra key here would be inert either way.
     """
-    for field in ("title", "body"):
-        if field in b and not isinstance(b[field], str):
-            return jsonify({"error": f"{field} must be a string"}), 400
-    for field in ("room", "interpretation"):
-        if field in b and b[field] is not None and not isinstance(b[field], str):
-            return jsonify({"error": f"{field} must be a string or null"}), 400
-    if "area_id" in b:
-        if b["area_id"] == "":
-            b["area_id"] = None
-        if b["area_id"] is not None and not _conn().execute(
-                "SELECT 1 FROM area WHERE id = ?", (b["area_id"],)).fetchone():
-            return jsonify({"error": "no such area"}), 400
-    return None
+    clean = {}
+    for name, spec in fields.items():
+        if name not in body:
+            continue
+        v = body[name]
+        nullable = spec == "area" or (isinstance(spec, tuple) and type(None) in spec)
+        if v == "" and nullable:
+            v = None
+        if spec == "area":
+            if v is not None and (not isinstance(v, int) or isinstance(v, bool)):
+                return None, (jsonify({"error": f"{name} must be an integer or null"}), 400)
+            if v is not None and not _conn().execute(
+                    "SELECT 1 FROM area WHERE id = ?", (v,)).fetchone():
+                return None, (jsonify({"error": f"no such area for {name}"}), 400)
+        elif isinstance(spec, set):
+            if v not in spec:
+                return None, (jsonify({"error": f"{name} must be one of {sorted(spec)}"}), 400)
+        else:
+            types = spec if isinstance(spec, tuple) else (spec,)
+            if not isinstance(v, types):
+                return None, (jsonify({"error": f"{name} has the wrong type"}), 400)
+        clean[name] = v
+    return clean, None
 
 
 @bp.route("/api/clues")
@@ -223,55 +291,48 @@ def api_clues():
 def api_clue_create():
     if (err := need_edit()):
         return err
-    b = _body()
-    if (err := _clue_field_error(b)):
+    b, err = _clean_body(_body(), CLUE_FIELDS)
+    if err:
         return err
-    title = (b.get("title") or "").strip()
+    title = b.get("title", "").strip()
     if not title:
         return jsonify({"error": "title required"}), 400
     state = b.get("state") or "raw"
     source = b.get("source") or "tablet"
-    if state not in CLUE_STATES or source not in CLUE_SOURCES:
-        return jsonify({"error": "bad state or source"}), 400
     now = _now()
     with _db.LOCK:
         cur = _conn().execute("""
             INSERT INTO clue (title, body, area_id, room, source, interpretation,
                               state, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (title, b.get("body") or "", b.get("area_id"), b.get("room"),
+        """, (title, b.get("body", ""), b.get("area_id"), b.get("room"),
               source, b.get("interpretation"), state, now, now))
         _conn().commit()
     return jsonify({"clue": _one_clue(cur.lastrowid)})
-
-
-CLUE_PATCHABLE = ("title", "body", "area_id", "room", "source",
-                  "interpretation", "state")
 
 
 @bp.route("/api/clues/<int:clue_id>", methods=["PATCH"])
 def api_clue_patch(clue_id):
     if (err := need_edit()):
         return err
-    b = _body()
-    if (err := _clue_field_error(b)):
+    b, err = _clean_body(_body(), CLUE_FIELDS)
+    if err:
         return err
-    if "state" in b and b["state"] not in CLUE_STATES:
-        return jsonify({"error": "bad state"}), 400
-    if "source" in b and b["source"] not in CLUE_SOURCES:
-        return jsonify({"error": "bad source"}), 400
-    if "title" in b and not (b.get("title") or "").strip():
+    if "title" in b and not b["title"].strip():
         return jsonify({"error": "title required"}), 400
-    fields = [k for k in CLUE_PATCHABLE if k in b]
-    if not fields:
+    if not b:
         return jsonify({"error": "nothing to change"}), 400
-    if not _one_clue(clue_id):
-        return jsonify({"error": "no such clue"}), 404
-    sets = ", ".join(f"{f} = ?" for f in fields)
-    params = [b[f] for f in fields] + [_now(), clue_id]
+    sets = ", ".join(f"{f} = ?" for f in b)
+    params = list(b.values()) + [_now(), clue_id]
+    # The existence check and the write are the same locked UPDATE (rowcount
+    # tells them apart) rather than a SELECT before the lock followed by the
+    # UPDATE inside it: a concurrent DELETE landing in that gap would have
+    # left this returning 200 with a clue that no longer exists.
     with _db.LOCK:
-        _conn().execute(f"UPDATE clue SET {sets}, updated_at = ? WHERE id = ?", params)
+        cur = _conn().execute(f"UPDATE clue SET {sets}, updated_at = ? WHERE id = ?", params)
         _conn().commit()
+    if not cur.rowcount:
+        return jsonify({"error": "no such clue"}), 404
     return jsonify({"clue": _one_clue(clue_id)})
 
 

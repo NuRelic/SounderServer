@@ -35,6 +35,12 @@ CREATE TABLE IF NOT EXISTS area (
 -- state: 'raw' (copied down, meaning unknown), 'understood' (you know what it
 -- says and cannot act on it yet), 'used' (spent). The middle one is the whole
 -- point of the app, so it is a column and not a tag.
+--
+-- These CHECK lists must match CLUE_STATES / CLUE_SOURCES in lamulana/api.py.
+-- The route layer validates first and means to reject every bad value before
+-- it reaches here, so the constraints below are meant to never fire -- but
+-- edit both sides together, since adding a value to only one means either a
+-- legal value 400s at the route or an illegal one 500s on this CHECK.
 CREATE TABLE IF NOT EXISTS clue (
     id             INTEGER PRIMARY KEY,
     title          TEXT NOT NULL,

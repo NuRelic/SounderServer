@@ -26,9 +26,24 @@
 | `tests/test_lamulana_db.py` | schema, migrations, seed idempotence |
 | `tests/test_lamulana_api.py` | routes, lifecycle, linking, solve cascade, search, auth |
 
-`api.py` is the only file that will get long. If it passes ~600 lines, split the
-checklist routes into `lamulana/checklist.py` — they share nothing with clues and
-threads but the connection.
+`api.py` is the only file that will get long, but not past a line count: it
+settles around 590 lines after Task 7 and stays there, so a ~600-line
+threshold would simply never fire. Split by line-of-concern instead, once
+Task 7 lands: move the checklist routes into `lamulana/checklist.py` — they
+share nothing with clues and threads but the connection helpers.
+
+That split has one wrinkle worth recording now so Task 7 doesn't rediscover
+it: `_checklist_groups()` (used by `api_bootstrap`, which lives with the
+other clue/thread routes) would need to import from `checklist.py`, and
+`checklist.py` would need `_conn()`/`_body()`/etc. from `api.py` — a cycle if
+both modules import each other directly. `lamulana/__init__.py` already
+does `from .api import bp as lamulana_bp`; the fix is to register both
+route modules there instead of importing them into each other:
+`from .api import bp as lamulana_bp` first, then `from . import checklist`
+after it. `checklist.py` imports its shared helpers with a plain
+`from .api import _conn, _body, ...` (api.py is already fully loaded by the
+time `__init__.py` reaches the `checklist` import), and `api.py` never
+imports from `checklist.py` at all, so the cycle never has a chance to form.
 
 ---
 
@@ -1548,6 +1563,39 @@ def test_thread_writes_need_an_editing_session(reader_client):
     assert reader_client.post("/lamulana/api/threads", json={"title": "a"}).status_code == 403
     assert reader_client.patch("/lamulana/api/threads/1", json={}).status_code == 403
     assert reader_client.delete("/lamulana/api/threads/1").status_code == 403
+
+
+# --- Bad input must 400, never reach SQLite as a 500 (same gap Task 4 found
+# and fixed for clues -- see _clean_body) ------------------------------------
+
+def test_thread_create_rejects_a_nonexistent_area_id(editor_client):
+    r = editor_client.post("/lamulana/api/threads", json={"title": "a", "area_id": 999999})
+    assert r.status_code == 400
+    assert editor_client.get("/lamulana/api/threads").get_json()["threads"] == []
+
+
+def test_thread_patch_rejects_a_nonexistent_area_id(editor_client):
+    tid = editor_client.post("/lamulana/api/threads", json={"title": "a"}
+                              ).get_json()["thread"]["id"]
+    r = editor_client.patch(f"/lamulana/api/threads/{tid}", json={"area_id": 999999})
+    assert r.status_code == 400
+    thread = editor_client.get("/lamulana/api/threads").get_json()["threads"][0]
+    assert thread["area_id"] is None
+
+
+def test_thread_create_rejects_a_non_string_title(editor_client):
+    r = editor_client.post("/lamulana/api/threads", json={"title": 123})
+    assert r.status_code == 400
+    assert editor_client.get("/lamulana/api/threads").get_json()["threads"] == []
+
+
+def test_thread_patch_rejects_a_non_string_title(editor_client):
+    tid = editor_client.post("/lamulana/api/threads", json={"title": "a"}
+                              ).get_json()["thread"]["id"]
+    r = editor_client.patch(f"/lamulana/api/threads/{tid}", json={"title": 123})
+    assert r.status_code == 400
+    thread = editor_client.get("/lamulana/api/threads").get_json()["threads"][0]
+    assert thread["title"] == "a"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1622,8 +1670,10 @@ def api_thread_detail(thread_id):
 def api_thread_create():
     if (err := need_edit()):
         return err
-    b = _body()
-    title = (b.get("title") or "").strip()
+    b, err = _clean_body(_body(), THREAD_FIELDS)
+    if err:
+        return err
+    title = b.get("title", "").strip()
     if not title:
         return jsonify({"error": "title required"}), 400
     now = _now()
@@ -1636,25 +1686,31 @@ def api_thread_create():
     return jsonify({"thread": _one_thread(cur.lastrowid)})
 
 
-THREAD_PATCHABLE = ("title", "area_id", "body", "state", "solution")
-
-
 @bp.route("/api/threads/<int:thread_id>", methods=["PATCH"])
 def api_thread_patch(thread_id):
     if (err := need_edit()):
         return err
-    b = _body()
-    if "state" in b and b["state"] not in THREAD_STATES:
-        return jsonify({"error": "bad state"}), 400
-    if "title" in b and not (b.get("title") or "").strip():
+    # THREAD_FIELDS deliberately has no "state" entry: a state change carries
+    # the solved_at bookkeeping below, which is not a plain column write, so
+    # it stays a hand-written check against the raw body rather than folding
+    # into _clean_body. _clean_body still validates and normalizes every
+    # other field -- title, area_id, body, solution -- the same way clues do.
+    raw = _body()
+    b, err = _clean_body(raw, THREAD_FIELDS)
+    if err:
+        return err
+    if "state" in raw:
+        if raw["state"] not in THREAD_STATES:
+            return jsonify({"error": f"state must be one of {sorted(THREAD_STATES)}"}), 400
+        b["state"] = raw["state"]
+    if "title" in b and not b["title"].strip():
         return jsonify({"error": "title required"}), 400
-    fields = [k for k in THREAD_PATCHABLE if k in b]
-    if not fields:
+    if not b:
         return jsonify({"error": "nothing to change"}), 400
     if not _one_thread(thread_id):
         return jsonify({"error": "no such thread"}), 404
-    sets = ", ".join(f"{f} = ?" for f in fields)
-    params = [b[f] for f in fields] + [_now(), thread_id]
+    sets = ", ".join(f"{f} = ?" for f in b)
+    params = list(b.values()) + [_now(), thread_id]
     with _db.LOCK:
         _conn().execute(f"UPDATE thread SET {sets}, updated_at = ? WHERE id = ?", params)
         if b.get("state") == "solved":
@@ -1681,7 +1737,12 @@ def api_thread_delete(thread_id):
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `.venv/bin/python -m pytest tests/test_lamulana_api.py -v`
-Expected: PASS, 15 passed
+Expected: PASS. Count from here on is derived, not asserted from a run --
+Task 4 left the file at 26 tests (verified: `.venv/bin/python -m pytest
+tests/test_lamulana_api.py -v` after Task 4's spec-review fixes), and this
+step's block adds 9 (5 original + 4 bad-input/nothing-written), so 35 passed.
+If the real number differs, trust the run over this comment and fix the
+comment, the same way Task 4's stale "10 passed" got caught here.
 
 - [ ] **Step 5: Commit**
 
@@ -1891,7 +1952,16 @@ def api_thread_solve(thread_id):
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `.venv/bin/python -m pytest tests/test_lamulana_api.py -v`
-Expected: PASS, 24 passed
+Expected: PASS. Derived like Task 5's count above: 35 from Task 5 + 9 in this
+task's block = 44 passed. Trust the actual run over this number.
+
+Note for whoever implements this task: `api_thread_solve`'s `b.get("solution")`
+goes straight into `thread.solution` with no type check, the same gap
+`_clean_body` exists to close elsewhere -- a list or dict there reaches
+SQLite's bind and 500s the same way a bad `area_id` used to. It was not
+folded in during the Task 4/5 validation pass because this route was out of
+that pass's scope, not because it is fine; consider a small
+`_clean_body(_body(), {"solution": (str, type(None))})` here too.
 
 - [ ] **Step 5: Commit**
 
@@ -1990,6 +2060,31 @@ def test_duplicate_custom_row_is_rejected(editor_client):
     assert r.status_code == 409
 
 
+# --- Bad input must 400, never reach SQLite as a 500 (same gap Task 4 found
+# and fixed for clues -- see _clean_body) ------------------------------------
+
+def test_checklist_add_rejects_a_non_string_group(editor_client):
+    before = editor_client.get("/lamulana/api/checklist").get_json()["groups"]
+    r = editor_client.post("/lamulana/api/checklist", json={"group": 123, "name": "x"})
+    assert r.status_code == 400
+    assert editor_client.get("/lamulana/api/checklist").get_json()["groups"] == before
+
+
+def test_checklist_add_rejects_a_non_string_name(editor_client):
+    before = editor_client.get("/lamulana/api/checklist").get_json()["groups"]
+    r = editor_client.post("/lamulana/api/checklist", json={"group": "Garbs", "name": 123})
+    assert r.status_code == 400
+    assert editor_client.get("/lamulana/api/checklist").get_json()["groups"] == before
+
+
+def test_checklist_note_rejects_a_non_string(editor_client):
+    item = editor_client.get("/lamulana/api/checklist").get_json()["groups"][0]["items"][0]
+    r = editor_client.patch(f"/lamulana/api/checklist/{item['id']}", json={"note": 123})
+    assert r.status_code == 400
+    got = editor_client.get("/lamulana/api/checklist").get_json()["groups"][0]["items"][0]
+    assert got["note"] == item["note"]
+
+
 def test_checklist_writes_need_an_editing_session(reader_client):
     assert reader_client.patch("/lamulana/api/checklist/1", json={}).status_code == 403
     assert reader_client.post("/lamulana/api/checklist", json={}).status_code == 403
@@ -2031,6 +2126,13 @@ def api_search():
 # Checklist
 # ---------------------------------------------------------------------------
 
+# One dict covers both writes: api_checklist_add reads group/name out of it,
+# api_checklist_patch reads note. "done" isn't listed -- it goes through
+# bool(), which tolerates any JSON type without raising, so it doesn't need
+# _clean_body's protection the way a string field being the wrong type does.
+CHECKLIST_FIELDS = {"group": str, "name": str, "note": (str, type(None))}
+
+
 def _one_item(item_id):
     row = _conn().execute(
         "SELECT id, group_name, name, position, done, done_at, note"
@@ -2052,12 +2154,15 @@ def api_checklist():
 def api_checklist_patch(item_id):
     if (err := need_edit()):
         return err
+    raw = _body()
+    b, err = _clean_body(raw, CHECKLIST_FIELDS)
+    if err:
+        return err
     if not _one_item(item_id):
         return jsonify({"error": "no such item"}), 404
-    b = _body()
     with _db.LOCK:
-        if "done" in b:
-            done = bool(b["done"])
+        if "done" in raw:
+            done = bool(raw["done"])
             # done_at is cleared on untick rather than left behind, so it always
             # means "when this was ticked", never "when it was ticked once".
             _conn().execute(
@@ -2074,9 +2179,11 @@ def api_checklist_patch(item_id):
 def api_checklist_add():
     if (err := need_edit()):
         return err
-    b = _body()
-    group = (b.get("group") or "").strip()
-    name = (b.get("name") or "").strip()
+    b, err = _clean_body(_body(), CHECKLIST_FIELDS)
+    if err:
+        return err
+    group = b.get("group", "").strip()
+    name = b.get("name", "").strip()
     if not group or not name:
         return jsonify({"error": "group and name required"}), 400
     row = _conn().execute(
@@ -2115,7 +2222,8 @@ import time
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `.venv/bin/python -m pytest tests/test_lamulana_api.py -v`
-Expected: PASS, 34 passed
+Expected: PASS. Derived like Tasks 5 and 6 above: 44 from Task 6 + 13 in this
+task's block (10 original + 3 bad-input/nothing-written) = 57 passed.
 
 - [ ] **Step 5: Run the whole suite**
 
