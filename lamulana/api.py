@@ -349,6 +349,139 @@ def api_clue_delete(clue_id):
     return jsonify({"ok": True})
 
 
+
+# ---------------------------------------------------------------------------
+# Threads
+# ---------------------------------------------------------------------------
+
+THREAD_SELECT = """
+    SELECT t.id, t.title, t.area_id, a.name AS area, t.body, t.state, t.solution,
+           t.created_at, t.updated_at, t.solved_at,
+           (SELECT COUNT(*) FROM clue_thread ct WHERE ct.thread_id = t.id)
+               AS clue_count
+    FROM thread t LEFT JOIN area a ON a.id = t.area_id
+"""
+
+
+def _one_thread(thread_id):
+    row = _conn().execute(THREAD_SELECT + " WHERE t.id = ?", (thread_id,)).fetchone()
+    return dict(row) if row else None
+
+
+@bp.route("/api/threads")
+def api_threads():
+    where, params = [], []
+    if request.args.get("area"):
+        where.append("t.area_id = ?"); params.append(request.args["area"])
+    if request.args.get("state"):
+        where.append("t.state = ?"); params.append(request.args["state"])
+    clause, qp = _search_terms(request.args.get("q"),
+                               ["t.title", "t.body", "t.solution"])
+    if clause:
+        where.append(clause); params += qp
+    sql = THREAD_SELECT
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    # Open threads first: this list is a worklist, and a solved thread is
+    # history. Within each half, most recently touched first.
+    sql += " ORDER BY t.state = 'solved', t.updated_at DESC, t.id DESC"
+    return jsonify({"threads": [dict(r) for r in _conn().execute(sql, params).fetchall()]})
+
+
+@bp.route("/api/threads/<int:thread_id>")
+def api_thread_detail(thread_id):
+    """One thread with every linked clue inlined at full length.
+
+    The clues are the point: this is the screen you sit down with when you
+    finally try to crack something, and it exists so the scattered text is on
+    one page instead of in three browser tabs.
+    """
+    thread = _one_thread(thread_id)
+    if not thread:
+        return jsonify({"error": "no such thread"}), 404
+    rows = _conn().execute(CLUE_SELECT + """
+        JOIN clue_thread ct ON ct.clue_id = c.id
+        WHERE ct.thread_id = ?
+        ORDER BY c.state, c.id
+    """, (thread_id,)).fetchall()
+    thread["clues"] = _clue_json(rows)
+    return jsonify({"thread": thread})
+
+
+@bp.route("/api/threads", methods=["POST"])
+def api_thread_create():
+    if (err := need_edit()):
+        return err
+    b, err = _clean_body(_body(), THREAD_FIELDS)
+    if err:
+        return err
+    title = b.get("title", "").strip()
+    if not title:
+        return jsonify({"error": "title required"}), 400
+    now = _now()
+    with _db.LOCK:
+        cur = _conn().execute("""
+            INSERT INTO thread (title, area_id, body, state, created_at, updated_at)
+            VALUES (?, ?, ?, 'open', ?, ?)
+        """, (title, b.get("area_id"), b.get("body"), now, now))
+        _conn().commit()
+    return jsonify({"thread": _one_thread(cur.lastrowid)})
+
+
+@bp.route("/api/threads/<int:thread_id>", methods=["PATCH"])
+def api_thread_patch(thread_id):
+    if (err := need_edit()):
+        return err
+    # THREAD_FIELDS deliberately has no "state" entry: a state change carries
+    # the solved_at bookkeeping below, which is not a plain column write, so
+    # it stays a hand-written check against the raw body rather than folding
+    # into _clean_body. _clean_body still validates and normalizes every
+    # other field -- title, area_id, body, solution -- the same way clues do.
+    raw = _body()
+    b, err = _clean_body(raw, THREAD_FIELDS)
+    if err:
+        return err
+    if "state" in raw:
+        if raw["state"] not in THREAD_STATES:
+            return jsonify({"error": f"state must be one of {sorted(THREAD_STATES)}"}), 400
+        b["state"] = raw["state"]
+    if "title" in b and not b["title"].strip():
+        return jsonify({"error": "title required"}), 400
+    if not b:
+        return jsonify({"error": "nothing to change"}), 400
+    sets = ", ".join(f"{f} = ?" for f in b)
+    params = list(b.values()) + [_now(), thread_id]
+    # The existence check and the write are the same locked UPDATE (rowcount
+    # tells them apart) rather than a SELECT before the lock followed by the
+    # UPDATE inside it: a concurrent DELETE landing in that gap would have
+    # left this returning 200 with a thread that no longer exists -- the same
+    # fix Task 4 applied to clue PATCH.
+    with _db.LOCK:
+        cur = _conn().execute(f"UPDATE thread SET {sets}, updated_at = ? WHERE id = ?", params)
+        if cur.rowcount:
+            if b.get("state") == "solved":
+                _conn().execute(
+                    "UPDATE thread SET solved_at = ? WHERE id = ? AND solved_at IS NULL",
+                    (_now(), thread_id))
+            if b.get("state") == "open":
+                _conn().execute("UPDATE thread SET solved_at = NULL WHERE id = ?",
+                                (thread_id,))
+        _conn().commit()
+    if not cur.rowcount:
+        return jsonify({"error": "no such thread"}), 404
+    return jsonify({"thread": _one_thread(thread_id)})
+
+
+@bp.route("/api/threads/<int:thread_id>", methods=["DELETE"])
+def api_thread_delete(thread_id):
+    if (err := need_edit()):
+        return err
+    with _db.LOCK:
+        _conn().execute("DELETE FROM thread WHERE id = ?", (thread_id,))
+        _conn().commit()
+    return jsonify({"ok": True})
+
+
 @bp.route("/api/rooms")
 def api_rooms():
     """Distinct room names, for the capture form's autocomplete."""

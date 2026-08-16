@@ -310,3 +310,75 @@ def test_search_backslash_is_literal_not_an_escape_character(editor_client):
     got = editor_client.get("/lamulana/api/clues",
                              query_string={"q": r"back\slash"}).get_json()["clues"]
     assert [c["title"] for c in got] == ["back\\slash"]
+
+
+def test_create_thread(editor_client):
+    area = _area_id(editor_client, "Immortal Battlefield")
+    r = editor_client.post("/lamulana/api/threads", json={
+        "title": "ankh won't spawn", "area_id": area,
+        "body": "solved the block puzzle, no ankh",
+    })
+    assert r.status_code == 200
+    t = r.get_json()["thread"]
+    assert t["state"] == "open"
+    assert t["area"] == "Immortal Battlefield"
+    assert t["clue_count"] == 0
+
+
+def test_thread_detail_has_no_clues_yet(editor_client):
+    tid = editor_client.post("/lamulana/api/threads", json={"title": "t"}
+                              ).get_json()["thread"]["id"]
+    r = editor_client.get(f"/lamulana/api/threads/{tid}")
+    assert r.get_json()["thread"]["clues"] == []
+
+
+def test_thread_detail_404s_when_missing(editor_client):
+    assert editor_client.get("/lamulana/api/threads/9999").status_code == 404
+
+
+def test_threads_filter_by_state(editor_client):
+    editor_client.post("/lamulana/api/threads", json={"title": "open one"})
+    tid = editor_client.post("/lamulana/api/threads", json={"title": "done one"}
+                              ).get_json()["thread"]["id"]
+    editor_client.patch(f"/lamulana/api/threads/{tid}", json={"state": "solved"})
+    got = editor_client.get("/lamulana/api/threads?state=open").get_json()["threads"]
+    assert [t["title"] for t in got] == ["open one"]
+
+
+def test_thread_writes_need_an_editing_session(reader_client):
+    assert reader_client.post("/lamulana/api/threads", json={"title": "a"}).status_code == 403
+    assert reader_client.patch("/lamulana/api/threads/1", json={}).status_code == 403
+    assert reader_client.delete("/lamulana/api/threads/1").status_code == 403
+
+
+# --- Bad input must 400, never reach SQLite as a 500 (same gap Task 4 found
+# and fixed for clues -- see _clean_body) ------------------------------------
+
+def test_thread_create_rejects_a_nonexistent_area_id(editor_client):
+    r = editor_client.post("/lamulana/api/threads", json={"title": "a", "area_id": 999999})
+    assert r.status_code == 400
+    assert editor_client.get("/lamulana/api/threads").get_json()["threads"] == []
+
+
+def test_thread_patch_rejects_a_nonexistent_area_id(editor_client):
+    tid = editor_client.post("/lamulana/api/threads", json={"title": "a"}
+                              ).get_json()["thread"]["id"]
+    r = editor_client.patch(f"/lamulana/api/threads/{tid}", json={"area_id": 999999})
+    assert r.status_code == 400
+    thread = editor_client.get("/lamulana/api/threads").get_json()["threads"][0]
+    assert thread["area_id"] is None
+
+
+def test_thread_create_rejects_a_non_string_title(editor_client):
+    r = editor_client.post("/lamulana/api/threads", json={"title": 123})
+    assert r.status_code == 400
+    assert editor_client.get("/lamulana/api/threads").get_json()["threads"] == []
+
+
+def test_thread_patch_rejects_a_non_string_title(editor_client):
+    tid = editor_client.post("/lamulana/api/threads", json={"title": "a"}
+                              ).get_json()["thread"]["id"]
+    r = editor_client.patch(f"/lamulana/api/threads/{tid}", json={"title": 123})
+    assert r.status_code == 400
+    thread = editor_client.get("/lamulana/api/threads").get_json()["threads"][0]
+    assert thread["title"] == "a"
