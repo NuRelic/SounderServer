@@ -1,4 +1,7 @@
+import sqlite3
 import threading
+
+import pytest
 
 from lamulana import seed
 import lamulana.db as db
@@ -166,6 +169,14 @@ def test_ordered_migration_steps_run_once_in_order(lamulana_db, monkeypatch):
     db.init_schema(lamulana_db)
     assert ran == ["first", "second"], "already-applied steps must not re-run"
     assert db._schema_version(lamulana_db) == 2
+
+
+def test_clue_state_outside_the_vocabulary_is_rejected(lamulana_db):
+    """The CHECK constraint is storage-level enforcement, not just app-level."""
+    with pytest.raises(sqlite3.IntegrityError):
+        lamulana_db.execute(
+            "INSERT INTO clue (title, state, created_at, updated_at)"
+            " VALUES ('x', 'bogus', 0, 0)")
 
 
 def test_migration_does_not_deadlock_on_the_write_lock(tmp_path):

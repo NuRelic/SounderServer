@@ -41,9 +41,11 @@ CREATE TABLE IF NOT EXISTS clue (
     body           TEXT NOT NULL DEFAULT '',
     area_id        INTEGER REFERENCES area(id) ON DELETE SET NULL,
     room           TEXT,
-    source         TEXT NOT NULL DEFAULT 'tablet',
+    source         TEXT NOT NULL DEFAULT 'tablet'
+                   CHECK (source IN ('tablet', 'npc', 'mail', 'other')),
     interpretation TEXT,
-    state          TEXT NOT NULL DEFAULT 'raw',
+    state          TEXT NOT NULL DEFAULT 'raw'
+                   CHECK (state IN ('raw', 'understood', 'used')),
     created_at     INTEGER NOT NULL,
     updated_at     INTEGER NOT NULL
 );
@@ -53,7 +55,8 @@ CREATE TABLE IF NOT EXISTS thread (
     title      TEXT NOT NULL,
     area_id    INTEGER REFERENCES area(id) ON DELETE SET NULL,
     body       TEXT,
-    state      TEXT NOT NULL DEFAULT 'open',
+    state      TEXT NOT NULL DEFAULT 'open'
+               CHECK (state IN ('open', 'solved')),
     solution   TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,

@@ -22,6 +22,7 @@ import time
 import threading
 import subprocess
 import shutil
+import traceback
 from collections import deque
 
 from datetime import timedelta
@@ -31,6 +32,8 @@ from flask import (
     Flask, request, jsonify, send_file, render_template, abort, session
 )
 from werkzeug.utils import secure_filename
+
+from auth import can_edit
 
 # ----------------------------------------------------------------------------
 # Config
@@ -60,8 +63,15 @@ os.makedirs(DATA_DIR, exist_ok=True)
 app = Flask(__name__)
 from recipes import recipes_bp
 app.register_blueprint(recipes_bp)
-from lamulana import lamulana_bp
-app.register_blueprint(lamulana_bp)
+
+# The tracker owns its own database and bootstraps it at import. Mount it
+# defensively: an unwritable or corrupt lamulana.db must cost us /lamulana,
+# not the soundboard and the recipes list in the same process.
+try:
+    from lamulana import lamulana_bp
+    app.register_blueprint(lamulana_bp)
+except Exception:
+    traceback.print_exc()
 
 # ----------------------------------------------------------------------------
 # Sessions / auth (staging)
@@ -99,9 +109,6 @@ def _gzip_json(resp):
     except Exception:
         pass
     return resp
-
-def can_edit():
-    return bool(session.get("admin") or session.get("can_edit"))
 
 def me_dict():
     # listening is open to everyone; these two tiers gate add/edit and remove

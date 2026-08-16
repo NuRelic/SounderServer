@@ -321,7 +321,10 @@ def lamulana_db(tmp_path):
 Add to `tests/test_lamulana_db.py`:
 
 ```python
+import sqlite3
 import threading
+
+import pytest
 
 import lamulana.db as db
 
@@ -453,6 +456,14 @@ def test_ordered_migration_steps_run_once_in_order(lamulana_db, monkeypatch):
     assert db._schema_version(lamulana_db) == 2
 
 
+def test_clue_state_outside_the_vocabulary_is_rejected(lamulana_db):
+    """The CHECK constraint is storage-level enforcement, not just app-level."""
+    with pytest.raises(sqlite3.IntegrityError):
+        lamulana_db.execute(
+            "INSERT INTO clue (title, state, created_at, updated_at)"
+            " VALUES ('x', 'bogus', 0, 0)")
+
+
 def test_migration_does_not_deadlock_on_the_write_lock(tmp_path):
     """`LOCK` is not reentrant; init_schema -> migrate must not nest it.
 
@@ -526,9 +537,11 @@ CREATE TABLE IF NOT EXISTS clue (
     body           TEXT NOT NULL DEFAULT '',
     area_id        INTEGER REFERENCES area(id) ON DELETE SET NULL,
     room           TEXT,
-    source         TEXT NOT NULL DEFAULT 'tablet',
+    source         TEXT NOT NULL DEFAULT 'tablet'
+                   CHECK (source IN ('tablet', 'npc', 'mail', 'other')),
     interpretation TEXT,
-    state          TEXT NOT NULL DEFAULT 'raw',
+    state          TEXT NOT NULL DEFAULT 'raw'
+                   CHECK (state IN ('raw', 'understood', 'used')),
     created_at     INTEGER NOT NULL,
     updated_at     INTEGER NOT NULL
 );
@@ -538,7 +551,8 @@ CREATE TABLE IF NOT EXISTS thread (
     title      TEXT NOT NULL,
     area_id    INTEGER REFERENCES area(id) ON DELETE SET NULL,
     body       TEXT,
-    state      TEXT NOT NULL DEFAULT 'open',
+    state      TEXT NOT NULL DEFAULT 'open'
+               CHECK (state IN ('open', 'solved')),
     solution   TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
@@ -705,7 +719,7 @@ def seed_all(conn):
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `.venv/bin/python -m pytest tests/test_lamulana_db.py -v`
-Expected: PASS, 17 passed
+Expected: PASS, 18 passed
 
 - [ ] **Step 5: Check nothing else broke**
 
@@ -725,18 +739,31 @@ git commit -m "feat(lamulana): schema, per-thread connections, idempotent seed"
 ## Task 3: Blueprint skeleton, page route, bootstrap
 
 **Files:**
+- Create: `auth.py` (the write-gate predicate, shared by the soundboard and every blueprint)
 - Rewrite: `lamulana/api.py`
-- Modify: `server.py` (the `app.register_blueprint` block near line 60)
+- Modify: `server.py` (defensive blueprint mount; `can_edit`/`need_edit` now import from `auth.py`)
+- Modify: `recipes/api.py` (`can_edit`/`need_edit` now import from `auth.py`)
 - Modify: `tests/conftest.py` (sys.modules scrub)
 - Create: `templates/lamulana.html` (placeholder, replaced in Task 9)
 - Test: `tests/test_lamulana_api.py`
+- Test: `tests/test_lamulana_db.py` (one CHECK-constraint test, added alongside this task)
+
+Two things ride along with the blueprint mount here, both caught in review
+rather than planned up front: `can_edit`/`need_edit` had drifted into three
+near-identical copies (`server.py`, `recipes/api.py`, this file), so they move
+to a shared `auth.py`; and a broken `lamulana.db` must not be able to take the
+soundboard down with it, so the mount is defensive.
 
 - [ ] **Step 1: Write the failing test**
 
 Create `tests/test_lamulana_api.py`:
 
 ```python
-import json
+import importlib
+import os
+import pathlib
+import stat
+import sys
 
 
 def test_page_renders(client):
@@ -744,28 +771,136 @@ def test_page_renders(client):
     assert r.status_code == 200
 
 
-def test_bootstrap_returns_areas_and_checklist(client):
-    r = client.get("/lamulana/api/bootstrap")
-    assert r.status_code == 200
-    data = r.get_json()
-    assert len(data["areas"]) == 28
-    assert data["areas"][0]["name"] == "Village of Departure"
-    groups = {g["group"]: g for g in data["checklist"]}
-    assert set(groups) == {"Guardians", "Sacred Orbs", "Mantras", "Maps", "Apps"}
-    assert len(groups["Guardians"]["items"]) == 10
+def test_bootstrap_checklist_keeps_the_seeds_group_order(client):
+    data = client.get("/lamulana/api/bootstrap").get_json()
+    assert [g["group"] for g in data["checklist"]] == [
+        "Guardians", "Sacred Orbs", "Mantras", "Maps", "Apps"]
+    guardians = data["checklist"][0]["items"]
+    assert guardians[0]["name"].startswith("Fafnir")     # position order, not id
+    assert "group_name" not in guardians[0]              # folded into the wrapper
+    assert guardians[0]["done"] is False                 # a JSON bool, not 0
 
 
-def test_bootstrap_counts_start_at_zero(client):
+def test_bootstrap_counts_distinguish_their_sources(client, app):
+    conn = sys.modules["lamulana.api"]._conn()
+    conn.execute("INSERT INTO clue (title, state, created_at, updated_at)"
+                 " VALUES ('a', 'raw', 0, 0)")
+    conn.execute("INSERT INTO clue (title, state, created_at, updated_at)"
+                 " VALUES ('b', 'understood', 0, 0)")
+    conn.execute("INSERT INTO thread (title, state, created_at, updated_at)"
+                 " VALUES ('t', 'open', 0, 0)")
+    conn.execute("INSERT INTO thread (title, state, created_at, updated_at)"
+                 " VALUES ('u', 'solved', 0, 0)")
+    conn.commit()
     counts = client.get("/lamulana/api/bootstrap").get_json()["counts"]
-    assert counts == {"clues": 0, "clues_understood": 0, "threads_open": 0}
+    assert counts == {"clues": 2, "clues_understood": 1, "threads_open": 1}
+
+
+def test_soundboard_survives_a_broken_tracker_database(tmp_path, monkeypatch):
+    """A lamulana.db that fails to open must cost /lamulana, not the app.
+
+    server.py wraps the blueprint mount in try/except for exactly this: an
+    unwritable or corrupt tracker database must not take the soundboard and
+    the recipes list down with it. Simulate "can't open" the same way SQLite
+    hits it -- a database file with no permissions -- rather than an
+    unwritable directory, which would also break the recipes blueprint's own
+    database and defeat the point of the test.
+    """
+    data = tmp_path / "data"
+    sounds = tmp_path / "sounds"
+    data.mkdir()
+    sounds.mkdir()
+
+    broken = data / "lamulana.db"
+    broken.write_bytes(b"")
+    os.chmod(broken, 0)
+
+    monkeypatch.setenv("DATA_DIR", str(data))
+    monkeypatch.setenv("SOUND_DIR", str(sounds))
+    monkeypatch.setenv("USER_PASS", "editpw")
+    monkeypatch.setenv("ADMIN_PASS", "adminpw")
+    monkeypatch.setenv("CATALOG_SEED", str(tmp_path / "nonexistent.db"))
+
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+    if "server" in sys.modules:
+        del sys.modules["server"]
+    for mod in [m for m in sys.modules
+                if m in ("recipes", "lamulana")
+                or m.startswith(("recipes.", "lamulana."))]:
+        del sys.modules[mod]
+
+    try:
+        server = importlib.import_module("server")
+        server.scan_library()
+        server.app.config["TESTING"] = True
+        c = server.app.test_client()
+
+        assert c.get("/api/sounds").status_code == 200
+        assert c.get("/lamulana/").status_code == 404
+    finally:
+        os.chmod(broken, stat.S_IRUSR | stat.S_IWUSR)  # let tmp_path cleanup remove it
+        if "server" in sys.modules:
+            del sys.modules["server"]
+        for mod in [m for m in sys.modules
+                    if m in ("recipes", "lamulana")
+                    or m.startswith(("recipes.", "lamulana."))]:
+            del sys.modules[mod]
 ```
+
+Also add to `tests/test_lamulana_db.py`, after `test_ordered_migration_steps_run_once_in_order`
+(needs `import sqlite3` and `import pytest` at the top of that file, added in Task 2):
+
+```python
+def test_clue_state_outside_the_vocabulary_is_rejected(lamulana_db):
+    """The CHECK constraint is storage-level enforcement, not just app-level."""
+    with pytest.raises(sqlite3.IntegrityError):
+        lamulana_db.execute(
+            "INSERT INTO clue (title, state, created_at, updated_at)"
+            " VALUES ('x', 'bogus', 0, 0)")
+```
+
+The two bootstrap tests are deliberately load-bearing, not smoke tests: the
+checklist one fails if `_checklist_groups()` stops popping `group_name` or
+stops coercing `done` to a real bool, and the counts one uses distinguishable
+values (2/1/1) precisely so a count pointed at the wrong table or the wrong
+state string doesn't accidentally still match.
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `.venv/bin/python -m pytest tests/test_lamulana_api.py -v`
 Expected: FAIL — 404 on `/lamulana/`
 
-- [ ] **Step 3: Write the blueprint**
+- [ ] **Step 3: Create the shared write-gate predicate**
+
+Create `auth.py` at the repo root:
+
+```python
+"""Who may write. One definition, imported by the soundboard and every blueprint.
+
+Deliberately not three copies: this is the predicate that decides whether a
+request may change state, and a copy that drifts from the others is a hole
+rather than an inconsistency. Listening and reading stay open to everyone --
+these gate writes only.
+"""
+from flask import jsonify, session
+
+
+def can_edit():
+    return bool(session.get("admin") or session.get("can_edit"))
+
+
+def need_edit():
+    """An error response if this session may not write, else None."""
+    if not can_edit():
+        return jsonify({"error": "login required"}), 403
+    return None
+```
+
+`auth.py` imports only `flask`, so there is no circular import — blueprints
+can import from the repo root freely; `server.py` is the one that imports the
+blueprints, never the reverse.
+
+- [ ] **Step 4: Write the blueprint**
 
 Replace `lamulana/api.py` entirely:
 
@@ -775,14 +910,21 @@ Replace `lamulana/api.py` entirely:
 Read it in order: helpers, then clues, then threads, then the link between them,
 then search and the checklist. The thread routes are the ones with real behavior
 -- solving a thread reaches back into the clues that fed it.
+
+Only the page route and bootstrap exist so far. Clues, threads, the link
+between them, and search land in Tasks 4-8 -- if you came here looking for
+them, they are not written yet.
 """
 
 import os
 import time
 
-from flask import Blueprint, jsonify, render_template, request, session
+from flask import Blueprint, jsonify, render_template, request
+
+from auth import can_edit, need_edit
 
 from . import db as _db
+from .seed import CHECKLIST as _SEED_CHECKLIST
 
 bp = Blueprint("lamulana", __name__, url_prefix="/lamulana")
 
@@ -793,6 +935,7 @@ DATA_DIR = os.environ.get(
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, "lamulana.db")
 
+# Used by Task 4 to validate request bodies for the clue/thread routes it adds.
 CLUE_STATES = ("raw", "understood", "used")
 CLUE_SOURCES = ("tablet", "npc", "mail", "other")
 THREAD_STATES = ("open", "solved")
@@ -809,17 +952,6 @@ def _conn():
 # the write lock during the first seconds after a deploy.
 _db.init_schema(_conn())
 _db.seed_all(_conn())
-
-
-def can_edit():
-    return bool(session.get("admin") or session.get("can_edit"))
-
-
-def need_edit():
-    """An error response if this session may not write, else None."""
-    if not can_edit():
-        return jsonify({"error": "login required"}), 403
-    return None
 
 
 def _body():
@@ -840,7 +972,7 @@ def api_bootstrap():
     """Everything the page needs on load, in one request."""
     areas = [dict(r) for r in _conn().execute(
         "SELECT id, name, position FROM area ORDER BY position"
-    )]
+    ).fetchall()]
     counts = {
         "clues": _conn().execute("SELECT COUNT(*) FROM clue").fetchone()[0],
         "clues_understood": _conn().execute(
@@ -851,25 +983,64 @@ def api_bootstrap():
     return jsonify({"areas": areas, "checklist": _checklist_groups(), "counts": counts})
 
 
+# Group name -> its index in seed.CHECKLIST, i.e. the authored progression
+# order (Guardians, Sacred Orbs, Mantras, Maps, Apps) that the Progress screen
+# renders in. checklist_item has no group-position column of its own -- there
+# is no schema change worth a migration for a database nothing has written to
+# yet, per lamulana/db.py's docstring -- so the order is imposed here in
+# Python instead of in SQL.
+_GROUP_RANK = {name: i for i, (name, _items) in enumerate(_SEED_CHECKLIST)}
+
+
 def _checklist_groups():
+    # ORDER BY group_name here is only the within-group tiebreak's foundation
+    # (position, id); the group_name term just keeps rows for the same group
+    # adjacent so the loop below can bucket them in one pass. The group order
+    # itself is re-imposed by _GROUP_RANK after grouping, below.
     rows = _conn().execute(
         "SELECT id, group_name, name, position, done, done_at, note"
         " FROM checklist_item ORDER BY group_name, position, id"
     ).fetchall()
-    order = []
     by_group = {}
     for r in rows:
-        if r["group_name"] not in by_group:
-            by_group[r["group_name"]] = []
-            order.append(r["group_name"])
         item = dict(r)
         item.pop("group_name")
         item["done"] = bool(item["done"])
-        by_group[r["group_name"]].append(item)
-    return [{"group": g, "items": by_group[g]} for g in order]
+        by_group.setdefault(r["group_name"], []).append(item)
+    # Seeded groups sort by their authored progression order; a group a player
+    # added that isn't in the seed sorts alphabetically after all of them.
+    groups = sorted(by_group, key=lambda g: (_GROUP_RANK.get(g, len(_GROUP_RANK)), g))
+    return [{"group": g, "items": by_group[g]} for g in groups]
 ```
 
-- [ ] **Step 4: Register the blueprint**
+Note `_checklist_groups()` orders top-level groups by `_GROUP_RANK`, not by
+`group_name` alphabetically — `group_name` in the SQL `ORDER BY` is only there
+to make the single-pass bucketing loop simple, and would otherwise put "Apps"
+first, which is wrong: it's the last thing you unlock, not the first.
+
+- [ ] **Step 5: Point `server.py` and `recipes/api.py` at the shared predicate**
+
+In `server.py`, delete the local `can_edit()` definition and import it instead:
+
+```python
+from auth import can_edit
+```
+
+(add this import near the top, alongside the other non-stdlib imports; `session`
+stays imported from `flask` there, since `server.py` still uses it directly
+elsewhere).
+
+In `recipes/api.py`, delete the local `can_edit()` and `need_edit()` definitions
+and import both instead:
+
+```python
+from auth import can_edit, need_edit
+```
+
+`session` drops out of `recipes/api.py`'s `flask` import — nothing else in that
+file uses it directly.
+
+- [ ] **Step 6: Mount the blueprint defensively**
 
 In `server.py`, find the existing two lines (near line 61):
 
@@ -883,11 +1054,21 @@ and make them:
 ```python
 from recipes import recipes_bp
 app.register_blueprint(recipes_bp)
-from lamulana import lamulana_bp
-app.register_blueprint(lamulana_bp)
+
+# The tracker owns its own database and bootstraps it at import. Mount it
+# defensively: an unwritable or corrupt lamulana.db must cost us /lamulana,
+# not the soundboard and the recipes list in the same process.
+try:
+    from lamulana import lamulana_bp
+    app.register_blueprint(lamulana_bp)
+except Exception:
+    traceback.print_exc()
 ```
 
-- [ ] **Step 5: Scrub the module in tests**
+`server.py` does not import `traceback` yet — add `import traceback` alongside
+its other stdlib imports.
+
+- [ ] **Step 7: Scrub the module in tests**
 
 In `tests/conftest.py`, find the loop that deletes cached `recipes` modules and
 extend it to cover `lamulana`, which caches `DB_PATH` at import for the same
@@ -900,7 +1081,11 @@ reason:
         del sys.modules[mod]
 ```
 
-- [ ] **Step 6: Add a placeholder template**
+Update the comment above the loop too — it explained the scrub purely in terms
+of `recipes`; say `lamulana/api.py` resolves `DB_PATH` at import for the same
+reason.
+
+- [ ] **Step 8: Add a placeholder template**
 
 Create `templates/lamulana.html` with a single line, replaced wholesale in Task 9:
 
@@ -908,15 +1093,30 @@ Create `templates/lamulana.html` with a single line, replaced wholesale in Task 
 <!doctype html><title>La-Mulana 2</title><p>placeholder</p>
 ```
 
-- [ ] **Step 7: Run test to verify it passes**
+- [ ] **Step 9: Run test to verify it passes**
 
-Run: `.venv/bin/python -m pytest tests/test_lamulana_api.py -v`
-Expected: PASS, 3 passed
+Run: `.venv/bin/python -m pytest tests/test_lamulana_api.py tests/test_lamulana_db.py -v`
+Expected: PASS, 22 passed (4 in test_lamulana_api.py, 18 in test_lamulana_db.py)
 
-- [ ] **Step 8: Commit**
+Then deliberately break `_checklist_groups()` (drop the `group_name` pop and
+the `bool()` coercion) and confirm
+`test_bootstrap_checklist_keeps_the_seeds_group_order` fails, to prove the test
+is load-bearing before trusting it. Restore afterward.
+
+- [ ] **Step 10: Check nothing else broke**
+
+Run: `.venv/bin/python -m pytest -q`
+Expected: all existing tests still pass — 281 passed (279 before this task's
+test changes, +1 for the CHECK-constraint test in Task 2's file, +1 net new in
+this task's file: two bootstrap tests were replaced 1-for-1 and one new
+soundboard-resilience test was added).
+
+- [ ] **Step 11: Commit**
 
 ```bash
-git add lamulana/api.py server.py tests/conftest.py tests/test_lamulana_api.py templates/lamulana.html
+git add auth.py lamulana/api.py lamulana/db.py server.py recipes/api.py \
+        tests/conftest.py tests/test_lamulana_api.py tests/test_lamulana_db.py \
+        templates/lamulana.html
 git commit -m "feat(lamulana): mount the blueprint, serve bootstrap"
 ```
 
