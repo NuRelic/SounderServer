@@ -68,6 +68,23 @@ def recipes_db(tmp_path):
 
 
 @pytest.fixture
+def lamulana_db(tmp_path):
+    """A fresh, seeded lamulana database on disk, isolated per test.
+
+    Same reasoning as `recipes_db` above: import normally so this module object
+    is the one the test file's own `import lamulana.db` also resolves to, and
+    get isolation from a per-test database file instead.
+    """
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+    db = importlib.import_module("lamulana.db")
+    conn = db.connect(str(tmp_path / "lamulana.db"))
+    db.init_schema(conn)
+    db.seed_all(conn)
+    yield conn
+    conn.close()
+
+
+@pytest.fixture
 def recipes_client(app):
     """Test client with edit rights, against the real app + blueprint."""
     c = app.app.test_client()
