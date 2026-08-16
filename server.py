@@ -60,6 +60,8 @@ os.makedirs(DATA_DIR, exist_ok=True)
 app = Flask(__name__)
 from recipes import recipes_bp
 app.register_blueprint(recipes_bp)
+from lamulana import lamulana_bp
+app.register_blueprint(lamulana_bp)
 
 # ----------------------------------------------------------------------------
 # Sessions / auth (staging)

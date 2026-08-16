@@ -28,7 +28,9 @@ def app(tmp_path, monkeypatch):
     # above. Scrub it too so each test's server import gets a fresh recipes DB
     # to match. recipes/db.py's per-thread connection cache lives on that
     # module object and is keyed by path, so it cannot survive this either way.
-    for mod in [m for m in sys.modules if m == "recipes" or m.startswith("recipes.")]:
+    for mod in [m for m in sys.modules
+                if m in ("recipes", "lamulana")
+                or m.startswith(("recipes.", "lamulana."))]:
         del sys.modules[mod]
     server = importlib.import_module("server")
     server.scan_library()        # populate _LIBRARY (only runs in __main__ otherwise)
