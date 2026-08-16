@@ -507,6 +507,187 @@ async function linkPicker(clueId) {
   });
 }
 
+function renderThreadDetail(d) {
+  const t = S.detail;
+  if (!t || t.id !== S.selected) { d.appendChild(el('div', 'empty', 'Loading…')); return; }
+
+  d.appendChild(el('h2', null, t.title));
+  const where = el('div', 'where');
+  where.appendChild(el('span', 'pill ' + t.state, t.state));
+  where.appendChild(document.createTextNode(t.area || 'no area'));
+  d.appendChild(where);
+
+  d.appendChild(el('label', null, 'Notes'));
+  const body = el('textarea', 'fld');
+  body.value = t.body || '';
+  body.placeholder = 'What you have tried, what you suspect you need';
+  d.appendChild(body);
+
+  if (t.state === 'solved' && t.solution) {
+    d.appendChild(el('label', null, 'Solution'));
+    d.appendChild(el('div', 'quote', t.solution));
+  }
+
+  // The reason this page exists: every linked clue at full length, so the
+  // scattered text that feeds one puzzle is on one screen.
+  d.appendChild(el('label', null, t.clues.length
+    ? 'Clues feeding this (' + t.clues.length + ')'
+    : 'No clues linked yet'));
+  t.clues.forEach(c => {
+    const wrap = el('div');
+    wrap.style.marginBottom = '14px';
+    const head = el('div');
+    head.appendChild(el('span', 'pill ' + c.state, c.state));
+    const name = el('b', null, c.title);
+    name.style.cursor = 'pointer';
+    name.onclick = () => { S.tab = 'clues'; S.filterState = null; S.filterArea = null;
+      refresh().then(() => select(c.id)); };
+    head.appendChild(name);
+    const from = el('small', null, '  ' + [c.area, c.room].filter(Boolean).join(' '));
+    from.style.color = 'var(--dim)';
+    head.appendChild(from);
+    wrap.appendChild(head);
+    if (c.body) wrap.appendChild(el('div', 'quote', c.body));
+    if (c.interpretation) {
+      const i = el('div', null, c.interpretation);
+      i.style.color = 'var(--dim)';
+      i.style.fontSize = '13px';
+      wrap.appendChild(i);
+    }
+    const unlink = el('button', 'btn', 'Unlink');
+    unlink.style.marginTop = '6px';
+    unlink.onclick = async () => {
+      if (!S.canEdit) return alertOnce();
+      await api('link', {method: 'DELETE',
+        body: JSON.stringify({clue_id: c.id, thread_id: t.id})});
+      select(t.id);
+    };
+    wrap.appendChild(unlink);
+    d.appendChild(wrap);
+  });
+
+  const btns = el('div', 'btns');
+  const save = el('button', 'btn go', 'Save notes');
+  save.onclick = async () => {
+    if (!S.canEdit) return alertOnce();
+    await api('threads/' + t.id, {method: 'PATCH',
+      body: JSON.stringify({body: body.value})});
+    select(t.id); refresh();
+  };
+  btns.appendChild(save);
+
+  if (t.state === 'open') {
+    const solve = el('button', 'btn', 'Solve it');
+    solve.onclick = () => solveDialog(t);
+    btns.appendChild(solve);
+  } else {
+    const reopen = el('button', 'btn', 'Reopen');
+    reopen.onclick = async () => {
+      if (!S.canEdit) return alertOnce();
+      await api('threads/' + t.id, {method: 'PATCH',
+        body: JSON.stringify({state: 'open'})});
+      select(t.id); refresh();
+    };
+    btns.appendChild(reopen);
+  }
+
+  const del = el('button', 'btn danger', 'Delete');
+  del.onclick = async () => {
+    if (!S.canEdit) return alertOnce();
+    await api('threads/' + t.id, {method: 'DELETE'});
+    S.selected = null; S.detail = null; refresh();
+  };
+  btns.appendChild(del);
+  d.appendChild(btns);
+}
+
+function solveDialog(t) {
+  if (!S.canEdit) return alertOnce();
+  modal('Solve: ' + t.title, (box, close) => {
+    const sol = el('textarea', 'fld');
+    // Prefilled with whatever solution the thread already carries, rather
+    // than starting blank: the solve route treats an explicit "" the same
+    // as any other explicit value and overwrites, so leaving this field as
+    // it loaded -- not empty -- is what makes "click Solve without retyping"
+    // actually preserve an existing solution instead of blanking it.
+    sol.value = t.solution || '';
+    sol.placeholder = 'What the answer turned out to be';
+    box.appendChild(sol);
+
+    const wrap = el('label');
+    wrap.style.textTransform = 'none';
+    wrap.style.letterSpacing = '0';
+    wrap.style.fontSize = '13px';
+    wrap.style.color = 'var(--txt)';
+    const mark = el('input');
+    mark.type = 'checkbox';
+    mark.checked = true;
+    wrap.appendChild(mark);
+    wrap.appendChild(document.createTextNode(
+      ' Mark the ' + t.clues.length + ' linked clue(s) as used'));
+    box.appendChild(wrap);
+
+    const btns = el('div', 'btns');
+    const go = el('button', 'btn go', 'Solved');
+    go.onclick = async () => {
+      await api('threads/' + t.id + '/solve', {method: 'POST',
+        body: JSON.stringify({solution: sol.value, mark_clues_used: mark.checked})});
+      close(); await select(t.id); refresh();
+    };
+    const cancel = el('button', 'btn', 'Cancel');
+    cancel.onclick = close;
+    btns.append(go, cancel);
+    box.appendChild(btns);
+  });
+}
+
+function renderProgress(d) {
+  S.checklist.forEach(group => {
+    const done = group.items.filter(i => i.done).length;
+    const h = el('label', null, group.group + ' — ' + done + '/' + group.items.length);
+    d.appendChild(h);
+    group.items.forEach(item => {
+      const row = el('div', 'row');
+      row.style.display = 'flex';
+      row.style.alignItems = 'baseline';
+      row.style.gap = '10px';
+      const box = el('input');
+      box.type = 'checkbox';
+      box.checked = item.done;
+      box.onchange = async () => {
+        if (!S.canEdit) { box.checked = item.done; return alertOnce(); }
+        await api('checklist/' + item.id, {method: 'PATCH',
+          body: JSON.stringify({done: box.checked})});
+        refresh();
+      };
+      const name = el('span', null, item.name);
+      if (item.done) name.style.color = 'var(--dim)';
+      const note = el('input', 'fld');
+      note.value = item.note || '';
+      note.placeholder = 'note';
+      note.style.flex = '0 0 200px';
+      note.style.marginLeft = 'auto';
+      note.onchange = async () => {
+        if (!S.canEdit) { note.value = item.note || ''; return alertOnce(); }
+        await api('checklist/' + item.id, {method: 'PATCH',
+          body: JSON.stringify({note: note.value})});
+      };
+      row.append(box, name, note);
+      d.appendChild(row);
+    });
+
+    const add = el('button', 'btn', '+ add a row');
+    add.style.margin = '8px 0 4px';
+    add.onclick = () => {
+      if (!S.canEdit) return alertOnce();
+      const name = prompt('Add to ' + group.group + ':');
+      if (name) api('checklist', {method: 'POST',
+        body: JSON.stringify({group: group.group, name})}).then(refresh);
+    };
+    d.appendChild(add);
+  });
+}
+
 boot();
 </script>
 </body>
