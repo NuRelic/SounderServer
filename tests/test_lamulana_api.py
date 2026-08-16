@@ -523,6 +523,16 @@ def _clue_and_thread(client):
     return cid, tid
 
 
+def _clue(client, title, state="understood"):
+    return client.post("/lamulana/api/clues", json={
+        "title": title, "body": title, "state": state}).get_json()["clue"]["id"]
+
+
+def _thread(client, title):
+    return client.post("/lamulana/api/threads", json={"title": title}
+                       ).get_json()["thread"]["id"]
+
+
 def test_link_shows_on_both_sides(editor_client):
     cid, tid = _clue_and_thread(editor_client)
     assert editor_client.post("/lamulana/api/link",
@@ -602,3 +612,105 @@ def test_link_and_solve_need_an_editing_session(reader_client):
     assert reader_client.post("/lamulana/api/link", json={}).status_code == 403
     assert reader_client.delete("/lamulana/api/link", json={}).status_code == 403
     assert reader_client.post("/lamulana/api/threads/1/solve", json={}).status_code == 403
+
+
+# --- Multi-entity fixtures: a single clue/thread pair cannot distinguish
+# "clues linked to this thread" from "all clues", so the cascade's scoping
+# (the property the whole feature rests on) needs a population bigger than one
+# to actually exercise it. -------------------------------------------------
+
+def test_solving_marks_only_that_threads_clues(editor_client):
+    c = editor_client
+    shared = _clue(c, "shared")
+    other = _clue(c, "other")
+    loose = _clue(c, "loose")
+    t1, t2 = _thread(c, "t1"), _thread(c, "t2")
+    for cid, tid in ((shared, t1), (shared, t2), (other, t2)):
+        c.post("/lamulana/api/link", json={"clue_id": cid, "thread_id": tid})
+    r = c.post(f"/lamulana/api/threads/{t1}/solve", json={"solution": "x"})
+    assert r.get_json()["clues_marked"] == 1
+    st = {x["id"]: x["state"] for x in c.get("/lamulana/api/clues").get_json()["clues"]}
+    assert st[shared] == "used"
+    assert st[other] == "understood"
+    assert st[loose] == "understood"
+
+
+def test_unlink_from_one_thread_leaves_the_other_link_intact(editor_client):
+    c = editor_client
+    cid = _clue(c, "shared")
+    t1, t2 = _thread(c, "t1"), _thread(c, "t2")
+    c.post("/lamulana/api/link", json={"clue_id": cid, "thread_id": t1})
+    c.post("/lamulana/api/link", json={"clue_id": cid, "thread_id": t2})
+    assert c.delete("/lamulana/api/link",
+                     json={"clue_id": cid, "thread_id": t1}).status_code == 200
+    detail1 = c.get(f"/lamulana/api/threads/{t1}").get_json()["thread"]
+    detail2 = c.get(f"/lamulana/api/threads/{t2}").get_json()["thread"]
+    assert detail1["clues"] == []
+    assert [cl["id"] for cl in detail2["clues"]] == [cid]
+
+
+# --- _link_pair must validate types the way _clean_body does elsewhere,
+# not bind raw JSON straight into SQLite. ------------------------------------
+
+def test_link_rejects_a_list_body_400s_not_500s(editor_client):
+    cid, tid = _clue_and_thread(editor_client)
+    r = editor_client.post("/lamulana/api/link", json={"clue_id": [cid], "thread_id": tid})
+    assert r.status_code == 400
+    r2 = editor_client.delete("/lamulana/api/link", json={"clue_id": {"a": 1}, "thread_id": tid})
+    assert r2.status_code == 400
+
+
+def test_link_rejects_a_boolean_id_instead_of_treating_it_as_1(editor_client):
+    cid, tid = _clue_and_thread(editor_client)
+    r = editor_client.post("/lamulana/api/link", json={"clue_id": True, "thread_id": True})
+    assert r.status_code == 400
+    # And it must not have linked clue id 1 to thread id 1 as a side effect.
+    detail = editor_client.get(f"/lamulana/api/threads/{tid}").get_json()["thread"]
+    assert detail["clues"] == []
+
+
+def test_link_id_zero_is_a_404_not_a_400(editor_client):
+    cid, tid = _clue_and_thread(editor_client)
+    r = editor_client.post("/lamulana/api/link", json={"clue_id": 0, "thread_id": tid})
+    assert r.status_code == 404
+
+
+# --- Solve must not clobber a solution already saved on the thread, and must
+# agree with PATCH about when solved_at is allowed to change. ---------------
+
+def test_solve_without_a_solution_preserves_one_already_saved(editor_client):
+    cid, tid = _clue_and_thread(editor_client)
+    editor_client.patch(f"/lamulana/api/threads/{tid}",
+                         json={"solution": "typed into the edit form earlier"})
+    r = editor_client.post(f"/lamulana/api/threads/{tid}/solve", json={})
+    assert r.get_json()["thread"]["solution"] == "typed into the edit form earlier"
+
+
+def test_solve_with_explicit_null_solution_clears_it(editor_client):
+    cid, tid = _clue_and_thread(editor_client)
+    editor_client.patch(f"/lamulana/api/threads/{tid}", json={"solution": "old"})
+    r = editor_client.post(f"/lamulana/api/threads/{tid}/solve", json={"solution": None})
+    assert r.get_json()["thread"]["solution"] is None
+
+
+def test_resolving_does_not_move_solved_at(editor_client, monkeypatch):
+    # Same reasoning as test_solved_at_bookkeeping above: both solve calls
+    # below land in the same wall-clock second in practice, which would let a
+    # dropped "AND solved_at IS NULL" guard pass by accident. Fake _now() to
+    # hand out a fresh value each call so "unchanged" is a real assertion
+    # about which branch ran, not an artifact of clock resolution.
+    api = sys.modules["lamulana.api"]
+    counter = itertools.count(1000, 1000)
+    monkeypatch.setattr(api, "_now", lambda: next(counter))
+
+    cid, tid = _clue_and_thread(editor_client)
+    first = editor_client.post(f"/lamulana/api/threads/{tid}/solve",
+                                json={"solution": "a"}).get_json()["thread"]["solved_at"]
+    second = editor_client.post(f"/lamulana/api/threads/{tid}/solve",
+                                 json={"solution": "b"}).get_json()["thread"]["solved_at"]
+    assert second == first
+
+
+def test_solving_a_missing_thread_404s(editor_client):
+    r = editor_client.post("/lamulana/api/threads/9999/solve", json={"solution": "x"})
+    assert r.status_code == 404

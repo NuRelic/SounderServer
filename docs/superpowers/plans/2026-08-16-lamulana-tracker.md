@@ -2009,6 +2009,32 @@ def test_link_and_solve_need_an_editing_session(reader_client):
     assert reader_client.post("/lamulana/api/threads/1/solve", json={}).status_code == 403
 ```
 
+Code review on the first pass of this task found two critical gaps the tests above
+cannot see and two smaller correctness bugs. All four are fixed in the final
+implementation below; the tests that catch them were added alongside the block
+above (see `tests/test_lamulana_api.py`, after `test_link_and_solve_need_an_editing_session`):
+
+- `_link_pair` bound `clue_id`/`thread_id` straight into SQLite with no type
+  check -- a list or dict 500ed, and `{"clue_id": true, ...}` silently linked
+  as id `1` (`bool` is an `int` subclass) -- the exact hole `_clean_body`
+  exists to close everywhere else. Fixed with an explicit `isinstance` guard.
+- **The single-clue/single-thread fixture used throughout this task's tests
+  cannot distinguish "clues linked to this thread" from "all clues in the
+  database."** A cascade that ignores `thread_id` entirely, or an unlink that
+  ignores `thread_id` entirely, both pass all nine tests above. This is the
+  single property the whole feature rests on and needs a population of at
+  least two threads and a shared clue to actually exercise -- see
+  `test_solving_marks_only_that_threads_clues` and
+  `test_unlink_from_one_thread_leaves_the_other_link_intact`.
+- Solve wrote `b.get("solution")` unconditionally, so calling `/solve` with no
+  `solution` key (the real flow: type a solution into the thread's edit form,
+  save, then click Solve) overwrote it with `NULL`. Fixed by only touching
+  `solution` when the key is present in the cleaned body; an explicit
+  `{"solution": null}` still clears it.
+- Solve overwrote `solved_at` on every call instead of preserving it like
+  PATCH does (`AND solved_at IS NULL`), so a double-clicked Solve button
+  silently moved "when I cracked this."
+
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `.venv/bin/python -m pytest tests/test_lamulana_api.py -v`
@@ -2016,22 +2042,37 @@ Expected: FAIL — 404 on `/lamulana/api/link`
 
 - [ ] **Step 3: Implement linking and solving**
 
-Append to `lamulana/api.py`:
+Append to `lamulana/api.py`. This is the final, review-corrected version --
+see the note after Step 1 for what changed from the first pass and why:
 
 ```python
 # ---------------------------------------------------------------------------
 # The link between them
 # ---------------------------------------------------------------------------
 
+def _row_exists(table, row_id):
+    """True if `table` has a row with this id. `table` is always a literal
+    from our own code, never request input, so the f-string is safe."""
+    return _conn().execute(
+        f"SELECT 1 FROM {table} WHERE id = ?", (row_id,)).fetchone() is not None
+
+
 def _link_pair():
     """(clue_id, thread_id) from the request body, or an error response."""
     b = _body()
     clue_id, thread_id = b.get("clue_id"), b.get("thread_id")
-    if not clue_id or not thread_id:
+    if clue_id is None or thread_id is None:
         return None, (jsonify({"error": "clue_id and thread_id required"}), 400)
-    if not _one_clue(clue_id):
+    # isinstance(v, int) alone lets True/False through -- bool is an int
+    # subclass in Python -- which would silently link clue 1 to thread 1 on
+    # {"clue_id": true, "thread_id": true}. Same hazard _clean_body's
+    # docstring calls out for area_id; guarded the same way here.
+    for name, v in (("clue_id", clue_id), ("thread_id", thread_id)):
+        if not isinstance(v, int) or isinstance(v, bool):
+            return None, (jsonify({"error": f"{name} must be an integer"}), 400)
+    if not _row_exists("clue", clue_id):
         return None, (jsonify({"error": "no such clue"}), 404)
-    if not _one_thread(thread_id):
+    if not _row_exists("thread", thread_id):
         return None, (jsonify({"error": "no such thread"}), 404)
     return (clue_id, thread_id), None
 
@@ -2080,43 +2121,67 @@ def api_thread_solve(thread_id):
     """
     if (err := need_edit()):
         return err
-    if not _one_thread(thread_id):
-        return jsonify({"error": "no such thread"}), 404
-    b = _body()
-    mark = b.get("mark_clues_used", True)
+    raw = _body()
+    # Reuses THREAD_FIELDS's own "solution" spec rather than restating the
+    # type tuple here, so the two stay in one place if it ever changes.
+    b, err = _clean_body(raw, {"solution": THREAD_FIELDS["solution"]})
+    if err:
+        return err
+    mark = raw.get("mark_clues_used", True)
+    # Absent means "default to true"; present-but-not-a-bool is a caller bug,
+    # not a truthy value to coerce -- 1, "false", and [] are all wrong-shaped
+    # requests, not opinions about whether to mark clues used.
+    if not isinstance(mark, bool):
+        return jsonify({"error": "mark_clues_used must be a boolean"}), 400
     now = _now()
+    # "solution" absent from the body means "leave it alone" -- the realistic
+    # flow is the player already typed a solution into the thread's edit form
+    # and saved it before clicking Solve, and an unconditional overwrite would
+    # blow that text away with NULL. An explicit {"solution": null} still
+    # clears it, since _clean_body keeps that key in `b` as None rather than
+    # dropping it.
+    sets, params = "state = 'solved', updated_at = ?", [now]
+    if "solution" in b:
+        sets = "state = 'solved', solution = ?, updated_at = ?"
+        params = [b["solution"], now]
     with _db.LOCK:
-        _conn().execute("""
-            UPDATE thread SET state = 'solved', solution = ?, solved_at = ?,
-                              updated_at = ?
-            WHERE id = ?
-        """, (b.get("solution"), now, now, thread_id))
+        # The existence check and the write are the same locked UPDATE
+        # (rowcount tells them apart) rather than a SELECT before the lock
+        # followed by the UPDATE inside it -- same fix Task 4/5 applied to
+        # clue/thread PATCH, for the same reason: a concurrent DELETE landing
+        # in that gap would have left this returning 200 with a thread that
+        # no longer exists.
+        cur = _conn().execute(f"UPDATE thread SET {sets} WHERE id = ?",
+                               params + [thread_id])
         marked = 0
-        if mark:
-            cur = _conn().execute("""
-                UPDATE clue SET state = 'used', updated_at = ?
-                WHERE state != 'used' AND id IN (
-                    SELECT clue_id FROM clue_thread WHERE thread_id = ?
-                )
-            """, (now, thread_id))
-            marked = cur.rowcount
+        if cur.rowcount:
+            # Mirrors PATCH: only set solved_at if it is not already set, so
+            # solved_at answers "when did I first crack this" and a
+            # double-clicked Solve button (or a deliberate re-solve) does not
+            # silently rewrite that fact.
+            _conn().execute(
+                "UPDATE thread SET solved_at = ? WHERE id = ? AND solved_at IS NULL",
+                (now, thread_id))
+            if mark:
+                mcur = _conn().execute("""
+                    UPDATE clue SET state = 'used', updated_at = ?
+                    WHERE state != 'used' AND id IN (
+                        SELECT clue_id FROM clue_thread WHERE thread_id = ?
+                    )
+                """, (now, thread_id))
+                marked = mcur.rowcount
         _conn().commit()
+    if not cur.rowcount:
+        return jsonify({"error": "no such thread"}), 404
     return jsonify({"thread": _one_thread(thread_id), "clues_marked": marked})
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `.venv/bin/python -m pytest tests/test_lamulana_api.py -v`
-Expected: PASS. Derived like Task 5's count above: 35 from Task 5 + 9 in this
-task's block = 44 passed. Trust the actual run over this number.
-
-Note for whoever implements this task: `api_thread_solve`'s `b.get("solution")`
-goes straight into `thread.solution` with no type check, the same gap
-`_clean_body` exists to close elsewhere -- a list or dict there reaches
-SQLite's bind and 500s the same way a bad `area_id` used to. It was not
-folded in during the Task 4/5 validation pass because this route was out of
-that pass's scope, not because it is fine; consider a small
-`_clean_body(_body(), {"solution": (str, type(None))})` here too.
+Expected: PASS. 57 passed (39 from Task 5 + 9 from this task's original
+block + 9 added during code review to close the two critical gaps above).
+Trust the actual run over this number.
 
 - [ ] **Step 5: Commit**
 
