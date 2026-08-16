@@ -642,15 +642,23 @@ def api_rooms():
 def api_search():
     """One query across both kinds. An empty query matches nothing, not everything."""
     q = request.args.get("q", "")
+    # Checked once, on q itself, rather than by calling _search_terms twice and
+    # only checking its first result: the two calls happen to always agree
+    # (both derive their word list from the same q), but that's not something
+    # worth relying on to keep this route correct.
+    if not q.split():
+        return jsonify({"clues": [], "threads": []})
     cc, cp = _search_terms(q, ["c.title", "c.body", "c.interpretation", "c.room"])
     tc, tp = _search_terms(q, ["t.title", "t.body", "t.solution"])
-    if not cc:
-        return jsonify({"clues": [], "threads": []})
+    # id DESC tiebreaks match api_clues/api_threads: several clues logged in
+    # the same second should come back in the same order from both endpoints,
+    # not reversed depending on which one you hit.
     clues = _conn().execute(
-        CLUE_SELECT + " WHERE " + cc + " ORDER BY c.updated_at DESC", cp).fetchall()
+        CLUE_SELECT + " WHERE " + cc + " ORDER BY c.updated_at DESC, c.id DESC",
+        cp).fetchall()
     threads = _conn().execute(
         THREAD_SELECT + " WHERE " + tc
-        + " ORDER BY t.state = 'solved', t.updated_at DESC", tp).fetchall()
+        + " ORDER BY t.state = 'solved', t.updated_at DESC, t.id DESC", tp).fetchall()
     return jsonify({"clues": _clue_json(clues),
                     "threads": [dict(r) for r in threads]})
 
@@ -659,11 +667,12 @@ def api_search():
 # Checklist
 # ---------------------------------------------------------------------------
 
-# One dict covers both writes: api_checklist_add reads group/name out of it,
-# api_checklist_patch reads note. "done" isn't listed -- it goes through
-# bool(), which tolerates any JSON type without raising, so it doesn't need
-# _clean_body's protection the way a string field being the wrong type does.
-CHECKLIST_FIELDS = {"group": str, "name": str, "note": (str, type(None))}
+# Two specs, not one: POST writes group/name (never done/note), PATCH writes
+# done/note (never group/name -- there is no rename, nothing asks for it, and
+# folding group/name into the PATCH spec would validate them and then
+# silently ignore them, which is worse than not accepting them at all).
+CHECKLIST_ADD_FIELDS = {"group": str, "name": str}
+CHECKLIST_PATCH_FIELDS = {"note": (str, type(None))}
 
 
 def _one_item(item_id):
@@ -673,6 +682,11 @@ def _one_item(item_id):
     if not row:
         return None
     item = dict(row)
+    # Deliberately asymmetric with _checklist_groups()'s items: those fold
+    # group_name into the wrapper and drop it from the item, but a PATCH/POST
+    # response has no wrapper to hang it on, so the item keeps its own
+    # "group" key here. Task 8's frontend should not assume a PATCH response
+    # and a GET item are the same shape.
     item["group"] = item.pop("group_name")
     item["done"] = bool(item["done"])
     return item
@@ -688,23 +702,38 @@ def api_checklist_patch(item_id):
     if (err := need_edit()):
         return err
     raw = _body()
-    b, err = _clean_body(raw, CHECKLIST_FIELDS)
+    b, err = _clean_body(raw, CHECKLIST_PATCH_FIELDS)
     if err:
         return err
-    if not _one_item(item_id):
-        return jsonify({"error": "no such item"}), 404
+    if "done" in raw and not isinstance(raw["done"], bool):
+        # Same reasoning as api_thread_solve's mark_clues_used: present-but-
+        # not-a-bool is a caller bug, not a truthy value to coerce. "false",
+        # 1 and null are all wrong-shaped requests, not opinions about
+        # whether the box is ticked.
+        return jsonify({"error": "done must be a boolean"}), 400
+    if "done" not in raw and "note" not in b:
+        return jsonify({"error": "nothing to change"}), 400
+    sets, params = [], []
+    if "done" in raw:
+        done = raw["done"]
+        sets.append("done = ?"); params.append(1 if done else 0)
+        # done_at is cleared on untick rather than left behind, so it always
+        # means "when this was ticked", never "when it was ticked once".
+        sets.append("done_at = ?"); params.append(_now() if done else None)
+    if "note" in b:
+        sets.append("note = ?"); params.append(b["note"])
+    # The existence check and the write are the same locked UPDATE (rowcount
+    # tells them apart) rather than a SELECT before the lock followed by the
+    # UPDATE inside it -- same fix Task 4/5 applied to clue/thread PATCH: a
+    # concurrent DELETE landing in that gap would have left this returning
+    # 200 with an item that no longer exists.
     with _db.LOCK:
-        if "done" in raw:
-            done = bool(raw["done"])
-            # done_at is cleared on untick rather than left behind, so it always
-            # means "when this was ticked", never "when it was ticked once".
-            _conn().execute(
-                "UPDATE checklist_item SET done = ?, done_at = ? WHERE id = ?",
-                (1 if done else 0, _now() if done else None, item_id))
-        if "note" in b:
-            _conn().execute("UPDATE checklist_item SET note = ? WHERE id = ?",
-                            (b["note"], item_id))
+        cur = _conn().execute(
+            f"UPDATE checklist_item SET {', '.join(sets)} WHERE id = ?",
+            params + [item_id])
         _conn().commit()
+    if not cur.rowcount:
+        return jsonify({"error": "no such item"}), 404
     return jsonify({"item": _one_item(item_id)})
 
 
@@ -712,23 +741,34 @@ def api_checklist_patch(item_id):
 def api_checklist_add():
     if (err := need_edit()):
         return err
-    b, err = _clean_body(_body(), CHECKLIST_FIELDS)
+    b, err = _clean_body(_body(), CHECKLIST_ADD_FIELDS)
     if err:
         return err
     group = b.get("group", "").strip()
     name = b.get("name", "").strip()
     if not group or not name:
         return jsonify({"error": "group and name required"}), 400
-    row = _conn().execute(
-        "SELECT COALESCE(MAX(position), -1) + 1 AS p FROM checklist_item"
-        " WHERE group_name = ?", (group,)).fetchone()
     try:
         with _db.LOCK:
+            # The position read has to be inside the same lock as the INSERT
+            # it feeds -- outside it, two concurrent adds to the same group
+            # could both read the same MAX(position) and land on it.
+            row = _conn().execute(
+                "SELECT COALESCE(MAX(position), -1) + 1 AS p FROM checklist_item"
+                " WHERE group_name = ?", (group,)).fetchone()
             cur = _conn().execute(
                 "INSERT INTO checklist_item (group_name, name, position)"
                 " VALUES (?, ?, ?)", (group, name, row["p"]))
             _conn().commit()
     except sqlite3.IntegrityError:
+        # A UNIQUE violation aborts the statement, not the transaction: the
+        # connection is left inside an open write transaction (Python's
+        # sqlite3 issues an implicit BEGIN before the INSERT) unless this
+        # rolls it back explicitly. Left open, it holds the WAL write lock on
+        # this thread's connection until some later write on the same thread
+        # happens to commit -- under waitress, that means one duplicate-name
+        # POST can make every other write on that connection 500 until then.
+        _conn().rollback()
         return jsonify({"error": "already on the list"}), 409
     return jsonify({"item": _one_item(cur.lastrowid)})
 

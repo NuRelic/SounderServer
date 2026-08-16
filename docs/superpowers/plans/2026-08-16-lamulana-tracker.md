@@ -26,24 +26,44 @@
 | `tests/test_lamulana_db.py` | schema, migrations, seed idempotence |
 | `tests/test_lamulana_api.py` | routes, lifecycle, linking, solve cascade, search, auth |
 
-`api.py` is the only file that will get long, but not past a line count: it
-settles around 590 lines after Task 7 and stays there, so a ~600-line
-threshold would simply never fire. Split by line-of-concern instead, once
-Task 7 lands: move the checklist routes into `lamulana/checklist.py` — they
-share nothing with clues and threads but the connection helpers.
+`api.py` is the only file that will get long. Task 7 landed it at 783 lines,
+past the ~600-line threshold this section used to predict wouldn't fire. It
+was not split there, and the recipe this section used to describe for doing
+so does not actually work — recorded below so nobody re-derives it and
+discovers the problem the hard way.
 
-That split has one wrinkle worth recording now so Task 7 doesn't rediscover
-it: `_checklist_groups()` (used by `api_bootstrap`, which lives with the
-other clue/thread routes) would need to import from `checklist.py`, and
-`checklist.py` would need `_conn()`/`_body()`/etc. from `api.py` — a cycle if
-both modules import each other directly. `lamulana/__init__.py` already
-does `from .api import bp as lamulana_bp`; the fix is to register both
-route modules there instead of importing them into each other:
-`from .api import bp as lamulana_bp` first, then `from . import checklist`
-after it. `checklist.py` imports its shared helpers with a plain
-`from .api import _conn, _body, ...` (api.py is already fully loaded by the
-time `__init__.py` reaches the `checklist` import), and `api.py` never
-imports from `checklist.py` at all, so the cycle never has a chance to form.
+**Why the naive split (move the checklist routes into `lamulana/checklist.py`,
+"they share nothing with clues and threads but the connection helpers")
+doesn't hold up:** by the time Task 7 landed, `_checklist_groups()` and its
+`_GROUP_RANK` table were not living with the checklist routes — they sit
+earlier in `api.py`, next to `api_bootstrap`, because `api_bootstrap` (a
+clue/thread-side route) calls `_checklist_groups()` directly to build its
+response. Moving the checklist *routes* out to `checklist.py` while
+`_checklist_groups()` stays in `api.py` splits one concern (the checklist)
+across two files instead of cleanly separating two concerns. Moving
+`_checklist_groups()` out to `checklist.py` *with* the routes instead forms
+the import cycle immediately: `api.py` needs `_checklist_groups()` for
+`api_bootstrap`, and `checklist.py` needs `_conn()`/`_body()`/`_clean_body()`/
+etc. from `api.py`. Registering both blueprints from `__init__.py` (as
+originally proposed here) sidesteps the *registration* cycle, not this one —
+it never addressed `_checklist_groups()` being needed on both sides.
+
+**The shape that would actually work, if this is ever done:** a third module,
+`lamulana/common.py`, holding the connection/body/validation helpers that
+have no opinion about clues, threads, or checklists — `_conn`, `_body`,
+`_now`, `_clean_body`, `_like_escape`, `_search_terms`, `DB_PATH` — plus
+`_checklist_groups()` and `_GROUP_RANK`, moved there alongside the checklist
+routes' other shared state. `api.py` and `checklist.py` both import downward
+from `common.py`; neither imports the other; `api_bootstrap` in `api.py`
+calls `common._checklist_groups()` the same way `checklist.py`'s own routes
+would. No cycle, because nothing points back up.
+
+**Deliberately not done now:** the remaining tasks in this plan (8-12) are
+frontend only, so `api.py` won't grow further before the UI exists, and
+splitting a backend with 347+ passing tests behind it buys nothing
+functional before there's a frontend to show for it. This is a deferral, not
+an oversight — revisit it if a future backend task needs to touch `api.py`
+again.
 
 ---
 
@@ -2198,9 +2218,25 @@ git commit -m "feat(lamulana): link clues to threads, and spend them on solve"
 - Modify: `lamulana/api.py`
 - Test: `tests/test_lamulana_api.py`
 
-- [ ] **Step 1: Write the failing test**
+This section shows the code as it ended up after a review round found six
+issues in the first pass (one Critical: a 409 that left an open write
+transaction; two Important: the checklist tests only ever looked at
+`groups[0]["items"][0]`, so a WHERE clause dropped from an UPDATE — ticking
+one box ticks every row — passed 70/70; and search ordering that disagreed
+with `/api/clues` on same-second ties). The original draft is not reproduced
+separately — trust this code and these counts over anything upstream that
+still shows the pre-review version.
 
-Add to `tests/test_lamulana_api.py`:
+- [x] **Step 1: Write the failing test**
+
+Added to `tests/test_lamulana_api.py` (the review round replaced two of
+these — `test_checklist_toggle_stamps_and_clears_done_at` and
+`test_checklist_note` — with versions that snapshot the whole
+`/api/checklist` payload before and after, so a write that touches more than
+its target row is visible; a single-item read couldn't tell "one row
+changed" from "every row changed". It also added the tests below the
+`test_checklist_note` copy, and `_flatten_checklist`/`_get_checklist` as
+shared setup):
 
 ```python
 def test_search_spans_clues_and_threads(editor_client):
@@ -2234,22 +2270,89 @@ def test_empty_search_returns_nothing(editor_client):
     assert data == {"clues": [], "threads": []}
 
 
+def test_search_orders_same_second_clues_newest_id_first(editor_client, monkeypatch):
+    # Same reasoning as test_resolving_does_not_move_solved_at above: pin
+    # _now() so both clues land in the same second, the case that would let a
+    # missing `c.id DESC` tiebreak sort them differently than api_clues does.
+    api = sys.modules["lamulana.api"]
+    monkeypatch.setattr(api, "_now", lambda: 1000)
+    editor_client.post("/lamulana/api/clues", json={"title": "a", "body": "tiebreakword"})
+    editor_client.post("/lamulana/api/clues", json={"title": "b", "body": "tiebreakword"})
+    hits = editor_client.get("/lamulana/api/search?q=tiebreakword").get_json()["clues"]
+    assert [c["title"] for c in hits] == ["b", "a"]
+
+
+def test_search_orders_same_second_threads_newest_id_first(editor_client, monkeypatch):
+    api = sys.modules["lamulana.api"]
+    monkeypatch.setattr(api, "_now", lambda: 1000)
+    editor_client.post("/lamulana/api/threads", json={"title": "a", "body": "tiebreakword"})
+    editor_client.post("/lamulana/api/threads", json={"title": "b", "body": "tiebreakword"})
+    hits = editor_client.get("/lamulana/api/search?q=tiebreakword").get_json()["threads"]
+    assert [t["title"] for t in hits] == ["b", "a"]
+
+
+def _flatten_checklist(groups):
+    """{item_id: item} across every group -- enough rows that a write path
+    scoped only by a dropped WHERE clause (touching every row, not just the
+    one it was pointed at) shows up as more than one changed id."""
+    return {i["id"]: i for g in groups for i in g["items"]}
+
+
+def _get_checklist(client):
+    return _flatten_checklist(client.get("/lamulana/api/checklist").get_json()["groups"])
+
+
 def test_checklist_toggle_stamps_and_clears_done_at(editor_client):
-    groups = editor_client.get("/lamulana/api/checklist").get_json()["groups"]
-    item = groups[0]["items"][0]
-    r = editor_client.patch(f"/lamulana/api/checklist/{item['id']}", json={"done": True})
+    before = _get_checklist(editor_client)
+    target_id = next(iter(before))
+    r = editor_client.patch(f"/lamulana/api/checklist/{target_id}", json={"done": True})
     assert r.get_json()["item"]["done"] is True
     assert r.get_json()["item"]["done_at"] > 0
-    r = editor_client.patch(f"/lamulana/api/checklist/{item['id']}", json={"done": False})
+    after = _get_checklist(editor_client)
+    # Every other row -- not just index 0 -- must be untouched by a WHERE
+    # clause that only looks correct against a single-row fixture.
+    assert {i for i in before if before[i] != after[i]} == {target_id}
+
+    r = editor_client.patch(f"/lamulana/api/checklist/{target_id}", json={"done": False})
     assert r.get_json()["item"]["done"] is False
     assert r.get_json()["item"]["done_at"] is None
+    final = _get_checklist(editor_client)
+    assert {i for i in after if after[i] != final[i]} == {target_id}
 
 
 def test_checklist_note(editor_client):
-    item = editor_client.get("/lamulana/api/checklist").get_json()["groups"][0]["items"][0]
-    r = editor_client.patch(f"/lamulana/api/checklist/{item['id']}",
+    before = _get_checklist(editor_client)
+    target_id = next(iter(before))
+    r = editor_client.patch(f"/lamulana/api/checklist/{target_id}",
                              json={"note": "behind the ice"})
     assert r.get_json()["item"]["note"] == "behind the ice"
+    after = _get_checklist(editor_client)
+    assert {i for i in before if before[i] != after[i]} == {target_id}
+
+
+def test_checklist_patch_missing_id_404s(editor_client):
+    r = editor_client.patch("/lamulana/api/checklist/999999", json={"done": True})
+    assert r.status_code == 404
+
+
+def test_checklist_done_must_be_a_boolean(editor_client):
+    before = _get_checklist(editor_client)
+    target_id = next(iter(before))
+    for bad in ("false", 1, None, [True]):
+        r = editor_client.patch(f"/lamulana/api/checklist/{target_id}", json={"done": bad})
+        assert r.status_code == 400
+    assert _get_checklist(editor_client) == before
+
+
+def test_checklist_patch_with_nothing_to_change_400s(editor_client):
+    before = _get_checklist(editor_client)
+    target_id = next(iter(before))
+    # An empty body, and a body carrying only fields PATCH doesn't recognize
+    # (group/name -- POST-only, there is no rename), both count as nothing.
+    for body in ({}, {"name": "Renamed"}, {"group": "Elsewhere"}):
+        r = editor_client.patch(f"/lamulana/api/checklist/{target_id}", json=body)
+        assert r.status_code == 400
+    assert _get_checklist(editor_client) == before
 
 
 def test_add_and_remove_a_custom_row(editor_client):
@@ -2274,10 +2377,46 @@ def test_a_custom_row_can_open_a_new_group(editor_client):
     assert [i["name"] for i in groups["Garbs"]["items"]] == ["Clay Doll Suit"]
 
 
+def test_a_new_group_sorts_after_every_seeded_group(editor_client):
+    # Pins _GROUP_RANK's fallback rank (len(_GROUP_RANK), not e.g. -1): an
+    # unseeded group belongs at the end of the progression order, not ahead
+    # of Guardians -- the seed's authored order is what the Progress screen
+    # is meant to render in.
+    editor_client.post("/lamulana/api/checklist", json={"group": "Zzz Custom", "name": "x"})
+    names = [g["group"] for g in
+             editor_client.get("/lamulana/api/checklist").get_json()["groups"]]
+    assert names == ["Guardians", "Sacred Orbs", "Mantras", "Maps", "Apps", "Zzz Custom"]
+
+
 def test_duplicate_custom_row_is_rejected(editor_client):
     editor_client.post("/lamulana/api/checklist", json={"group": "Garbs", "name": "x"})
     r = editor_client.post("/lamulana/api/checklist", json={"group": "Garbs", "name": "X"})
     assert r.status_code == 409
+
+
+def test_duplicate_custom_row_leaves_no_open_transaction(editor_client):
+    """A UNIQUE violation aborts the INSERT statement, not the transaction
+    sqlite3's implicit BEGIN opened for it. Without an explicit rollback in
+    the 409 branch, this thread's connection is left holding the WAL write
+    lock -- under waitress, where each request thread owns its own
+    connection, that poisons every later write on this same thread, not just
+    the one that 409'd.
+    """
+    api = sys.modules["lamulana.api"]
+    editor_client.post("/lamulana/api/checklist", json={"group": "Garbs", "name": "x"})
+    r = editor_client.post("/lamulana/api/checklist", json={"group": "Garbs", "name": "X"})
+    assert r.status_code == 409
+    assert api._conn().in_transaction is False
+    # And the connection still works for a normal write afterward.
+    r = editor_client.post("/lamulana/api/checklist", json={"group": "Garbs", "name": "y"})
+    assert r.status_code == 200
+
+
+def test_checklist_add_rejects_whitespace_only_group(editor_client):
+    before = _get_checklist(editor_client)
+    r = editor_client.post("/lamulana/api/checklist", json={"group": "   ", "name": "x"})
+    assert r.status_code == 400
+    assert _get_checklist(editor_client) == before
 
 
 # --- Bad input must 400, never reach SQLite as a 500 (same gap Task 4 found
@@ -2311,14 +2450,24 @@ def test_checklist_writes_need_an_editing_session(reader_client):
     assert reader_client.delete("/lamulana/api/checklist/1").status_code == 403
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `.venv/bin/python -m pytest tests/test_lamulana_api.py -v`
 Expected: FAIL — 404 on `/lamulana/api/search`
 
-- [ ] **Step 3: Implement search and the checklist**
+- [x] **Step 3: Implement search and the checklist**
 
-Append to `lamulana/api.py`:
+Appended to `lamulana/api.py`, as it stands after the review round (see the
+opening note above for what changed and why: an explicit rollback on the 409
+path; `done` split into its own strict-boolean check, matching
+`api_thread_solve`'s `mark_clues_used`; `CHECKLIST_FIELDS` split into
+`CHECKLIST_ADD_FIELDS`/`CHECKLIST_PATCH_FIELDS` so PATCH 400s on a body that
+names no field it actually writes, instead of silently no-op-200ing; PATCH's
+existence check folded into the locked UPDATE via `cur.rowcount`, matching
+the clue/thread PATCH routes, instead of a SELECT-then-UPDATE with a race
+between them; the position `SELECT` moved inside `_db.LOCK` so it can't read
+a stale `MAX(position)` a concurrent add already claimed; and `id DESC`
+tiebreaks added to both search queries):
 
 ```python
 # ---------------------------------------------------------------------------
@@ -2329,15 +2478,23 @@ Append to `lamulana/api.py`:
 def api_search():
     """One query across both kinds. An empty query matches nothing, not everything."""
     q = request.args.get("q", "")
+    # Checked once, on q itself, rather than by calling _search_terms twice and
+    # only checking its first result: the two calls happen to always agree
+    # (both derive their word list from the same q), but that's not something
+    # worth relying on to keep this route correct.
+    if not q.split():
+        return jsonify({"clues": [], "threads": []})
     cc, cp = _search_terms(q, ["c.title", "c.body", "c.interpretation", "c.room"])
     tc, tp = _search_terms(q, ["t.title", "t.body", "t.solution"])
-    if not cc:
-        return jsonify({"clues": [], "threads": []})
+    # id DESC tiebreaks match api_clues/api_threads: several clues logged in
+    # the same second should come back in the same order from both endpoints,
+    # not reversed depending on which one you hit.
     clues = _conn().execute(
-        CLUE_SELECT + " WHERE " + cc + " ORDER BY c.updated_at DESC", cp).fetchall()
+        CLUE_SELECT + " WHERE " + cc + " ORDER BY c.updated_at DESC, c.id DESC",
+        cp).fetchall()
     threads = _conn().execute(
         THREAD_SELECT + " WHERE " + tc
-        + " ORDER BY t.state = 'solved', t.updated_at DESC", tp).fetchall()
+        + " ORDER BY t.state = 'solved', t.updated_at DESC, t.id DESC", tp).fetchall()
     return jsonify({"clues": _clue_json(clues),
                     "threads": [dict(r) for r in threads]})
 
@@ -2346,11 +2503,12 @@ def api_search():
 # Checklist
 # ---------------------------------------------------------------------------
 
-# One dict covers both writes: api_checklist_add reads group/name out of it,
-# api_checklist_patch reads note. "done" isn't listed -- it goes through
-# bool(), which tolerates any JSON type without raising, so it doesn't need
-# _clean_body's protection the way a string field being the wrong type does.
-CHECKLIST_FIELDS = {"group": str, "name": str, "note": (str, type(None))}
+# Two specs, not one: POST writes group/name (never done/note), PATCH writes
+# done/note (never group/name -- there is no rename, nothing asks for it, and
+# folding group/name into the PATCH spec would validate them and then
+# silently ignore them, which is worse than not accepting them at all).
+CHECKLIST_ADD_FIELDS = {"group": str, "name": str}
+CHECKLIST_PATCH_FIELDS = {"note": (str, type(None))}
 
 
 def _one_item(item_id):
@@ -2360,6 +2518,11 @@ def _one_item(item_id):
     if not row:
         return None
     item = dict(row)
+    # Deliberately asymmetric with _checklist_groups()'s items: those fold
+    # group_name into the wrapper and drop it from the item, but a PATCH/POST
+    # response has no wrapper to hang it on, so the item keeps its own
+    # "group" key here. Task 8's frontend should not assume a PATCH response
+    # and a GET item are the same shape.
     item["group"] = item.pop("group_name")
     item["done"] = bool(item["done"])
     return item
@@ -2375,23 +2538,38 @@ def api_checklist_patch(item_id):
     if (err := need_edit()):
         return err
     raw = _body()
-    b, err = _clean_body(raw, CHECKLIST_FIELDS)
+    b, err = _clean_body(raw, CHECKLIST_PATCH_FIELDS)
     if err:
         return err
-    if not _one_item(item_id):
-        return jsonify({"error": "no such item"}), 404
+    if "done" in raw and not isinstance(raw["done"], bool):
+        # Same reasoning as api_thread_solve's mark_clues_used: present-but-
+        # not-a-bool is a caller bug, not a truthy value to coerce. "false",
+        # 1 and null are all wrong-shaped requests, not opinions about
+        # whether the box is ticked.
+        return jsonify({"error": "done must be a boolean"}), 400
+    if "done" not in raw and "note" not in b:
+        return jsonify({"error": "nothing to change"}), 400
+    sets, params = [], []
+    if "done" in raw:
+        done = raw["done"]
+        sets.append("done = ?"); params.append(1 if done else 0)
+        # done_at is cleared on untick rather than left behind, so it always
+        # means "when this was ticked", never "when it was ticked once".
+        sets.append("done_at = ?"); params.append(_now() if done else None)
+    if "note" in b:
+        sets.append("note = ?"); params.append(b["note"])
+    # The existence check and the write are the same locked UPDATE (rowcount
+    # tells them apart) rather than a SELECT before the lock followed by the
+    # UPDATE inside it -- same fix Task 4/5 applied to clue/thread PATCH: a
+    # concurrent DELETE landing in that gap would have left this returning
+    # 200 with an item that no longer exists.
     with _db.LOCK:
-        if "done" in raw:
-            done = bool(raw["done"])
-            # done_at is cleared on untick rather than left behind, so it always
-            # means "when this was ticked", never "when it was ticked once".
-            _conn().execute(
-                "UPDATE checklist_item SET done = ?, done_at = ? WHERE id = ?",
-                (1 if done else 0, _now() if done else None, item_id))
-        if "note" in b:
-            _conn().execute("UPDATE checklist_item SET note = ? WHERE id = ?",
-                            (b["note"], item_id))
+        cur = _conn().execute(
+            f"UPDATE checklist_item SET {', '.join(sets)} WHERE id = ?",
+            params + [item_id])
         _conn().commit()
+    if not cur.rowcount:
+        return jsonify({"error": "no such item"}), 404
     return jsonify({"item": _one_item(item_id)})
 
 
@@ -2399,23 +2577,34 @@ def api_checklist_patch(item_id):
 def api_checklist_add():
     if (err := need_edit()):
         return err
-    b, err = _clean_body(_body(), CHECKLIST_FIELDS)
+    b, err = _clean_body(_body(), CHECKLIST_ADD_FIELDS)
     if err:
         return err
     group = b.get("group", "").strip()
     name = b.get("name", "").strip()
     if not group or not name:
         return jsonify({"error": "group and name required"}), 400
-    row = _conn().execute(
-        "SELECT COALESCE(MAX(position), -1) + 1 AS p FROM checklist_item"
-        " WHERE group_name = ?", (group,)).fetchone()
     try:
         with _db.LOCK:
+            # The position read has to be inside the same lock as the INSERT
+            # it feeds -- outside it, two concurrent adds to the same group
+            # could both read the same MAX(position) and land on it.
+            row = _conn().execute(
+                "SELECT COALESCE(MAX(position), -1) + 1 AS p FROM checklist_item"
+                " WHERE group_name = ?", (group,)).fetchone()
             cur = _conn().execute(
                 "INSERT INTO checklist_item (group_name, name, position)"
                 " VALUES (?, ?, ?)", (group, name, row["p"]))
             _conn().commit()
     except sqlite3.IntegrityError:
+        # A UNIQUE violation aborts the statement, not the transaction: the
+        # connection is left inside an open write transaction (Python's
+        # sqlite3 issues an implicit BEGIN before the INSERT) unless this
+        # rolls it back explicitly. Left open, it holds the WAL write lock on
+        # this thread's connection until some later write on the same thread
+        # happens to commit -- under waitress, that means one duplicate-name
+        # POST can make every other write on that connection 500 until then.
+        _conn().rollback()
         return jsonify({"error": "already on the list"}), 409
     return jsonify({"item": _one_item(cur.lastrowid)})
 
@@ -2439,22 +2628,32 @@ import sqlite3
 import time
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `.venv/bin/python -m pytest tests/test_lamulana_api.py -v`
-Expected: PASS. Derived like Tasks 5 and 6 above: 44 from Task 6 + 13 in this
-task's block (10 original + 3 bad-input/nothing-written) = 57 passed.
+Expected: PASS. 78 passed (57 from before this task + 13 in the original
+block + 8 added during the code review round to close the issues described
+above). Trust the actual run over this number.
 
-- [ ] **Step 5: Run the whole suite**
+- [x] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: everything passes
+Expected: everything passes. 355 passed (347 after the original
+implementation + 8 from the review round).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
+
+Landed as two commits: the original implementation, then a second commit for
+the review round.
 
 ```bash
 git add lamulana/api.py tests/test_lamulana_api.py
 git commit -m "feat(lamulana): search across both kinds, checklist read and write"
+```
+
+```bash
+git add lamulana/api.py tests/test_lamulana_api.py docs/superpowers/plans/2026-08-16-lamulana-tracker.md
+git commit -m "fix(lamulana): close checklist/search review gaps (rollback, WHERE-scoped writes, done strictness, tiebreaks)"
 ```
 
 ---

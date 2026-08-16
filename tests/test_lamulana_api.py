@@ -747,22 +747,89 @@ def test_empty_search_returns_nothing(editor_client):
     assert data == {"clues": [], "threads": []}
 
 
+def test_search_orders_same_second_clues_newest_id_first(editor_client, monkeypatch):
+    # Same reasoning as test_resolving_does_not_move_solved_at above: pin
+    # _now() so both clues land in the same second, the case that would let a
+    # missing `c.id DESC` tiebreak sort them differently than api_clues does.
+    api = sys.modules["lamulana.api"]
+    monkeypatch.setattr(api, "_now", lambda: 1000)
+    editor_client.post("/lamulana/api/clues", json={"title": "a", "body": "tiebreakword"})
+    editor_client.post("/lamulana/api/clues", json={"title": "b", "body": "tiebreakword"})
+    hits = editor_client.get("/lamulana/api/search?q=tiebreakword").get_json()["clues"]
+    assert [c["title"] for c in hits] == ["b", "a"]
+
+
+def test_search_orders_same_second_threads_newest_id_first(editor_client, monkeypatch):
+    api = sys.modules["lamulana.api"]
+    monkeypatch.setattr(api, "_now", lambda: 1000)
+    editor_client.post("/lamulana/api/threads", json={"title": "a", "body": "tiebreakword"})
+    editor_client.post("/lamulana/api/threads", json={"title": "b", "body": "tiebreakword"})
+    hits = editor_client.get("/lamulana/api/search?q=tiebreakword").get_json()["threads"]
+    assert [t["title"] for t in hits] == ["b", "a"]
+
+
+def _flatten_checklist(groups):
+    """{item_id: item} across every group -- enough rows that a write path
+    scoped only by a dropped WHERE clause (touching every row, not just the
+    one it was pointed at) shows up as more than one changed id."""
+    return {i["id"]: i for g in groups for i in g["items"]}
+
+
+def _get_checklist(client):
+    return _flatten_checklist(client.get("/lamulana/api/checklist").get_json()["groups"])
+
+
 def test_checklist_toggle_stamps_and_clears_done_at(editor_client):
-    groups = editor_client.get("/lamulana/api/checklist").get_json()["groups"]
-    item = groups[0]["items"][0]
-    r = editor_client.patch(f"/lamulana/api/checklist/{item['id']}", json={"done": True})
+    before = _get_checklist(editor_client)
+    target_id = next(iter(before))
+    r = editor_client.patch(f"/lamulana/api/checklist/{target_id}", json={"done": True})
     assert r.get_json()["item"]["done"] is True
     assert r.get_json()["item"]["done_at"] > 0
-    r = editor_client.patch(f"/lamulana/api/checklist/{item['id']}", json={"done": False})
+    after = _get_checklist(editor_client)
+    # Every other row -- not just index 0 -- must be untouched by a WHERE
+    # clause that only looks correct against a single-row fixture.
+    assert {i for i in before if before[i] != after[i]} == {target_id}
+
+    r = editor_client.patch(f"/lamulana/api/checklist/{target_id}", json={"done": False})
     assert r.get_json()["item"]["done"] is False
     assert r.get_json()["item"]["done_at"] is None
+    final = _get_checklist(editor_client)
+    assert {i for i in after if after[i] != final[i]} == {target_id}
 
 
 def test_checklist_note(editor_client):
-    item = editor_client.get("/lamulana/api/checklist").get_json()["groups"][0]["items"][0]
-    r = editor_client.patch(f"/lamulana/api/checklist/{item['id']}",
+    before = _get_checklist(editor_client)
+    target_id = next(iter(before))
+    r = editor_client.patch(f"/lamulana/api/checklist/{target_id}",
                              json={"note": "behind the ice"})
     assert r.get_json()["item"]["note"] == "behind the ice"
+    after = _get_checklist(editor_client)
+    assert {i for i in before if before[i] != after[i]} == {target_id}
+
+
+def test_checklist_patch_missing_id_404s(editor_client):
+    r = editor_client.patch("/lamulana/api/checklist/999999", json={"done": True})
+    assert r.status_code == 404
+
+
+def test_checklist_done_must_be_a_boolean(editor_client):
+    before = _get_checklist(editor_client)
+    target_id = next(iter(before))
+    for bad in ("false", 1, None, [True]):
+        r = editor_client.patch(f"/lamulana/api/checklist/{target_id}", json={"done": bad})
+        assert r.status_code == 400
+    assert _get_checklist(editor_client) == before
+
+
+def test_checklist_patch_with_nothing_to_change_400s(editor_client):
+    before = _get_checklist(editor_client)
+    target_id = next(iter(before))
+    # An empty body, and a body carrying only fields PATCH doesn't recognize
+    # (group/name -- POST-only, there is no rename), both count as nothing.
+    for body in ({}, {"name": "Renamed"}, {"group": "Elsewhere"}):
+        r = editor_client.patch(f"/lamulana/api/checklist/{target_id}", json=body)
+        assert r.status_code == 400
+    assert _get_checklist(editor_client) == before
 
 
 def test_add_and_remove_a_custom_row(editor_client):
@@ -787,10 +854,46 @@ def test_a_custom_row_can_open_a_new_group(editor_client):
     assert [i["name"] for i in groups["Garbs"]["items"]] == ["Clay Doll Suit"]
 
 
+def test_a_new_group_sorts_after_every_seeded_group(editor_client):
+    # Pins _GROUP_RANK's fallback rank (len(_GROUP_RANK), not e.g. -1): an
+    # unseeded group belongs at the end of the progression order, not ahead
+    # of Guardians -- the seed's authored order is what the Progress screen
+    # is meant to render in.
+    editor_client.post("/lamulana/api/checklist", json={"group": "Zzz Custom", "name": "x"})
+    names = [g["group"] for g in
+             editor_client.get("/lamulana/api/checklist").get_json()["groups"]]
+    assert names == ["Guardians", "Sacred Orbs", "Mantras", "Maps", "Apps", "Zzz Custom"]
+
+
 def test_duplicate_custom_row_is_rejected(editor_client):
     editor_client.post("/lamulana/api/checklist", json={"group": "Garbs", "name": "x"})
     r = editor_client.post("/lamulana/api/checklist", json={"group": "Garbs", "name": "X"})
     assert r.status_code == 409
+
+
+def test_duplicate_custom_row_leaves_no_open_transaction(editor_client):
+    """A UNIQUE violation aborts the INSERT statement, not the transaction
+    sqlite3's implicit BEGIN opened for it. Without an explicit rollback in
+    the 409 branch, this thread's connection is left holding the WAL write
+    lock -- under waitress, where each request thread owns its own
+    connection, that poisons every later write on this same thread, not just
+    the one that 409'd.
+    """
+    api = sys.modules["lamulana.api"]
+    editor_client.post("/lamulana/api/checklist", json={"group": "Garbs", "name": "x"})
+    r = editor_client.post("/lamulana/api/checklist", json={"group": "Garbs", "name": "X"})
+    assert r.status_code == 409
+    assert api._conn().in_transaction is False
+    # And the connection still works for a normal write afterward.
+    r = editor_client.post("/lamulana/api/checklist", json={"group": "Garbs", "name": "y"})
+    assert r.status_code == 200
+
+
+def test_checklist_add_rejects_whitespace_only_group(editor_client):
+    before = _get_checklist(editor_client)
+    r = editor_client.post("/lamulana/api/checklist", json={"group": "   ", "name": "x"})
+    assert r.status_code == 400
+    assert _get_checklist(editor_client) == before
 
 
 # --- Bad input must 400, never reach SQLite as a 500 (same gap Task 4 found
