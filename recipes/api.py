@@ -9,7 +9,9 @@ import os
 import sqlite3
 import time
 
-from flask import Blueprint, jsonify, render_template, request, session
+from flask import Blueprint, jsonify, render_template, request
+
+from auth import can_edit, need_edit
 
 from . import db as _db
 from . import units
@@ -44,22 +46,11 @@ _db.init_schema(_conn())
 _db.seed_sections(_conn())
 
 
-def can_edit():
-    return bool(session.get("admin") or session.get("can_edit"))
-
-
 def who():
     """Display name, sent by the frontend from localStorage.ss_name."""
     return (request.args.get("who")
             or (request.get_json(silent=True) or {}).get("who")
             or "someone")
-
-
-def need_edit():
-    """Return an error response if this session may not write, else None."""
-    if not can_edit():
-        return jsonify({"error": "login required"}), 403
-    return None
 
 
 @bp.route("/")

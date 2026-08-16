@@ -22,6 +22,7 @@ import time
 import threading
 import subprocess
 import shutil
+import traceback
 from collections import deque
 
 from datetime import timedelta
@@ -31,6 +32,8 @@ from flask import (
     Flask, request, jsonify, send_file, render_template, abort, session
 )
 from werkzeug.utils import secure_filename
+
+from auth import can_edit
 
 # ----------------------------------------------------------------------------
 # Config
@@ -51,6 +54,7 @@ BOXVOL_FILE= os.path.join(DATA_DIR, "box_volume.json")
 FEED_FILE  = os.path.join(DATA_DIR, "feed_store.json")
 SYNC_FILE  = os.path.join(DATA_DIR, "sync.json")
 COLOR_FILE = os.path.join(DATA_DIR, "user_colors.json")
+TAGS_FILE  = os.path.join(DATA_DIR, "tags.json")
 _FEED_TTL  = 3 * 86400                              # keep feed 3 days
 YTDLP      = shutil.which("yt-dlp")
 
@@ -59,6 +63,15 @@ os.makedirs(DATA_DIR, exist_ok=True)
 app = Flask(__name__)
 from recipes import recipes_bp
 app.register_blueprint(recipes_bp)
+
+# The tracker owns its own database and bootstraps it at import. Mount it
+# defensively: an unwritable or corrupt lamulana.db must cost us /lamulana,
+# not the soundboard and the recipes list in the same process.
+try:
+    from lamulana import lamulana_bp
+    app.register_blueprint(lamulana_bp)
+except Exception:
+    traceback.print_exc()
 
 # ----------------------------------------------------------------------------
 # Sessions / auth (staging)
@@ -97,9 +110,6 @@ def _gzip_json(resp):
         pass
     return resp
 
-def can_edit():
-    return bool(session.get("admin") or session.get("can_edit"))
-
 def me_dict():
     # listening is open to everyone; these two tiers gate add/edit and remove
     return {"admin": bool(session.get("admin")),
@@ -116,10 +126,20 @@ def _load(path, default):
         return default
 
 def _save(path, obj):
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(obj, f)
-    os.replace(tmp, path)
+    # Per-writer tmp name. With a shared "<path>.tmp", two threads saving the same
+    # file raced: the first one's os.replace() moved the tmp away, and the second
+    # blew up with FileNotFoundError (hit in production on /api/box_volume, which
+    # waitress can serve on two threads at once). os.replace is atomic, so unique
+    # tmps make concurrent saves safe — last writer wins, as before.
+    tmp = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())
+    try:
+        with open(tmp, "w") as f:
+            json.dump(obj, f)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            try: os.remove(tmp)
+            except OSError: pass
 
 # ----------------------------------------------------------------------------
 # Library index
@@ -359,6 +379,184 @@ def fav_key(user):
     return ((user or "").strip().lower()[:40]) or "anon"
 def user_fav_rec(user):
     return _FAVS_BY_USER.setdefault(fav_key(user), {"favs": [], "deck": []})
+# ----------------------------------------------------------------------------
+# Tags — an advanced filter over the library, seeded once by seed_tags.py
+# ----------------------------------------------------------------------------
+# {"tags": {slug: {"label":..., "parent":...}}, "assign": {filename: [slug,...]}}
+# Keyed by filename like _LIBRARY and favorites, so rename must repoint and
+# delete must drop — see api_rename/api_delete. A clip assigned to a child is
+# NOT also assigned to its parent; parent membership is computed at read time,
+# so re-parenting a tag never rewrites assignments.
+_TAGS_LOCK = threading.Lock()
+
+def _norm_tags(v):
+    """Coerce whatever is on disk into {"tags": {...}, "assign": {...}}."""
+    v = v if isinstance(v, dict) else {}
+    tags = {}
+    for slug, rec in (v.get("tags") or {}).items():
+        if not isinstance(slug, str) or not isinstance(rec, dict):
+            continue
+        out = {"label": str(rec.get("label") or slug)}
+        parent = rec.get("parent")
+        if isinstance(parent, str) and parent and parent != slug:
+            out["parent"] = parent
+        tags[slug] = out
+    for rec in tags.values():                       # drop parents that don't exist
+        if rec.get("parent") not in tags:
+            rec.pop("parent", None)
+    assign = {}
+    for fn, slugs in (v.get("assign") or {}).items():
+        if not isinstance(fn, str):
+            continue
+        keep = _dedup([s for s in (slugs or []) if isinstance(s, str) and s in tags])
+        if keep:
+            assign[fn] = keep
+    out = {"tags": tags, "assign": assign}
+    # Carried through untouched: seed_tags.py --merge reads this to keep
+    # deliberately deleted tags from coming back. Dropping it here would let
+    # the next save silently erase the list.
+    retired = [s for s in (v.get("retired") or []) if isinstance(s, str)]
+    if retired:
+        out["retired"] = _dedup(retired)
+    return out
+
+_TAGS = _norm_tags(_load(TAGS_FILE, {}))
+
+TAG_HISTORY_DIR   = os.path.join(DATA_DIR, "tags-history")
+TAG_HISTORY_KEEP  = 24            # rolling snapshots kept on disk
+TAG_HISTORY_EVERY = 3600          # at most one snapshot an hour
+_tag_hist_last = [0.0]
+
+def _prune_tag_history():
+    try:
+        snaps = sorted(os.listdir(TAG_HISTORY_DIR))
+    except OSError:
+        return
+    for old in snaps[:-TAG_HISTORY_KEEP]:
+        try: os.remove(os.path.join(TAG_HISTORY_DIR, old))
+        except OSError: pass
+
+def _snapshot_tags():
+    """Throttled rolling copy of the tag store.
+
+    Curating tags is hours of human judgement that lives in one JSON file, and
+    a bad bulk edit is indistinguishable from a good one until you look. This
+    is on-box insurance only — see backup_tags.py for the off-box copy, which
+    is what actually survives losing the disk.
+    """
+    now = time.time()
+    if now - _tag_hist_last[0] < TAG_HISTORY_EVERY:
+        return
+    _tag_hist_last[0] = now
+    try:
+        os.makedirs(TAG_HISTORY_DIR, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
+        _save(os.path.join(TAG_HISTORY_DIR, "tags-%s.json" % stamp), _TAGS)
+        _prune_tag_history()
+    except OSError:
+        pass
+
+def save_tags():
+    """Persist the tag store. Call with _TAGS_LOCK held."""
+    _save(TAGS_FILE, _TAGS)
+    _snapshot_tags()
+
+def tag_prefix_index():
+    """filename prefix -> tag slug, learned from what is actually assigned.
+
+    Deliberately not derived from slugs: once tags got real names the two
+    stopped matching (Bob's Burgers is slug `bob-s-burgers`, files `bb_*`).
+    A prefix only counts when one tag clearly owns it, so ambiguous prefixes
+    like `the_` never produce a guess.
+    """
+    counts = {}
+    with _TAGS_LOCK:
+        assign = {f: list(s) for f, s in _TAGS["assign"].items()}
+    for fn, slugs in assign.items():
+        stem = os.path.splitext(fn)[0]
+        if "_" not in stem:
+            continue
+        p = stem.split("_")[0].lower()
+        for s in slugs:
+            counts.setdefault(p, {})
+            counts[p][s] = counts[p].get(s, 0) + 1
+    idx = {}
+    for p, d in counts.items():
+        slug, n = max(d.items(), key=lambda kv: kv[1])
+        if n >= 3 and n / sum(d.values()) >= 0.8:
+            idx[p] = slug
+    return idx
+
+def tags_autotag(fn):
+    """Tag a newly added clip from its prefix. Returns the slugs applied.
+
+    Never touches a clip that already has tags — a human decision always wins.
+    """
+    stem = os.path.splitext(fn)[0]
+    if "_" not in stem:
+        return []
+    slug = tag_prefix_index().get(stem.split("_")[0].lower())
+    if not slug:
+        return []
+    with _TAGS_LOCK:
+        if _TAGS["assign"].get(fn) or slug not in _TAGS["tags"]:
+            return []
+        _TAGS["assign"][fn] = [slug]
+        save_tags()
+    log_event("log", "system", text="auto-tagged %s -> %s" % (stem, slug))
+    return [slug]
+
+def _tag_children():
+    kids = {}
+    for slug, rec in _TAGS["tags"].items():
+        p = rec.get("parent")
+        if p:
+            kids.setdefault(p, []).append(slug)
+    return kids
+
+def tags_snapshot():
+    """Tags with counts rolled up through children, filtered to live files."""
+    with _LIB_LOCK:
+        live = set(_LIBRARY)
+    with _TAGS_LOCK:
+        tags = {s: dict(r) for s, r in _TAGS["tags"].items()}
+        assign = {f: list(s) for f, s in _TAGS["assign"].items() if f in live}
+    kids = {}
+    for slug, rec in tags.items():
+        p = rec.get("parent")
+        if p:
+            kids.setdefault(p, []).append(slug)
+    direct = {}                                  # slug -> set of files assigned to it
+    for fn, slugs in assign.items():
+        for s in slugs:
+            direct.setdefault(s, set()).add(fn)
+    out = []
+    for slug, rec in tags.items():
+        # a file tagged with both a child and its parent counts once
+        files = set(direct.get(slug, ()))
+        for kid in kids.get(slug, ()):
+            files |= direct.get(kid, set())
+        item = {"slug": slug, "label": rec["label"], "count": len(files),
+                "songs": sum(1 for f in files if is_long(f))}
+        if rec.get("parent"):
+            item["parent"] = rec["parent"]
+        out.append(item)
+    out.sort(key=lambda t: (-t["count"], t["label"].lower()))
+    return {"tags": out, "assign": assign}
+
+def tags_rename(old, new):
+    """Carry a renamed file's tags to its new name."""
+    with _TAGS_LOCK:
+        if old in _TAGS["assign"]:
+            _TAGS["assign"][new] = _TAGS["assign"].pop(old)
+            save_tags()
+
+def tags_forget(fn):
+    """Drop a deleted file's tags so it stops inflating counts."""
+    with _TAGS_LOCK:
+        if _TAGS["assign"].pop(fn, None) is not None:
+            save_tags()
+
 _lanes_cfg  = _load(LIMITS_FILE, {"lanes": 2, "song_lanes": 1})
 _LANES      = max(1, min(4, int(_lanes_cfg.get("lanes", 2))))        # 1-4 short (sound) lanes
 _SONG_LANES = max(1, min(2, int(_lanes_cfg.get("song_lanes", 1))))  # 1-2 long (song) lanes
@@ -578,6 +776,122 @@ def api_sounds():
             "plays": plays.get(it["file"], 0)} for it in items]
     return jsonify({"count": len(out), "sounds": out, "scanning": _DUR_SCANNING})
 
+@app.route("/api/tags")
+def api_tags():
+    """Tag vocabulary + assignments. Open — filtering is playing, not editing."""
+    return jsonify(tags_snapshot())
+
+def _slugify(label):
+    out = "".join(c if c.isalnum() else "-" for c in (label or "").strip().lower())
+    while "--" in out:
+        out = out.replace("--", "-")
+    return out.strip("-")[:48]
+
+@app.route("/api/tags", methods=["POST"])
+def api_tags_edit():
+    """Create / rename / re-parent / merge / delete a tag. Same gate as Add/Edit."""
+    if not can_edit():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    body = request.get_json(silent=True) or {}
+    action = (body.get("action") or "").strip().lower()
+    slug   = (body.get("slug") or "").strip()
+    with _TAGS_LOCK:
+        tags, assign = _TAGS["tags"], _TAGS["assign"]
+        kids_of = lambda s: [k for k, r in tags.items() if r.get("parent") == s]
+
+        if action == "create":
+            label = (body.get("label") or "").strip()
+            new = _slugify(label)
+            if not label or not new:
+                return jsonify({"ok": False, "error": "need a label"}), 400
+            if new in tags:
+                return jsonify({"ok": False, "error": "that tag already exists"}), 409
+            tags[new] = {"label": label}
+            save_tags()
+            return jsonify({"ok": True, "slug": new})
+
+        if slug not in tags:
+            return jsonify({"ok": False, "error": "unknown tag"}), 404
+
+        if action == "rename":
+            label = (body.get("label") or "").strip()
+            if not label:
+                return jsonify({"ok": False, "error": "need a label"}), 400
+            tags[slug]["label"] = label
+
+        elif action == "reparent":
+            parent = body.get("parent") or None
+            if parent is not None:
+                if parent == slug:
+                    return jsonify({"ok": False, "error": "a tag cannot parent itself"}), 400
+                if parent not in tags:
+                    return jsonify({"ok": False, "error": "unknown parent"}), 404
+                # one level only: the parent must be top-level, and a tag that
+                # already has children cannot itself become a child
+                if tags[parent].get("parent"):
+                    return jsonify({"ok": False, "error": "tags only nest one level"}), 400
+                if kids_of(slug):
+                    return jsonify({"ok": False, "error": "that tag has sub-tags"}), 400
+                tags[slug]["parent"] = parent
+            else:
+                tags[slug].pop("parent", None)
+
+        elif action == "merge":
+            into = (body.get("into") or "").strip()
+            if into == slug:
+                return jsonify({"ok": False, "error": "cannot merge a tag into itself"}), 400
+            if into not in tags:
+                return jsonify({"ok": False, "error": "unknown target"}), 404
+            for fn, ss in list(assign.items()):
+                if slug in ss:
+                    assign[fn] = _dedup([into if s == slug else s for s in ss])
+            for k in kids_of(slug):               # children follow their parent
+                tags[k]["parent"] = into
+            tags.pop(slug, None)
+            if tags[into].get("parent") and kids_of(into):
+                tags[into].pop("parent", None)    # absorbing children promotes it
+
+        elif action == "delete":
+            for k in kids_of(slug):               # children survive, promoted
+                tags[k].pop("parent", None)
+            for fn, ss in list(assign.items()):
+                keep = [s for s in ss if s != slug]
+                if keep:
+                    assign[fn] = keep
+                else:
+                    assign.pop(fn)
+            tags.pop(slug, None)
+
+        else:
+            return jsonify({"ok": False, "error": "unknown action"}), 400
+
+        save_tags()
+    return jsonify({"ok": True})
+
+@app.route("/api/tags/assign", methods=["POST"])
+def api_tags_assign():
+    """Replace one clip's tags outright."""
+    if not can_edit():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    body = request.get_json(silent=True) or {}
+    fn = body.get("file")
+    if fn not in _LIBRARY:
+        return jsonify({"ok": False, "error": "unknown file"}), 404
+    want = body.get("tags")
+    if not isinstance(want, list):
+        return jsonify({"ok": False, "error": "tags must be a list"}), 400
+    with _TAGS_LOCK:
+        unknown = [s for s in want if s not in _TAGS["tags"]]
+        if unknown:
+            return jsonify({"ok": False, "error": "unknown tag: " + unknown[0]}), 400
+        keep = _dedup([s for s in want if isinstance(s, str)])
+        if keep:
+            _TAGS["assign"][fn] = keep
+        else:
+            _TAGS["assign"].pop(fn, None)
+        save_tags()
+    return jsonify({"ok": True})
+
 @app.route("/api/audio")
 def api_audio():
     fn = request.args.get("f", "")
@@ -780,6 +1094,7 @@ def api_upload():
         return jsonify({"ok": False, "error": "name exists"}), 409
     f.save(dest)
     scan_library()
+    tags_autotag(name)                    # new clips inherit their prefix's tag
     return jsonify({"ok": True, "file": name})
 
 # ---------------------------------------------------------------------------
@@ -850,6 +1165,8 @@ def _run_local(jid):
         _set_job(jid, status="error", error=_gate_msg(r.stderr)); return
     new = [f for f in (set(os.listdir(SOUND_DIR)) - before) if f.lower().endswith((".mp3", ".wav"))]
     scan_library()
+    for f in new:
+        tags_autotag(f)                   # new clips inherit their prefix's tag
     _set_job(jid, status="done", file=(new[0] if new else None))
 
 def _fallback_loop():
@@ -920,6 +1237,7 @@ def api_worker_result(jid):
         dest = os.path.join(SOUND_DIR, "%s_%d%s" % (base, n, ext)); n += 1
     f.save(dest)
     scan_library()
+    tags_autotag(os.path.basename(dest))  # new clips inherit their prefix's tag
     _set_job(jid, status="done", file=os.path.basename(dest))
     return jsonify({"ok": True, "file": os.path.basename(dest)})
 
@@ -956,6 +1274,7 @@ def api_rename():
                 rec[k] = [new if f == old else f for f in rec[k]]; changed = True
     if changed: save_favs()
     catalog_rename(old, new)              # carry the soundid (and its play stats) to the new name
+    tags_rename(old, new)                 # …and its tags, or the clip silently unfiles itself
     with _DUR_LOCK:                       # move the cached duration so song/sound stays stable
         if old in _DUR:
             _DUR[new] = _DUR.pop(old); _save(DUR_FILE, _DUR)
@@ -980,6 +1299,7 @@ def api_delete():
             if fn in rec[k]:
                 rec[k] = [f for f in rec[k] if f != fn]; changed = True
     if changed: save_favs()
+    tags_forget(fn)                       # drop its tags so counts stay honest
     scan_library()
     return jsonify({"ok": True})
 

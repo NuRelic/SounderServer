@@ -55,6 +55,18 @@
   .bx{width:26px;height:26px;border-radius:7px;border:2px solid rgba(255,255,255,.3);
     flex:none;text-align:center;line-height:23px;font-size:16px}
   .bx.on{background:var(--go);border-color:var(--go);color:#fff}
+  /* A store-list row commits on a horizontal drag, never on a tap — a thumb
+     scrolling a long list crosses every row and used to check them off. The row
+     slides on top of the action panel it reveals; only list rows get wrapped,
+     the other tabs keep the plain .row. pan-y leaves vertical scroll to the
+     browser until the drag proves itself horizontal. */
+  .swipe{position:relative;overflow:hidden}
+  .swipe > .row{position:relative;background:var(--bg);touch-action:pan-y;
+    transition:transform .17s ease-out}
+  .swact{position:absolute;inset:0;display:flex;align-items:center;
+    padding:0 21px;font-size:21px;color:#fff;background:var(--go);opacity:.5}
+  .swact.rev{justify-content:flex-end;background:var(--panel2);color:var(--dim)}
+  .swact.armed{opacity:1}
   .fold{display:flex;align-items:center;min-height:48px;padding:13px 16px;font-size:15px;
     color:var(--dim);background:#13171d;border-bottom:1px solid var(--line);
     touch-action:manipulation;-webkit-tap-highlight-color:transparent;
@@ -102,6 +114,18 @@
     bottom:calc(88px + env(safe-area-inset-bottom));
     background:#3a2228;border:1px solid #6d3a44;color:var(--txt);
     padding:13px 14px;border-radius:12px;font-size:15px}
+  /* the undo bar owns the low slot, under the thumb; an error toast steps above
+     it on the rare occasion both are up */
+  .undo{position:fixed;left:16px;right:16px;z-index:21;display:flex;
+    align-items:center;gap:12px;bottom:calc(88px + env(safe-area-inset-bottom));
+    background:#1b2b22;border:1px solid #35614a;color:var(--txt);
+    padding:9px 9px 9px 14px;border-radius:12px;font-size:15px}
+  .undo .txt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap}
+  .undo button{flex:none;background:var(--go);border:0;border-radius:9px;color:#fff;
+    font-family:inherit;font-size:15px;font-weight:600;padding:0 18px;min-height:44px;
+    touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+  body.hasundo .toast{bottom:calc(150px + env(safe-area-inset-bottom))}
   /* login sheet — rises from the bottom so the field sits under the thumb */
   .login{position:fixed;inset:0;z-index:30;background:rgba(0,0,0,.6);
     display:flex;align-items:flex-end}
@@ -245,6 +269,7 @@ let STATE = {recipes: [], list: null, pantry: [], sections: [],
 
 document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
   TAB = b.dataset.tab;
+  clearUndo();                    // nothing to undo once you've left the list
   document.querySelectorAll('nav button').forEach(x => x.classList.toggle('sel', x===b));
   render();                       // switch instantly…
   refresh();                      // …then top up whatever this tab needs
@@ -688,7 +713,8 @@ function pantryPanel(p){
 
 // ---- store list -------------------------------------------------------------
 // Checked items leave the screen and sink into a per-section fold, so the list
-// only ever shows what is still needed. The fold is how you undo a mistake.
+// only ever shows what is still needed. Two ways back from a mistake: the undo
+// bar for the last few seconds, the fold for anything older.
 
 const OPEN_FOLDS = new Set();     // section names whose fold is expanded
 let ADD_TEXT = '';                // survives the re-render a poll triggers
@@ -772,6 +798,7 @@ function renderList(focused){
   if (d.lines.some(l => l.checked)){
     const finish = el('button','btn', 'Finish trip');
     finish.onclick = async () => {
+      clearUndo();                // the trip is over; those lines are gone
       const r = await api('/list/finish-trip', {method:'POST', body:{}});
       if (r) { STATE.list = r; STATE.version = r.version; }
       render();
@@ -794,9 +821,112 @@ function markChecked(id, val){
   d.sections.forEach(s => s.lines.forEach(hit));
 }
 
+// One write path for every way a line gets checked or unchecked — swipe, the
+// checkbox, and Undo. Returns whether the server agreed.
+async function setChecked(l, want){
+  markChecked(l.id, want);          // leave the screen now, not in 300ms
+  render();
+  const r = await api('/list/line/' + l.id + '/check',
+                      {method:'POST', body:{checked: want}});
+  if (r) { STATE.list = r; STATE.version = r.version; }
+  else { markChecked(l.id, !want); clearUndo(); }   // the server refused
+  render();
+  return !!r;
+}
+
+// The 4-second poll rebuilds #main wholesale, so the bar hangs off <body> and
+// keeps its own clock. Only the newest check is undoable: in a store you check
+// things off in a run, and a mis-swipe is the one that just happened.
+let UNDO_T = null;
+
+function clearUndo(){
+  clearTimeout(UNDO_T);
+  const old = document.querySelector('.undo');
+  if (old) old.remove();
+  document.body.classList.remove('hasundo');
+}
+
+function undoBar(l){
+  clearUndo();
+  const bar = el('div','undo');
+  bar.appendChild(el('span','txt', esc(l.name) + ' — in the cart'));
+  const b = el('button', null, 'Undo');
+  b.onclick = () => { clearUndo(); setChecked(l, false); };
+  bar.appendChild(b);
+  document.body.appendChild(bar);
+  document.body.classList.add('hasundo');
+  UNDO_T = setTimeout(clearUndo, 8000);
+}
+
+const SWIPE_MIN = 64;    // px — floor for the commit threshold
+const AXIS_LOCK = 10;    // px of travel before scroll-or-swipe is decided
+
+// Wrap a row so a horizontal drag in `dir` (+1 right, -1 left) commits it. The
+// first AXIS_LOCK px decide: vertical wins and we bow out for the rest of the
+// gesture so the page scrolls untouched.
+function swipeWrap(row, dir, label, commit){
+  const wrap = el('div','swipe');
+  const act = el('div', 'swact' + (dir > 0 ? '' : ' rev'), label);
+  wrap.appendChild(act);
+  wrap.appendChild(row);
+
+  let id = null, x0 = 0, y0 = 0, dx = 0, live = false, dead = false;
+  const trip = () => Math.max(SWIPE_MIN, wrap.offsetWidth * .35);
+  const draw = () => {
+    row.style.transform = dx ? 'translateX(' + dx + 'px)' : '';
+    act.classList.toggle('armed', Math.abs(dx) >= trip());
+  };
+  const rest = () => { dx = 0; row.style.transition = ''; draw(); };
+
+  row.onpointerdown = e => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    id = e.pointerId; x0 = e.clientX; y0 = e.clientY;
+    dx = 0; live = false; dead = false;
+  };
+
+  row.onpointermove = e => {
+    if (e.pointerId !== id || dead) return;
+    const ax = e.clientX - x0, ay = e.clientY - y0;
+    if (!live){
+      if (Math.abs(ax) < AXIS_LOCK && Math.abs(ay) < AXIS_LOCK) return;
+      if (Math.abs(ay) >= Math.abs(ax)) { dead = true; return; }   // it's a scroll
+      live = true;
+      row.style.transition = 'none';
+      try { row.setPointerCapture(id); } catch(_){}
+    }
+    // only the direction that changes this row's state tracks the finger
+    dx = dir > 0 ? Math.min(Math.max(0, ax), wrap.offsetWidth)
+                 : Math.max(Math.min(0, ax), -wrap.offsetWidth);
+    draw();
+  };
+
+  const up = e => {
+    if (e.pointerId !== id) return;
+    id = null;
+    if (live){
+      const go = Math.abs(dx) >= trip();
+      live = false; rest();
+      if (go) commit();
+      return;
+    }
+    if (dead) { dead = false; return; }
+    // a tap: never commits. There is no small target to hit either — a nudge
+    // that shows which way the row wants to go is all a tap can do.
+    row.style.transition = '';
+    dx = dir * 8; draw();
+    setTimeout(rest, 150);
+  };
+  row.onpointerup = up;
+  row.onpointercancel = e => { if (e.pointerId === id){ id = null; live = false; dead = false; rest(); } };
+
+  return wrap;
+}
+
+// No checkbox: a 26px target next to a name you are reading in a moving cart is
+// the fat-finger problem in miniature, and it said nothing a row's position and
+// strikethrough don't already say. The swipe is the only way to check a line off.
 function lineRow(l){
   const row = el('div','row');
-  row.appendChild(el('div', 'bx' + (l.checked ? ' on' : ''), l.checked ? '✓' : ''));
 
   const sub = [l.sources.join(' · '),
                l.buy_unit ? '→ ' + l.buy_unit : '',
@@ -810,18 +940,10 @@ function lineRow(l){
 
   if (l.checked) { nm.style.opacity = .4; nm.style.textDecoration = 'line-through'; }
 
-  // whole row is the target, not just the little box
-  row.onclick = async () => {
-    const want = !l.checked;
-    markChecked(l.id, want);        // leave the screen now, not in 300ms
-    render();
-    const r = await api('/list/line/' + l.id + '/check',
-                        {method:'POST', body:{checked: want}});
-    if (r) { STATE.list = r; STATE.version = r.version; }
-    else markChecked(l.id, !want);  // the server refused — put it back
-    render();
-  };
-  return row;
+  // swipe right to put it in the cart, left to take it back out
+  return l.checked
+    ? swipeWrap(row, -1, '↩', () => { clearUndo(); setChecked(l, false); })
+    : swipeWrap(row, +1, '✓', async () => { if (await setChecked(l, true)) undoBar(l); });
 }
 
 // ---- loading and sync -------------------------------------------------------

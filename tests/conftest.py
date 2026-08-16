@@ -20,15 +20,19 @@ def app(tmp_path, monkeypatch):
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
     if "server" in sys.modules:
         del sys.modules["server"]
-    # server.py imports the recipes blueprint, and recipes/api.py resolves
-    # DB_PATH and runs the schema/seed at import time against DATA_DIR. If a
-    # previous test left recipes.* cached in sys.modules, re-importing server
+    # server.py imports the recipes and lamulana blueprints, and both
+    # recipes/api.py and lamulana/api.py resolve DB_PATH and run the
+    # schema/seed at import time against DATA_DIR. If a previous test left
+    # recipes.* or lamulana.* cached in sys.modules, re-importing server
     # would just reuse that stale module (and its DB_PATH pointing at a
     # different tmp_path's database) instead of picking up the DATA_DIR set
-    # above. Scrub it too so each test's server import gets a fresh recipes DB
-    # to match. recipes/db.py's per-thread connection cache lives on that
-    # module object and is keyed by path, so it cannot survive this either way.
-    for mod in [m for m in sys.modules if m == "recipes" or m.startswith("recipes.")]:
+    # above. Scrub both so each test's server import gets fresh, matching
+    # databases. Each package's db.py keeps its per-thread connection cache on
+    # the module object and keys it by path, so it cannot survive this either
+    # way.
+    for mod in [m for m in sys.modules
+                if m in ("recipes", "lamulana")
+                or m.startswith(("recipes.", "lamulana."))]:
         del sys.modules[mod]
     server = importlib.import_module("server")
     server.scan_library()        # populate _LIBRARY (only runs in __main__ otherwise)
@@ -63,6 +67,23 @@ def recipes_db(tmp_path):
     conn = db.connect(str(tmp_path / "recipes.db"))
     db.init_schema(conn)
     db.seed_sections(conn)
+    yield conn
+    conn.close()
+
+
+@pytest.fixture
+def lamulana_db(tmp_path):
+    """A fresh, seeded lamulana database on disk, isolated per test.
+
+    Same reasoning as `recipes_db` above: import normally so this module object
+    is the one the test file's own `import lamulana.db` also resolves to, and
+    get isolation from a per-test database file instead.
+    """
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+    db = importlib.import_module("lamulana.db")
+    conn = db.connect(str(tmp_path / "lamulana.db"))
+    db.init_schema(conn)
+    db.seed_all(conn)
     yield conn
     conn.close()
 

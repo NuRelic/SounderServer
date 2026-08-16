@@ -121,6 +121,61 @@
   .snd.dropbefore{box-shadow:-3px 0 0 var(--accent2)}
   .snd .nm{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.25;
     position:relative;z-index:1;pointer-events:none}
+  /* Full-name tooltip. One shared fixed-position node rather than a per-element
+     ::after: .snd is overflow:hidden so a child tooltip would be clipped, and
+     .snd .nm is pointer-events:none so it never sees :hover in the first place. */
+  #tip{position:fixed;left:0;top:0;z-index:200;pointer-events:none;opacity:0;
+    transition:opacity .09s;background:#05070c;border:1px solid #3a4260;color:var(--txt);
+    padding:5px 9px;border-radius:6px;font-size:12px;font-weight:600;white-space:nowrap;
+    box-shadow:0 6px 22px rgba(0,0,0,.7);max-width:min(92vw,560px);
+    overflow:hidden;text-overflow:ellipsis}
+  #tip.show{opacity:1}
+  /* tag board — cards reuse #grid, so they inherit its responsive columns */
+  .tcard{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
+    padding:10px 11px;cursor:pointer;display:flex;flex-direction:column;justify-content:center;
+    min-height:56px;transition:border-color .1s,transform .05s;user-select:none}
+  .tcard:hover{border-color:var(--accent)}
+  .tcard:active{transform:scale(.97)}
+  .tcard .tnm{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.25}
+  .tcard .tmeta{font-size:10px;color:var(--dim);margin-top:4px;display:flex;gap:6px;
+    font-variant-numeric:tabular-nums}
+  .tcard .tkids{color:var(--accent)}
+  .tagbar{display:none;align-items:center;gap:9px;flex-wrap:wrap;padding:7px 16px;
+    border-bottom:1px solid var(--line);background:var(--panel)}
+  .tagbar.show{display:flex}
+  .tagback{background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+    border-radius:6px;padding:4px 10px;cursor:pointer;font:inherit;font-size:12px}
+  .tagback:hover{border-color:var(--accent)}
+  .tagkids{display:flex;gap:5px;flex-wrap:wrap;margin-left:auto}
+  .tagkids button{background:var(--panel2);border:1px solid var(--line);color:var(--dim);
+    border-radius:999px;padding:3px 10px;cursor:pointer;font:inherit;font-size:12px}
+  .tagkids button.on{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  .tagempty{grid-column:1/-1;color:var(--dim);padding:18px 4px;font-size:13px}
+  /* tag editor rows (Tags tab, editors only) */
+  .trow{grid-column:1/-1;display:flex;gap:6px;align-items:center;flex-wrap:wrap;
+    background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 9px}
+  .trow.kid{margin-left:22px}
+  .trow input,.trow select{background:var(--bg);border:1px solid var(--line);color:var(--txt);
+    border-radius:6px;padding:5px 8px;font:inherit;font-size:13px}
+  .trow input.tlab{flex:1;min-width:130px;font-weight:600}
+  .trow .tn{font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums;min-width:56px}
+  .trow .slug{font-size:10px;color:var(--dim);font-family:ui-monospace,Menlo,monospace;
+    background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:2px 5px}
+  .trow button{background:var(--panel);border:1px solid var(--line);color:var(--txt);
+    border-radius:6px;padding:5px 9px;cursor:pointer;font:inherit;font-size:12px}
+  .trow button.del{color:#ff8a8a}
+  .trow button:hover{border-color:var(--accent)}
+  .tagnew{grid-column:1/-1;display:flex;gap:6px;align-items:center;margin-bottom:4px}
+  .tagnew input{flex:1;background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+    border-radius:6px;padding:6px 9px;font:inherit}
+  /* per-clip tag picker in the edit modal */
+  .tagpick{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  .tagpick-cur{display:flex;gap:5px;flex-wrap:wrap}
+  .tagpick-cur span{display:inline-flex;align-items:center;gap:5px;background:var(--accent);
+    color:#fff;border-radius:999px;padding:3px 6px 3px 10px;font-size:12px;font-weight:600}
+  .tagpick-cur span b{cursor:pointer;font-weight:700;opacity:.8}
+  .tagpick select{background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+    border-radius:6px;padding:5px 8px;font:inherit;font-size:13px}
   .snd .fmt{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;line-height:1;
     position:relative;z-index:1;pointer-events:none}
   .snd .meta{display:flex;gap:6px;align-items:baseline;font-size:10px;line-height:1;margin-top:4px;
@@ -465,11 +520,13 @@
       <div class="grp tabsgrp">
         <button class="on" data-tab="all">All</button>
         <button data-tab="fav">★ Favorites</button>
+        <button data-tab="tags">🏷 Tags</button>
         <button data-tab="add" id="addTab" style="display:none">➕ Add / Edit</button>
       </div>
       <div class="grp sorters" id="sorters"></div>
       <div class="grp rightgrp">
         <span class="count" id="shown"></span>
+        <button class="btn-edit" id="tagEditToggle" style="display:none">✏️ Edit tags</button>
         <button class="btn-edit" id="ceditToggle" style="display:none">✏️ Edit</button>
         <button class="btn-edit" id="editToggle" style="display:none">✏️ Edit layout</button>
       </div>
@@ -492,6 +549,12 @@
         </div>
       </div>
       <div class="allbar" id="allAlpha" style="display:none"></div>
+    </div>
+    <div class="tagbar" id="tagbar">
+      <button class="tagback" id="tagBack">‹ All tags</button>
+      <b id="tagName"></b>
+      <span class="count" id="tagCount"></span>
+      <div class="tagkids" id="tagKids"></div>
     </div>
     <div class="editbar" id="editbar">
       <span>🔧 <b>Organizing</b> — drag tiles to reorder · tap ✕ to remove · playback is paused</span>
@@ -538,6 +601,7 @@
 </div>
 
 <button class="feed-toggle" id="feedToggle" title="chat / feed">💬</button>
+<div id="tip"></div>
 
 <!-- login modal -->
 <div class="modal-back" id="loginModal">
@@ -579,6 +643,11 @@
     <div class="volrow"><button class="vstep" id="volDn" title="quieter">−</button><input type="range" id="vol" min="0" max="300" value="100"><button class="vstep" id="volUp" title="louder">+</button></div>
     <label>Name</label>
     <input type="text" id="editName">
+    <label>Tags</label>
+    <div class="tagpick" id="tagPick">
+      <div class="tagpick-cur" id="tagPickCur"></div>
+      <select id="tagPickAdd"></select>
+    </div>
     <div class="mrow">
       <button class="mbtn danger" id="editDelete">🗑 Delete</button>
       <span class="sp"></span>
@@ -623,6 +692,92 @@ function debounce(fn, ms){ let t; return function(){ clearTimeout(t); t=setTimeo
 let LANES = 2, LANE = 0, SONG_LANES = 1, ALLLETTER = null, SONGFILTER = 'all', SORT = 'plays';
 // tri-state sort: SORTFIELD=null → tab's natural order; otherwise SORTDIR='desc'|'asc'
 let SORTFIELD = null, SORTDIR = null, PREV = null;
+// ---- tags ----
+// TAGS/TAGASSIGN come from /api/tags. TAGSEL is the tag being browsed (null =
+// the card board); TAGKID narrows it to one child. Membership is resolved
+// client-side from TAGASSIGN so filtering costs no round trip.
+let TAGS = [], TAGASSIGN = {}, TAGSEL = null, TAGKID = null;
+async function loadTags(){
+  try{
+    const d = await (await fetch('/api/tags')).json();
+    TAGS = d.tags || []; TAGASSIGN = d.assign || {};
+  }catch(e){ TAGS = []; TAGASSIGN = {}; }
+}
+function tagBy(slug){ return TAGS.find(t=>t.slug===slug) || null; }
+function tagKids(slug){ return TAGS.filter(t=>t.parent===slug); }
+// a clip belongs to `slug` if it carries it directly or carries one of its children
+function tagMembers(slug){
+  const want = new Set([slug, ...tagKids(slug).map(t=>t.slug)]);
+  return SOUNDS.filter(s=>(TAGASSIGN[s.file]||[]).some(x=>want.has(x)));
+}
+function clearTagSel(){ TAGSEL = null; TAGKID = null; }
+let TAGEDIT = false;
+// every tag write goes through here: POST, reload, re-render
+async function tagPost(url, body){
+  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'},
+                              body: JSON.stringify(body)});
+  const d = await r.json().catch(()=>({ok:false, error:'bad response'}));
+  if(!d.ok){ alert(d.error || 'failed'); return false; }
+  await loadTags(); render();
+  return true;
+}
+function tagsSortedForPicker(){
+  // children read as "Parent · Child" so a flat <select> stays unambiguous
+  return TAGS.map(t=>({slug:t.slug, count:t.count,
+      text: (t.parent ? ((tagBy(t.parent)||{}).label || t.parent) + ' · ' : '') + t.label}))
+    .sort((a,b)=>natCmp(a.text, b.text));
+}
+
+// ---- full-name tooltips ----
+// Any element carrying data-tip shows its full name on hover. Delegated from the
+// document so tiles and rows rebuilt by render() need no per-element wiring.
+const TIPEL = $('#tip');
+let tipFor = null, lastTouch = 0;
+function hideTip(){ if(tipFor){ TIPEL.classList.remove('show'); tipFor = null; } }
+function showTip(el){
+  const t = el.dataset.tip;
+  if(!t){ hideTip(); return; }
+  tipFor = el; TIPEL.textContent = t; TIPEL.classList.add('show');
+  const r = el.getBoundingClientRect(), b = TIPEL.getBoundingClientRect();
+  let x = r.left, y = r.bottom + 6;
+  if(x + b.width  > innerWidth  - 8) x = Math.max(8, innerWidth - 8 - b.width);
+  if(y + b.height > innerHeight - 8) y = r.top - b.height - 6;   // flip above
+  TIPEL.style.left = x + 'px';
+  TIPEL.style.top  = Math.max(8, y) + 'px';
+}
+document.addEventListener('mouseover', e => {
+  if(Date.now() - lastTouch < 800) return;   // taps synthesise mouseover; ignore them
+  if(document.querySelector('.snd.dragging')){ hideTip(); return; }   // not while reordering the deck
+  const el = e.target.closest ? e.target.closest('[data-tip]') : null;
+  if(el !== tipFor){ el ? showTip(el) : hideTip(); }
+});
+document.addEventListener('touchstart', () => { lastTouch = Date.now(); hideTip(); }, {passive:true});
+window.addEventListener('scroll', hideTip, true);
+
+// ---- natural sort ----
+// Sort names so digit runs compare as numbers: sheik2 < sheik10, e1_ < e33_.
+// Plain localeCompare gets these wrong because it compares "1" to "2" and stops.
+// Keys are memoised — render() re-sorts ~2000 names on every filter keystroke.
+const _NATKEY = new Map();
+function natKey(s){
+  let k = _NATKEY.get(s);
+  if(!k){ k = String(s).split(/(\d+)/); _NATKEY.set(s, k); }
+  return k;                      // even slots are text, odd slots are digit runs
+}
+function natCmp(a, b){
+  const A = natKey(a), B = natKey(b), n = Math.min(A.length, B.length);
+  for(let i = 0; i < n; i++){
+    if(i & 1){                                        // digit run vs digit run
+      const d = Number(A[i]) - Number(B[i]);
+      if(d) return d;
+    } else {                                          // text vs text
+      const c = A[i].localeCompare(B[i], undefined, {sensitivity:'base'});
+      if(c) return c;
+    }
+  }
+  return A.length - B.length;
+}
+// ---- end natural sort ----
 const SORTS = [
   {key:'plays', lab:'🔥 Played', desc:'plays',     asc:'plays_asc'},
   {key:'name',  lab:'A–Z',       desc:'name_desc',  asc:'name'},   // ▲ A→Z
@@ -766,9 +921,125 @@ async function loadSounds(){
   $('#allAlpha').dataset.built = '';   // counts changed → rebuild the bar lazily
   $('#libcount').textContent = d.count + ' sounds';
   initDurFilter();
+  await loadTags();
   render();
   if(d.scanning) setTimeout(loadSounds, 4000);   // refresh as song durations fill in
 }
+
+// ---- tag board ----
+// Cards render into #grid so they inherit its responsive columns; gridClick
+// bails on anything that isn't a .snd, so a direct onclick here is safe.
+// editor rows: one per tag, children indented under their parent
+function renderTagEditor(){
+  const grid = $('#grid');
+  grid.innerHTML = '';
+  const tops = TAGS.filter(t=>!t.parent);
+  $('#shown').textContent = TAGS.length + ' tags · editing';
+  const frag = document.createDocumentFragment();
+
+  const nw = document.createElement('div');
+  nw.className = 'tagnew';
+  nw.innerHTML = `<input id="tagNewLab" placeholder="new tag name…"><button class="mbtn" id="tagNewGo">＋ Add tag</button>`;
+  frag.appendChild(nw);
+
+  const row = (t, isKid) => {
+    const el = document.createElement('div');
+    el.className = 'trow' + (isKid ? ' kid' : '');
+    const parentOpts = ['<option value="">— top level —</option>'].concat(
+      TAGS.filter(p=>!p.parent && p.slug!==t.slug)
+          .map(p=>`<option value="${esc(p.slug)}"${t.parent===p.slug?' selected':''}>${esc(p.label)}</option>`)
+    ).join('');
+    const mergeOpts = ['<option value="">merge into…</option>'].concat(
+      TAGS.filter(p=>p.slug!==t.slug).map(p=>`<option value="${esc(p.slug)}">${esc(p.label)}</option>`)
+    ).join('');
+    el.innerHTML =
+      `<span class="slug">${esc(t.slug)}</span>`+
+      `<input class="tlab" value="${esc(t.label)}">`+
+      `<span class="tn">${t.count} clip${t.count===1?'':'s'}</span>`+
+      `<select class="tpar">${parentOpts}</select>`+
+      `<select class="tmrg">${mergeOpts}</select>`+
+      `<button class="del">✕</button>`;
+    const lab = el.querySelector('.tlab');
+    lab.onblur = () => {
+      const v = lab.value.trim();
+      if(v && v !== t.label) tagPost('/api/tags', {action:'rename', slug:t.slug, label:v});
+    };
+    lab.onkeydown = e => { if(e.key==='Enter') lab.blur(); };
+    el.querySelector('.tpar').onchange = e =>
+      tagPost('/api/tags', {action:'reparent', slug:t.slug, parent:e.target.value || null});
+    el.querySelector('.tmrg').onchange = e => {
+      const into = e.target.value; if(!into) return;
+      const name = (tagBy(into)||{}).label || into;
+      if(confirm(`Merge "${t.label}" into "${name}"? Its ${t.count} clip(s) move over and "${t.label}" goes away.`))
+        tagPost('/api/tags', {action:'merge', slug:t.slug, into});
+      else e.target.value = '';
+    };
+    el.querySelector('.del').onclick = () => {
+      if(confirm(`Delete the tag "${t.label}"? Clips keep their files — they just lose this tag.`))
+        tagPost('/api/tags', {action:'delete', slug:t.slug});
+    };
+    return el;
+  };
+
+  for(const t of tops){
+    frag.appendChild(row(t, false));
+    for(const k of tagKids(t.slug)) frag.appendChild(row(k, true));
+  }
+  grid.appendChild(frag);
+  $('#tagNewGo').onclick = async () => {
+    const v = $('#tagNewLab').value.trim();
+    if(!v) return;
+    if(await tagPost('/api/tags', {action:'create', label:v})) $('#tagNewLab').value = '';
+  };
+}
+function renderTagBoard(){
+  if(TAGEDIT && ME.can_edit){ renderTagEditor(); return; }
+  const grid = $('#grid');
+  grid.innerHTML = '';
+  const tops = TAGS.filter(t=>!t.parent);
+  $('#shown').textContent = tops.length
+    ? (tops.length + ' tags · ' + Object.keys(TAGASSIGN).length + ' clips tagged')
+    : 'no tags yet';
+  if(!tops.length){
+    grid.innerHTML = '<div class="tagempty">No tags yet — run <b>seed_tags.py</b> to build them from filename prefixes.</div>';
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  for(const t of tops){
+    const kids = tagKids(t.slug);
+    const el = document.createElement('div');
+    el.className = 'tcard';
+    el.dataset.tip = t.label;
+    el.innerHTML = `<div class="tnm">${esc(t.label)}</div><div class="tmeta">`+
+      `<span>${t.count} clip${t.count===1?'':'s'}</span>`+
+      (t.songs ? `<span>🎵 ${t.songs}</span>` : '')+
+      (kids.length ? `<span class="tkids">${kids.length} sub</span>` : '')+
+      `</div>`;
+    el.onclick = () => { TAGSEL = t.slug; TAGKID = null; render(); };
+    frag.appendChild(el);
+  }
+  grid.appendChild(frag);
+}
+// header above a drilled-into tag: name, count, and its children as chips
+function paintTagBar(){
+  const t = tagBy(TAGSEL);
+  $('#tagName').textContent  = t ? t.label : TAGSEL;
+  $('#tagCount').textContent = (t ? t.count : 0) + ' clips';
+  const kids = tagKids(TAGSEL), box = $('#tagKids');
+  box.innerHTML = '';
+  if(!kids.length) return;
+  const chip = (lab, slug) => {
+    const b = document.createElement('button');
+    b.textContent = lab;
+    b.classList.toggle('on', TAGKID === slug);
+    b.onclick = () => { TAGKID = slug; render(); };
+    return b;
+  };
+  box.appendChild(chip('All', null));
+  for(const k of kids) box.appendChild(chip(k.label + ' · ' + k.count, k.slug));
+}
+$('#tagBack').onclick = () => { clearTagSel(); render(); };
+$('#tagEditToggle').onclick = () => { TAGEDIT = !TAGEDIT; render(); };
 
 // ---- render board ----
 function render(){
@@ -777,13 +1048,18 @@ function render(){
   const editing  = (TAB==='fav' && EDITMODE);                              // layout reorder
   const cediting = ((TAB==='all'||TAB==='fav') && CEDIT && ME.can_edit);   // content edit (trim/delete)
   const anyEdit  = editing || cediting;
-  const showFilters = (TAB==='all' || TAB==='fav');
-  $('#toolbar').style.display = (TAB==='add' || editing) ? 'none' : 'flex';
+  const tagBoard = (TAB==='tags' && !TAGSEL);              // the card board itself
+  const showFilters = (TAB==='all' || TAB==='fav' || (TAB==='tags' && TAGSEL));
+  $('#toolbar').style.display = (TAB==='add' || editing || tagBoard) ? 'none' : 'flex';
   $('#sorters').style.display = showFilters ? 'flex' : 'none';
   grid.style.display = TAB==='add' ? 'none' : 'grid';
   $('#addwrap').style.display = TAB==='add' ? 'block' : 'none';
   $('#editToggle').style.display  = (TAB==='fav' && !EDITMODE && !CEDIT) ? 'inline-block' : 'none';
   $('#ceditToggle').style.display = ((TAB==='all'||TAB==='fav') && ME.can_edit && !CEDIT && !EDITMODE) ? 'inline-block' : 'none';
+  const tagEditBtn = $('#tagEditToggle');
+  tagEditBtn.style.display = (tagBoard && ME.can_edit) ? 'inline-block' : 'none';
+  tagEditBtn.classList.toggle('on', TAGEDIT);
+  tagEditBtn.textContent = TAGEDIT ? '✓ Done' : '✏️ Edit tags';
   $('#editbar').classList.toggle('show', editing);
   $('#cbar').classList.toggle('show', cediting);
   grid.classList.toggle('editing', anyEdit);
@@ -793,10 +1069,14 @@ function render(){
   $('#durFilter').style.display = showFilters ? 'flex' : 'none';
   $('#shown').style.display = (TAB==='add') ? 'none' : 'inline';
   if(showFilters) buildAllAlpha();
+  $('#tagbar').classList.toggle('show', TAB==='tags' && !!TAGSEL);
   if(TAB==='add'){ renderEdit(); return; }
+  if(tagBoard){ renderTagBoard(); return; }
+  if(TAB==='tags') paintTagBar();
   // base list per tab
   let list;
   if(TAB==='fav') list = SOUNDS.filter(s=>FAVSET.has(s.file));
+  else if(TAB==='tags') list = tagMembers(TAGKID || TAGSEL);
   else list = SOUNDS.slice();
   // shared filters: search / letter / song-type (work on every browse tab)
   if(q && !editing) list = list.filter(s=>s.name.toLowerCase().includes(q));
@@ -807,8 +1087,8 @@ function render(){
   // ordering: explicit sort wins; otherwise per-tab natural order
   if(SORT==='plays')          list.sort((a,b)=> b.plays - a.plays);
   else if(SORT==='plays_asc') list.sort((a,b)=> a.plays - b.plays);
-  else if(SORT==='name')      list.sort((a,b)=> a.name.localeCompare(b.name));
-  else if(SORT==='name_desc') list.sort((a,b)=> b.name.localeCompare(a.name));
+  else if(SORT==='name')      list.sort((a,b)=> natCmp(a.name, b.name));
+  else if(SORT==='name_desc') list.sort((a,b)=> natCmp(b.name, a.name));
   else if(SORT==='newest')    list.sort((a,b)=> (b.ver||0) - (a.ver||0));   // ver = file mtime (added date)
   else if(SORT==='oldest')    list.sort((a,b)=> (a.ver||0) - (b.ver||0));
   else if(SORT==='long')      list.sort((a,b)=> b.dur - a.dur);
@@ -819,13 +1099,14 @@ function render(){
     list.sort((a,b)=>{
       const da=di(a.file), db=di(b.file);
       if(da!==db) return da-db;                       // deck first, in deck order
-      return a.name.localeCompare(b.name);            // rest alphabetical
+      return natCmp(a.name, b.name);                  // rest alphabetical
     });
   }
   // (default for 'all' keeps the server's name-sorted order)
   $('#shown').textContent =
     cediting ? (list.length + ' clips · click one to edit') :
     TAB==='fav' ? (list.length + ' favorites' + (editing || SORT!=='custom' ? '' : ' · ✏️ Edit layout to arrange your deck')) :
+    TAB==='tags' ? (list.length + ' in this tag') :
     (list.length + ' shown');
   grid.innerHTML = '';
   const frag = document.createDocumentFragment();
@@ -839,6 +1120,7 @@ function render(){
       `<button class="star ${FAVSET.has(s.file)?'on':''}" title="favorite">★</button>`+
       `<button class="rm" title="${cediting?'delete clip':'remove from favorites'}">✕</button>`;
     el.dataset.file = s.file;
+    el.dataset.tip  = s.name;     // tile names ellipsize — hover shows the full one
     if(zone) el.dataset.zone = zone;
     // click behavior is handled by ONE delegated listener on #grid (see gridClick)
     if(editing) favDnD(el, s.file);
@@ -858,7 +1140,7 @@ function render(){
     // Favorites edit: two zones split by a divider — deck (top, reorderable) and rest (A–Z)
     const inDeck = f => DECK.includes(f);
     const deckItems = DECK.map(f=>BYFILE[f]).filter(s=>s && FAVSET.has(s.file));
-    const restItems = list.filter(s=>!inDeck(s.file)).sort((a,b)=>a.name.localeCompare(b.name));
+    const restItems = list.filter(s=>!inDeck(s.file)).sort((a,b)=>natCmp(a.name, b.name));
     const span = el => { el.style.gridColumn='1/-1'; return el; };
     const head = (txt, cls) => { const h=document.createElement('div'); h.className='deckhead'+(cls?' '+cls:''); h.textContent=txt; h.dataset.zone=(cls==='rest'?'rest':'deck'); return span(h); };
     frag.appendChild(head('★ Your deck — drag to arrange',''));
@@ -970,6 +1252,7 @@ async function openEdit(s){
   EDITCUR=s; $('#editErr').textContent=''; $('#editTitle').textContent='Edit · '+s.name;
   $('#editName').value=s.name; $('#vol').value=100; $('#volLbl').textContent='100%';
   setTypeSeg(s.long ? 'song' : 'sound');   // reflect the clip's current effective type
+  EDITTAGS = (TAGASSIGN[s.file] || []).slice(); paintTagPick();
   $('#editDelete').style.display = ME.admin ? '' : 'none';   // removing clips is admin-only
   $('#editModal').classList.add('show');
   EDITBUF=null; EDITDUR=0; regStart=0; regEnd=0; WAVEBMP=null; playPos=null;
@@ -1089,6 +1372,38 @@ $('#prevPlay').onclick=()=>{
   };
   tick();
 };
+// ---- per-clip tag picker (edit modal) ----
+// EDITTAGS is staged locally and written on save, so cancelling changes nothing.
+let EDITTAGS = [];
+function paintTagPick(){
+  const cur = $('#tagPickCur'), add = $('#tagPickAdd');
+  cur.innerHTML = '';
+  for(const slug of EDITTAGS){
+    const t = tagBy(slug);
+    const el = document.createElement('span');
+    el.innerHTML = esc(t ? t.label : slug) + ' <b>✕</b>';
+    el.querySelector('b').onclick = () => {
+      EDITTAGS = EDITTAGS.filter(s=>s!==slug); paintTagPick();
+    };
+    cur.appendChild(el);
+  }
+  const opts = tagsSortedForPicker().filter(o=>!EDITTAGS.includes(o.slug));
+  add.innerHTML = '<option value="">+ add a tag…</option>' +
+    opts.map(o=>`<option value="${esc(o.slug)}">${esc(o.text)}</option>`).join('');
+  add.disabled = !opts.length;
+}
+$('#tagPickAdd').onchange = e => {
+  const v = e.target.value;
+  if(v && !EDITTAGS.includes(v)) EDITTAGS.push(v);
+  paintTagPick();
+};
+async function saveEditTags(file){
+  const before = (TAGASSIGN[file] || []).slice().sort().join('|');
+  if(EDITTAGS.slice().sort().join('|') === before) return;   // nothing changed
+  await fetch('/api/tags/assign', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({file, tags: EDITTAGS})});
+  await loadTags();
+}
 function closeEdit(){ stopPreview(); $('#editModal').classList.remove('show'); }
 $('#editCancel').onclick=closeEdit;
 $('#editSave').onclick=async()=>{
@@ -1106,6 +1421,9 @@ $('#editSave').onclick=async()=>{
   }
   await fetch('/api/sound_type', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({file: EDITCUR.file, type: EDIT_TYPE})});
+  // tags key off the filename, so apply them to whatever the file is called now
+  await saveEditTags(newName && newName!==EDITCUR.name
+    ? newName + '.' + EDITCUR.fmt : EDITCUR.file);
   closeEdit(); await loadSounds();
 };
 $('#editSaveNew').onclick=async()=>{        // save the trim as a NEW clip; original untouched
@@ -1119,7 +1437,8 @@ $('#editSaveNew').onclick=async()=>{        // save the trim as a NEW clip; orig
   const d=await r.json();
   if(!d.ok){ $('#editErr').textContent=d.error||'save failed'; return; }
   if(d.file){ await fetch('/api/sound_type',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({file:d.file, type:EDIT_TYPE})}); }
+    body:JSON.stringify({file:d.file, type:EDIT_TYPE})});
+    await saveEditTags(d.file); }        // the copy inherits the tags shown in the picker
   closeEdit(); await loadSounds();
 };
 $('#editDelete').onclick=async()=>{
@@ -1197,7 +1516,8 @@ function resetFilters(){
 document.querySelectorAll('.tabs button[data-tab]').forEach(b=>{   // only real tabs, not the Edit buttons
   b.onclick = () => {
     document.querySelectorAll('.tabs button[data-tab]').forEach(x=>x.classList.remove('on'));
-    b.classList.add('on'); TAB = b.dataset.tab; EDITMODE = false; CEDIT = false; resetFilters(); render();
+    b.classList.add('on'); TAB = b.dataset.tab; EDITMODE = false; CEDIT = false;
+    clearTagSel(); resetFilters(); render();
   };
 });
 
@@ -1345,7 +1665,7 @@ function paintChannels(active){
     el.className='np-slot'+(s.song?' song':'');
     el.innerHTML=
       (canKill?`<button class="kill" title="stop this sound">✕</button>`:'')+
-      `<span class="cnm">${esc(a.name)}</span>`+
+      `<span class="cnm" data-tip="${esc(a.name)}">${esc(a.name)}</span>`+
       `<span class="by"${a.color?' style="color:'+a.color+'"':''}>${esc(a.by||'')}</span>`+
       `<span class="rem" data-end="${a.start+(a.dur||0)}"></span>`;
     if(canKill) el.querySelector('.kill').onclick=()=>killActive(a.token);
@@ -1615,7 +1935,7 @@ function refreshLookup(){
     const ax=a.cmd===q?0:a.cmd.startsWith(q)?1:2, bx=b.cmd===q?0:b.cmd.startsWith(q)?1:2;
     if(ax!==bx) return ax-bx;
     const af=FAVSET.has(a.file), bf=FAVSET.has(b.file); if(af!==bf) return af?-1:1;
-    return a.name.localeCompare(b.name);
+    return natCmp(a.name, b.name);
   });
   lkItems = list.slice(0,12); lkSel = 0; paintLookup();
 }
@@ -1625,6 +1945,7 @@ function paintLookup(){
   lkItems.forEach((s,i)=>{
     const d=document.createElement('div');
     d.className='lk '+s.fmt+(i===lkSel?' sel':'');
+    d.dataset.tip = s.name;
     d.innerHTML=`<span class="nm">${esc(s.name)}</span><span class="fmt">${s.fmt}</span>`+
       (FAVSET.has(s.file)?'<span style="color:var(--fav)">★</span>':'');
     d.onmousedown=e=>{e.preventDefault(); pickLookup(i);};
@@ -1748,7 +2069,7 @@ function renderEdit(){
   box.innerHTML='';
   if(!list.length){ box.innerHTML='<div class="addhint">No matches.</div>'; return; }
   for(const s of list){
-    const row=document.createElement('div'); row.className='editrow';
+    const row=document.createElement('div'); row.className='editrow'; row.dataset.tip=s.name;
     row.innerHTML=`<span class="nm">${esc(s.name)}<span class="fmt" style="color:var(--dim)"> .${s.fmt}</span></span>`+
       `<button data-a="play">▶</button><button data-a="ren">rename</button>`+
       `<button data-a="del" class="del">delete</button>`;
