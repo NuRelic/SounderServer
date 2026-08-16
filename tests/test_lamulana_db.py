@@ -1,18 +1,9 @@
-import importlib
-import pathlib
-import sys
-
-import pytest
-
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-
 from lamulana import seed
 
 
 def test_every_area_is_named_once():
-    names = [a for a in seed.AREAS]
-    assert len(names) == 28
-    assert len(set(names)) == 28
+    assert len(seed.AREAS) == 28
+    assert len(set(seed.AREAS)) == len(seed.AREAS)
 
 
 def test_areas_include_both_halves_of_the_game():
@@ -35,3 +26,13 @@ def test_checklist_group_sizes():
         "Maps": 16,
         "Apps": 24,
     }
+
+
+def test_non_ascii_row_names_are_intact():
+    # A bad re-encode mangles these silently -- every structural assertion
+    # above still passes on "MÃ³Ã°ir". The em-dash matters too: it separates
+    # the name from the location in every Guardian and Mantra row.
+    mantras = dict(seed.CHECKLIST)["Mantras"]
+    assert "Iorð — Annwfn (D-4)" in mantras
+    assert "Sær — Shrine of the Frost Giants (C-3)" in mantras
+    assert "Móðir — Eternal Prison - Gloom (C-5)" in mantras

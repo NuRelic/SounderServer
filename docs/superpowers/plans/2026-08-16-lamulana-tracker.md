@@ -51,21 +51,12 @@ enumerated as a list).
 Create `tests/test_lamulana_db.py`:
 
 ```python
-import importlib
-import pathlib
-import sys
-
-import pytest
-
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-
 from lamulana import seed
 
 
 def test_every_area_is_named_once():
-    names = [a for a in seed.AREAS]
-    assert len(names) == 28
-    assert len(set(names)) == 28
+    assert len(seed.AREAS) == 28
+    assert len(set(seed.AREAS)) == len(seed.AREAS)
 
 
 def test_areas_include_both_halves_of_the_game():
@@ -88,6 +79,16 @@ def test_checklist_group_sizes():
         "Maps": 16,
         "Apps": 24,
     }
+
+
+def test_non_ascii_row_names_are_intact():
+    # A bad re-encode mangles these silently -- every structural assertion
+    # above still passes on "MÃ³Ã°ir". The em-dash matters too: it separates
+    # the name from the location in every Guardian and Mantra row.
+    mantras = dict(seed.CHECKLIST)["Mantras"]
+    assert "Iorð — Annwfn (D-4)" in mantras
+    assert "Sær — Shrine of the Frost Giants (C-3)" in mantras
+    assert "Móðir — Eternal Prison - Gloom (C-5)" in mantras
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -129,7 +130,7 @@ Every checklist group accepts user-added rows, because this list is a starting
 point and not a claim to be complete.
 """
 
-# Ordered in three bands rather than a precise progression order, which varies
+# Ordered in five bands rather than a precise progression order, which varies
 # by route. The Village first, then the nine "frontside" fields -- identified as
 # frontside by each holding one of the ten Sacred Orbs -- then the later fields,
 # the connecting sub-areas, and the La-Mulana ruins revisited in the back half.
@@ -210,6 +211,9 @@ CHECKLIST = [
         "Nótt — Nibiru (B-2)",
     ]),
     ("Maps", [
+        # The wiki's map list labels the Eternal Prison's Doom and Gloom
+        # halves separately (below), which is why those two rows don't match
+        # the single "Eternal Prison" entry in AREAS -- not a typo.
         "Village of Departure / La-Mulana Ruins — from Nebur or Xelpud",
         "Roots of Yggdrasil (E-3)",
         "Annwfn (E-3)",
@@ -257,13 +261,24 @@ CHECKLIST = [
 ```
 
 Note: `lamulana/__init__.py` imports `.api`, which does not exist yet. Create
-`lamulana/api.py` as an empty placeholder containing only `bp = None` for now so
-the seed test can import the package; Task 4 replaces it wholesale.
+`lamulana/api.py` as a bare blueprint for now, so the seed test can import the
+package and registering it in `server.py` serves clean 404s rather than
+failing on import:
+
+```python
+"""HTTP surface for the La-Mulana 2 tracker — routes land here in Task 3."""
+
+from flask import Blueprint
+
+bp = Blueprint("lamulana", __name__, url_prefix="/lamulana")
+```
+
+Task 3 fills this in with the real routes.
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `.venv/bin/python -m pytest tests/test_lamulana_db.py -v`
-Expected: PASS, 4 passed
+Expected: PASS, 5 passed
 
 - [ ] **Step 5: Commit**
 
@@ -572,7 +587,7 @@ def seed_all(conn):
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `.venv/bin/python -m pytest tests/test_lamulana_db.py -v`
-Expected: PASS, 11 passed
+Expected: PASS, 12 passed
 
 - [ ] **Step 5: Check nothing else broke**
 

@@ -12,7 +12,7 @@ Every checklist group accepts user-added rows, because this list is a starting
 point and not a claim to be complete.
 """
 
-# Ordered in three bands rather than a precise progression order, which varies
+# Ordered in five bands rather than a precise progression order, which varies
 # by route. The Village first, then the nine "frontside" fields -- identified as
 # frontside by each holding one of the ten Sacred Orbs -- then the later fields,
 # the connecting sub-areas, and the La-Mulana ruins revisited in the back half.
@@ -93,6 +93,9 @@ CHECKLIST = [
         "Nótt — Nibiru (B-2)",
     ]),
     ("Maps", [
+        # The wiki's map list labels the Eternal Prison's Doom and Gloom
+        # halves separately (below), which is why those two rows don't match
+        # the single "Eternal Prison" entry in AREAS -- not a typo.
         "Village of Departure / La-Mulana Ruins — from Nebur or Xelpud",
         "Roots of Yggdrasil (E-3)",
         "Annwfn (E-3)",
