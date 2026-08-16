@@ -80,9 +80,9 @@ CREATE TABLE IF NOT EXISTS checklist_item (
     UNIQUE (group_name, name COLLATE NOCASE)
 );
 
-CREATE INDEX IF NOT EXISTS clue_area_idx   ON clue(area_id);
-CREATE INDEX IF NOT EXISTS clue_state_idx  ON clue(state);
-CREATE INDEX IF NOT EXISTS thread_state_idx ON thread(state);
+CREATE INDEX IF NOT EXISTS idx_clue_area   ON clue(area_id);
+CREATE INDEX IF NOT EXISTS idx_clue_state  ON clue(state);
+CREATE INDEX IF NOT EXISTS idx_thread_state ON thread(state);
 """
 
 # Ordered, append-only. Position in this list IS the version number recorded in
@@ -106,10 +106,13 @@ def connect(path):
     return conn
 
 
-# Per-thread connection cache, on the module object deliberately -- see the
-# matching comment in recipes/db.py. The test suite reimports this package
-# against a fresh DATA_DIR, and a cache anchored anywhere longer-lived would
-# outlive that and hand a test the previous test's database.
+# Per-thread connection cache, on the module object deliberately -- see
+# recipes/db.py for the reload history that made that necessary there. Keyed
+# by path here for the same reason it is there: even a cache entry that
+# somehow outlived a reload could never be handed back for a different
+# database file. Connections are never closed; the count is bounded by the
+# request thread pool and, outside tests, by the one path this process ever
+# opens.
 _LOCAL = threading.local()
 
 
@@ -140,23 +143,41 @@ def migrate(conn):
     """Run any MIGRATIONS steps this database has not seen, then record where it is."""
     with LOCK:
         start = _schema_version(conn)
-        for name, step in MIGRATIONS[start:]:
+        for _name, step in MIGRATIONS[start:]:
             step(conn)
+        # Never stamp downwards. Rolling a deploy back leaves a database ahead
+        # of the code reading it; recording the older number would claim
+        # migrations had been undone when they haven't, and re-run them on the
+        # next deploy forward.
         conn.execute(
             "INSERT INTO meta (key, value) VALUES ('schema_version', ?)"
             " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (str(SCHEMA_VERSION),),
+            (str(max(start, SCHEMA_VERSION)),),
         )
         conn.commit()
 
 
 def init_schema(conn):
-    conn.executescript(SCHEMA)
-    conn.commit()
+    with LOCK:
+        conn.executescript(SCHEMA)
+        conn.commit()
+    # Outside the block above on purpose: LOCK is a plain, non-reentrant
+    # threading.Lock and migrate() takes it itself.
     migrate(conn)
 
 
 def seed_areas(conn):
+    """Insert seeded areas, keyed by name so `area.id` never moves under a clue.
+
+    The ON CONFLICT clause updates `position` only, so reordering AREAS in
+    seed.py reorders the display without changing the `id` that `clue.area_id`
+    and `thread.area_id` reference -- `INSERT OR IGNORE` would fail that the
+    moment an existing name came back around, since IGNORE also skips the
+    position update. Renaming or deleting an AREAS entry is not handled here:
+    the old row is left in place rather than pruned, same as
+    `seed_checklist` below -- pruning on a rename you didn't intend would
+    silently detach clues and threads from the area they're filed under.
+    """
     with LOCK:
         for position, name in enumerate(AREAS):
             conn.execute(
@@ -173,7 +194,10 @@ def seed_checklist(conn):
     Re-running this after adding rows to seed.py is a normal thing to do, and it
     must never cost the player a tick they earned. The ON CONFLICT clause
     updates `position` only, so reordering seed.py reorders the display without
-    disturbing progress.
+    disturbing progress. Renaming or deleting a CHECKLIST row is not handled
+    here either: the old row is left in place -- an orphan -- rather than
+    pruned, deliberately, because pruning a row on a rename you didn't intend
+    would silently destroy whatever `done`/`note` progress it carried.
     """
     with LOCK:
         for group_name, items in CHECKLIST:

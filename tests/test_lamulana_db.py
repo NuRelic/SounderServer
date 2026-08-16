@@ -1,3 +1,5 @@
+import threading
+
 from lamulana import seed
 import lamulana.db as db
 
@@ -92,3 +94,95 @@ def test_schema_version_is_recorded(lamulana_db):
     row = lamulana_db.execute(
         "SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
     assert int(row["value"]) == db.SCHEMA_VERSION
+
+
+def test_checklist_uniqueness_is_case_insensitive(lamulana_db):
+    """The COLLATE NOCASE unique constraint is load-bearing, not decorative."""
+    lamulana_db.execute(
+        "DELETE FROM checklist_item"
+        " WHERE group_name = 'Guardians' AND name = 'Fafnir — Roots of Yggdrasil'")
+    lamulana_db.execute(
+        "INSERT INTO checklist_item (group_name, name, position)"
+        " VALUES ('Guardians', 'fafnir — roots of yggdrasil', 99)")
+    lamulana_db.commit()
+    db.seed_checklist(lamulana_db)
+    rows = lamulana_db.execute(
+        "SELECT COUNT(*) FROM checklist_item WHERE group_name = 'Guardians'"
+    ).fetchone()[0]
+    assert rows == 10          # the hand-inserted row merged, not a duplicate
+
+
+def test_reseeding_with_reordered_checklist_moves_position_and_keeps_progress(
+        lamulana_db, monkeypatch):
+    """The other half of seed_checklist's contract: position tracks seed.py,
+    `done`/`note` do not -- see test_reseeding_preserves_progress above for the
+    first half."""
+    lamulana_db.execute(
+        "UPDATE checklist_item SET done = 1, note = 'nice'"
+        " WHERE group_name = 'Guardians' AND name = 'Fafnir — Roots of Yggdrasil'")
+    lamulana_db.commit()
+    reordered = [
+        (group, list(reversed(items)) if group == "Guardians" else items)
+        for group, items in seed.CHECKLIST
+    ]
+    monkeypatch.setattr(db, "CHECKLIST", reordered)
+
+    db.seed_checklist(lamulana_db)
+
+    row = lamulana_db.execute(
+        "SELECT position, done, note FROM checklist_item"
+        " WHERE group_name = 'Guardians' AND name = 'Fafnir — Roots of Yggdrasil'"
+    ).fetchone()
+    assert row["position"] == 9          # was first, reversed puts it last
+    assert (row["done"], row["note"]) == (1, "nice")
+
+
+def test_reseeding_with_reordered_areas_moves_position_but_keeps_id(
+        lamulana_db, monkeypatch):
+    before_id = lamulana_db.execute(
+        "SELECT id FROM area WHERE name = 'Village of Departure'").fetchone()["id"]
+    monkeypatch.setattr(db, "AREAS", list(reversed(seed.AREAS)))
+
+    db.seed_areas(lamulana_db)
+
+    row = lamulana_db.execute(
+        "SELECT id, position FROM area WHERE name = 'Village of Departure'"
+    ).fetchone()
+    assert row["id"] == before_id        # same row, not delete-and-reinsert
+    assert row["position"] == len(seed.AREAS) - 1
+
+
+def test_ordered_migration_steps_run_once_in_order(lamulana_db, monkeypatch):
+    """MIGRATIONS is empty today, so exercise the machinery with fake steps."""
+    ran = []
+    steps = [("first", lambda c: ran.append("first")),
+             ("second", lambda c: ran.append("second"))]
+    monkeypatch.setattr(db, "MIGRATIONS", steps)
+    monkeypatch.setattr(db, "SCHEMA_VERSION", len(steps))
+
+    db.init_schema(lamulana_db)
+    assert ran == ["first", "second"]
+
+    db.init_schema(lamulana_db)
+    assert ran == ["first", "second"], "already-applied steps must not re-run"
+    assert db._schema_version(lamulana_db) == 2
+
+
+def test_migration_does_not_deadlock_on_the_write_lock(tmp_path):
+    """`LOCK` is not reentrant; init_schema -> migrate must not nest it.
+
+    Run on a worker thread with a join timeout so a nested acquire fails this
+    test instead of hanging the whole suite -- a deadlock's signature is work
+    that never finishes, which a plain call here could not distinguish.
+    """
+    conn = db.connect(str(tmp_path / "deadlock.db"))
+    done = []
+
+    worker = threading.Thread(target=lambda: done.append(db.init_schema(conn)))
+    worker.daemon = True
+    worker.start()
+    worker.join(timeout=20)
+
+    assert not worker.is_alive(), "init_schema deadlocked on the non-reentrant LOCK"
+    assert done == [None], "worker thread never completed init_schema"
+    assert not db.LOCK.locked(), "LOCK must be released after migrating"
