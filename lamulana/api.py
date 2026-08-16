@@ -493,6 +493,102 @@ def api_thread_delete(thread_id):
     return jsonify({"ok": True})
 
 
+# ---------------------------------------------------------------------------
+# The link between them
+# ---------------------------------------------------------------------------
+
+def _link_pair():
+    """(clue_id, thread_id) from the request body, or an error response."""
+    b = _body()
+    clue_id, thread_id = b.get("clue_id"), b.get("thread_id")
+    if not clue_id or not thread_id:
+        return None, (jsonify({"error": "clue_id and thread_id required"}), 400)
+    if not _one_clue(clue_id):
+        return None, (jsonify({"error": "no such clue"}), 404)
+    if not _one_thread(thread_id):
+        return None, (jsonify({"error": "no such thread"}), 404)
+    return (clue_id, thread_id), None
+
+
+@bp.route("/api/link", methods=["POST"])
+def api_link():
+    if (err := need_edit()):
+        return err
+    pair, err = _link_pair()
+    if err:
+        return err
+    with _db.LOCK:
+        # A repeat link is a no-op rather than an error: the frontend fires this
+        # from a picker that does not know what is already linked, and "you
+        # already did that" is not information the player needs.
+        _conn().execute(
+            "INSERT INTO clue_thread (clue_id, thread_id) VALUES (?, ?)"
+            " ON CONFLICT DO NOTHING", pair)
+        _conn().commit()
+    return jsonify({"ok": True})
+
+
+@bp.route("/api/link", methods=["DELETE"])
+def api_unlink():
+    if (err := need_edit()):
+        return err
+    pair, err = _link_pair()
+    if err:
+        return err
+    with _db.LOCK:
+        _conn().execute(
+            "DELETE FROM clue_thread WHERE clue_id = ? AND thread_id = ?", pair)
+        _conn().commit()
+    return jsonify({"ok": True})
+
+
+@bp.route("/api/threads/<int:thread_id>/solve", methods=["POST"])
+def api_thread_solve(thread_id):
+    """Close a thread, and by default spend the clues that fed it.
+
+    The cascade is the reason this is its own route rather than a PATCH. Without
+    it the ledger rots: you solve things, never go back to demote the clues, and
+    the "understood but unused" list fills with clues you already spent until
+    you stop trusting it. Clues already marked used are left alone, so the count
+    returned is how many actually changed.
+    """
+    if (err := need_edit()):
+        return err
+    if not _one_thread(thread_id):
+        return jsonify({"error": "no such thread"}), 404
+    raw = _body()
+    # Same protection _clean_body gives every other write route: a list or
+    # dict for "solution" would otherwise reach SQLite's bind and 500 the same
+    # way a bad area_id used to, instead of 400ing here.
+    b, err = _clean_body(raw, {"solution": (str, type(None))})
+    if err:
+        return err
+    mark = raw.get("mark_clues_used", True)
+    # Absent means "default to true"; present-but-not-a-bool is a caller bug,
+    # not a truthy value to coerce -- 1, "false", and [] are all wrong-shaped
+    # requests, not opinions about whether to mark clues used.
+    if not isinstance(mark, bool):
+        return jsonify({"error": "mark_clues_used must be a boolean"}), 400
+    now = _now()
+    with _db.LOCK:
+        _conn().execute("""
+            UPDATE thread SET state = 'solved', solution = ?, solved_at = ?,
+                              updated_at = ?
+            WHERE id = ?
+        """, (b.get("solution"), now, now, thread_id))
+        marked = 0
+        if mark:
+            cur = _conn().execute("""
+                UPDATE clue SET state = 'used', updated_at = ?
+                WHERE state != 'used' AND id IN (
+                    SELECT clue_id FROM clue_thread WHERE thread_id = ?
+                )
+            """, (now, thread_id))
+            marked = cur.rowcount
+        _conn().commit()
+    return jsonify({"thread": _one_thread(thread_id), "clues_marked": marked})
+
+
 @bp.route("/api/rooms")
 def api_rooms():
     """Distinct room names, for the capture form's autocomplete."""

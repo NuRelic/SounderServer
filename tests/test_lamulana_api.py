@@ -512,3 +512,93 @@ def test_thread_patch_rejects_a_non_string_title(editor_client):
     assert r.status_code == 400
     thread = editor_client.get("/lamulana/api/threads").get_json()["threads"][0]
     assert thread["title"] == "a"
+
+
+def _clue_and_thread(client):
+    cid = client.post("/lamulana/api/clues", json={
+        "title": "twin serpents", "body": "where the twin serpents meet",
+        "state": "understood"}).get_json()["clue"]["id"]
+    tid = client.post("/lamulana/api/threads", json={"title": "ankh won't spawn"}
+                      ).get_json()["thread"]["id"]
+    return cid, tid
+
+
+def test_link_shows_on_both_sides(editor_client):
+    cid, tid = _clue_and_thread(editor_client)
+    assert editor_client.post("/lamulana/api/link",
+                               json={"clue_id": cid, "thread_id": tid}).status_code == 200
+    detail = editor_client.get(f"/lamulana/api/threads/{tid}").get_json()["thread"]
+    assert [c["id"] for c in detail["clues"]] == [cid]
+    assert detail["clue_count"] == 1
+    clue = editor_client.get("/lamulana/api/clues").get_json()["clues"][0]
+    assert [t["id"] for t in clue["threads"]] == [tid]
+
+
+def test_linking_twice_is_harmless(editor_client):
+    cid, tid = _clue_and_thread(editor_client)
+    editor_client.post("/lamulana/api/link", json={"clue_id": cid, "thread_id": tid})
+    r = editor_client.post("/lamulana/api/link", json={"clue_id": cid, "thread_id": tid})
+    assert r.status_code == 200
+    detail = editor_client.get(f"/lamulana/api/threads/{tid}").get_json()["thread"]
+    assert len(detail["clues"]) == 1
+
+
+def test_unlink(editor_client):
+    cid, tid = _clue_and_thread(editor_client)
+    editor_client.post("/lamulana/api/link", json={"clue_id": cid, "thread_id": tid})
+    assert editor_client.delete("/lamulana/api/link",
+                                 json={"clue_id": cid, "thread_id": tid}).status_code == 200
+    detail = editor_client.get(f"/lamulana/api/threads/{tid}").get_json()["thread"]
+    assert detail["clues"] == []
+
+
+def test_link_to_a_missing_thread_is_rejected(editor_client):
+    cid, _ = _clue_and_thread(editor_client)
+    r = editor_client.post("/lamulana/api/link", json={"clue_id": cid, "thread_id": 9999})
+    assert r.status_code == 404
+
+
+def test_solving_marks_linked_clues_used(editor_client):
+    cid, tid = _clue_and_thread(editor_client)
+    editor_client.post("/lamulana/api/link", json={"clue_id": cid, "thread_id": tid})
+    r = editor_client.post(f"/lamulana/api/threads/{tid}/solve", json={
+        "solution": "incant Sol in front of the tablet", "mark_clues_used": True})
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["thread"]["state"] == "solved"
+    assert data["thread"]["solution"] == "incant Sol in front of the tablet"
+    assert data["thread"]["solved_at"] > 0
+    assert data["clues_marked"] == 1
+    clue = editor_client.get("/lamulana/api/clues").get_json()["clues"][0]
+    assert clue["state"] == "used"
+
+
+def test_solving_can_leave_clues_alone(editor_client):
+    cid, tid = _clue_and_thread(editor_client)
+    editor_client.post("/lamulana/api/link", json={"clue_id": cid, "thread_id": tid})
+    r = editor_client.post(f"/lamulana/api/threads/{tid}/solve", json={
+        "solution": "x", "mark_clues_used": False})
+    assert r.get_json()["clues_marked"] == 0
+    clue = editor_client.get("/lamulana/api/clues").get_json()["clues"][0]
+    assert clue["state"] == "understood"
+
+
+def test_solving_defaults_to_marking_clues_used(editor_client):
+    cid, tid = _clue_and_thread(editor_client)
+    editor_client.post("/lamulana/api/link", json={"clue_id": cid, "thread_id": tid})
+    r = editor_client.post(f"/lamulana/api/threads/{tid}/solve", json={"solution": "x"})
+    assert r.get_json()["clues_marked"] == 1
+
+
+def test_solving_does_not_touch_already_used_clues(editor_client):
+    cid, tid = _clue_and_thread(editor_client)
+    editor_client.patch(f"/lamulana/api/clues/{cid}", json={"state": "used"})
+    editor_client.post("/lamulana/api/link", json={"clue_id": cid, "thread_id": tid})
+    r = editor_client.post(f"/lamulana/api/threads/{tid}/solve", json={"solution": "x"})
+    assert r.get_json()["clues_marked"] == 0
+
+
+def test_link_and_solve_need_an_editing_session(reader_client):
+    assert reader_client.post("/lamulana/api/link", json={}).status_code == 403
+    assert reader_client.delete("/lamulana/api/link", json={}).status_code == 403
+    assert reader_client.post("/lamulana/api/threads/1/solve", json={}).status_code == 403
