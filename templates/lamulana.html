@@ -1,1 +1,288 @@
-<!doctype html><title>La-Mulana 2</title><p>placeholder</p>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#12100c">
+<title>Eg-Lana</title>
+<style>
+  /* Same bones as recipes.html so this reads as the same site, with a warm
+     ochre accent instead of blue -- the two pages are never confused at a
+     glance, and this one is stone and torchlight rather than a kitchen. */
+  :root{
+    --bg:#12100c; --panel:#1a1712; --panel2:#221e17; --line:rgba(255,255,255,.08);
+    --txt:#ece7dd; --dim:rgba(236,231,221,.45); --accent:#d9a441; --go:#3d8b5f;
+    --raw:#8a8378; --understood:#d9a441; --used:#4a4640;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
+    font:400 15px/1.45 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  body{display:flex;flex-direction:column;overflow:hidden}
+
+  header{flex:none;display:flex;align-items:center;gap:14px;padding:9px 16px;
+    background:var(--panel);border-bottom:1px solid var(--line)}
+  header h1{font-size:16px;font-weight:600;letter-spacing:.02em;margin:0;flex:none}
+  header h1 span{color:var(--accent)}
+  .tabs{display:flex;gap:2px;flex:none}
+  .tabs button{background:none;border:0;color:var(--dim);font:inherit;padding:5px 12px;
+    border-radius:7px;cursor:pointer}
+  .tabs button.on{background:var(--panel2);color:var(--txt)}
+  .search{flex:1;max-width:420px;margin-left:auto;padding:7px 11px;border-radius:8px;
+    background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+    font:inherit}
+  .search:focus{outline:none;border-color:var(--accent)}
+  .who{flex:none;color:var(--dim);font-size:13px}
+
+  main{flex:1;display:flex;min-height:0}
+  .rail{flex:none;width:190px;overflow-y:auto;padding:10px 0 30px;
+    border-right:1px solid var(--line);background:var(--panel)}
+  .rail h3{font-size:11px;letter-spacing:.11em;text-transform:uppercase;
+    color:var(--dim);margin:14px 14px 6px;font-weight:600}
+  .rail h3:first-child{margin-top:2px}
+  .rail button{display:flex;width:100%;gap:8px;align-items:baseline;background:none;
+    border:0;color:var(--dim);font:inherit;text-align:left;padding:4px 14px;
+    cursor:pointer;border-left:2px solid transparent}
+  .rail button:hover{color:var(--txt)}
+  .rail button.on{color:var(--txt);border-left-color:var(--accent);
+    background:rgba(217,164,65,.07)}
+  .rail button b{font-weight:400;flex:1;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap}
+  .rail button i{font-style:normal;font-size:12px;color:var(--dim);flex:none}
+
+  .list{flex:none;width:330px;overflow-y:auto;border-right:1px solid var(--line)}
+  .list .row{padding:9px 14px;border-bottom:1px solid rgba(255,255,255,.04);
+    cursor:pointer}
+  .list .row:hover{background:var(--panel)}
+  .list .row.on{background:var(--panel2)}
+  .list .row b{display:block;font-weight:500;font-size:14px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .list .row small{display:block;color:var(--dim);font-size:12px;margin-top:2px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .list .empty{padding:26px 16px;color:var(--dim);font-size:13px}
+
+  .pill{display:inline-block;font-size:10px;letter-spacing:.07em;text-transform:uppercase;
+    padding:1px 6px;border-radius:20px;vertical-align:1px;margin-right:6px}
+  .pill.raw{background:var(--raw);color:#12100c}
+  .pill.understood{background:var(--understood);color:#12100c}
+  .pill.used{background:var(--used);color:var(--dim)}
+  .pill.open{background:var(--understood);color:#12100c}
+  .pill.solved{background:var(--used);color:var(--dim)}
+
+  .detail{flex:1;overflow-y:auto;padding:20px 26px 60px;min-width:0}
+  .detail .empty{color:var(--dim);margin-top:40px}
+  .detail h2{font-size:20px;margin:0 0 4px;font-weight:600}
+  .detail .where{color:var(--dim);font-size:13px;margin-bottom:16px}
+  .detail .quote{background:var(--panel);border-left:2px solid var(--accent);
+    padding:11px 14px;margin:0 0 16px;white-space:pre-wrap;font-size:15px;
+    line-height:1.55}
+  .detail label{display:block;font-size:11px;letter-spacing:.11em;
+    text-transform:uppercase;color:var(--dim);margin:16px 0 5px;font-weight:600}
+  .fld{display:block;width:100%;padding:9px 11px;border-radius:8px;
+    background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+    font:inherit}
+  .fld:focus{outline:none;border-color:var(--accent)}
+  textarea.fld{line-height:1.5;resize:vertical;min-height:70px}
+  .btn{background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+    font:inherit;padding:7px 13px;border-radius:8px;cursor:pointer}
+  .btn:hover{border-color:var(--accent)}
+  .btn.go{background:var(--accent);border-color:var(--accent);color:#12100c;
+    font-weight:500}
+  .btn.danger:hover{border-color:#b4483c;color:#e0796d}
+  .btns{display:flex;gap:8px;margin-top:18px;flex-wrap:wrap}
+
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;
+    align-items:flex-start;justify-content:center;padding-top:9vh;z-index:20}
+  .modal .box{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    width:min(560px,92vw);padding:18px 20px 20px;max-height:80vh;overflow-y:auto}
+  .modal h3{margin:0 0 14px;font-size:16px;font-weight:600}
+  .modal .two{display:flex;gap:10px}
+  .modal .two > *{flex:1;min-width:0}
+
+  .keys{position:fixed;bottom:0;left:0;right:0;padding:5px 16px;font-size:11px;
+    color:var(--dim);background:var(--panel);border-top:1px solid var(--line)}
+  .keys b{color:var(--txt);font-weight:500}
+</style>
+</head>
+<body>
+<header>
+  <h1>Eg-<span>Lana</span></h1>
+  <div class="tabs">
+    <button data-tab="clues" class="on">Clues</button>
+    <button data-tab="threads">Threads</button>
+    <button data-tab="progress">Progress</button>
+  </div>
+  <input class="search" placeholder="Search everything…  /">
+  <div class="who"></div>
+</header>
+
+<main>
+  <div class="rail"></div>
+  <div class="list"></div>
+  <div class="detail"><div class="empty">Nothing selected.</div></div>
+</main>
+
+<div class="keys">
+  <b>n</b> new clue · <b>N</b> new thread · <b>/</b> search ·
+  <b>j/k</b> move · <b>l</b> link · <b>1–3</b> tabs · <b>esc</b> close
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// State and plumbing
+// ---------------------------------------------------------------------------
+const S = {
+  tab: 'clues',
+  areas: [], areaById: {},
+  clues: [], threads: [], checklist: [],
+  counts: {},
+  filterArea: null, filterState: null,
+  selected: null,          // id within the active tab
+  detail: null,            // the loaded thread detail, when on the threads tab
+  query: '',
+  canEdit: false,
+};
+
+const $ = s => document.querySelector(s);
+const el = (tag, cls, txt) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (txt != null) n.textContent = txt;
+  return n;
+};
+
+async function api(path, opts) {
+  const r = await fetch('/lamulana/api/' + path, {
+    headers: {'Content-Type': 'application/json'},
+    ...opts,
+  });
+  if (r.status === 403) { alertOnce(); return null; }
+  return r.json();
+}
+
+let warned = false;
+function alertOnce() {
+  if (warned) return;
+  warned = true;
+  $('.who').textContent = 'read-only — log in on the soundboard to edit';
+}
+
+async function boot() {
+  const data = await api('bootstrap');
+  S.areas = data.areas;
+  S.areaById = Object.fromEntries(data.areas.map(a => [a.id, a.name]));
+  S.checklist = data.checklist;
+  S.counts = data.counts;
+  const me = await (await fetch('/api/me')).json();
+  S.canEdit = !!me.can_edit;
+  if (!S.canEdit) alertOnce();
+  await refresh();
+}
+
+async function refresh() {
+  if (S.tab === 'clues') {
+    const p = new URLSearchParams();
+    if (S.filterArea) p.set('area', S.filterArea);
+    if (S.filterState) p.set('state', S.filterState);
+    if (S.query) p.set('q', S.query);
+    S.clues = (await api('clues?' + p)).clues;
+  } else if (S.tab === 'threads') {
+    const p = new URLSearchParams();
+    if (S.filterArea) p.set('area', S.filterArea);
+    if (S.filterState) p.set('state', S.filterState);
+    if (S.query) p.set('q', S.query);
+    S.threads = (await api('threads?' + p)).threads;
+  } else {
+    S.checklist = (await api('checklist')).groups;
+  }
+  S.counts = (await api('bootstrap')).counts;
+  render();
+}
+
+// ---------------------------------------------------------------------------
+// Render
+// ---------------------------------------------------------------------------
+function render() {
+  document.querySelectorAll('.tabs button').forEach(b =>
+    b.classList.toggle('on', b.dataset.tab === S.tab));
+  renderRail();
+  renderList();
+  renderDetail();
+}
+
+function renderRail() {
+  const rail = $('.rail');
+  rail.innerHTML = '';
+  if (S.tab === 'progress') return;
+
+  const states = S.tab === 'clues'
+    ? [['raw', 'Raw'], ['understood', 'Understood'], ['used', 'Used']]
+    : [['open', 'Open'], ['solved', 'Solved']];
+
+  rail.appendChild(el('h3', null, 'State'));
+  rail.appendChild(railButton('All', null, S.filterState === null,
+    () => { S.filterState = null; S.selected = null; refresh(); }));
+  states.forEach(([key, label]) => {
+    rail.appendChild(railButton(label, null, S.filterState === key,
+      () => { S.filterState = key; S.selected = null; refresh(); }));
+  });
+
+  rail.appendChild(el('h3', null, 'Area'));
+  rail.appendChild(railButton('Everywhere', null, S.filterArea === null,
+    () => { S.filterArea = null; S.selected = null; refresh(); }));
+  S.areas.forEach(a => {
+    rail.appendChild(railButton(a.name, null, S.filterArea === a.id,
+      () => { S.filterArea = a.id; S.selected = null; refresh(); }));
+  });
+}
+
+function railButton(label, count, on, onclick) {
+  const b = el('button', on ? 'on' : '');
+  b.appendChild(el('b', null, label));
+  if (count != null) b.appendChild(el('i', null, String(count)));
+  b.onclick = onclick;
+  return b;
+}
+
+function renderList() {
+  const list = $('.list');
+  list.innerHTML = '';
+  list.style.display = S.tab === 'progress' ? 'none' : '';
+  if (S.tab === 'progress') return;
+
+  const rows = S.tab === 'clues' ? S.clues : S.threads;
+  if (!rows.length) {
+    list.appendChild(el('div', 'empty',
+      S.query ? 'Nothing matches.' : 'Nothing here yet.'));
+    return;
+  }
+  rows.forEach(r => {
+    const row = el('div', 'row' + (S.selected === r.id ? ' on' : ''));
+    const title = el('b');
+    title.appendChild(el('span', 'pill ' + r.state, r.state));
+    title.appendChild(document.createTextNode(r.title));
+    row.appendChild(title);
+    const bits = [];
+    if (r.area) bits.push(r.area + (r.room ? ' ' + r.room : ''));
+    if (S.tab === 'clues' && r.threads.length) bits.push(r.threads.length + ' linked');
+    if (S.tab === 'threads' && r.clue_count) bits.push(r.clue_count + ' clues');
+    row.appendChild(el('small', null, bits.join(' · ')));
+    row.onclick = () => select(r.id);
+    list.appendChild(row);
+  });
+}
+
+async function select(id) {
+  S.selected = id;
+  if (S.tab === 'threads') {
+    S.detail = (await api('threads/' + id)).thread;
+  }
+  render();
+}
+
+function renderDetail() { /* filled in by Tasks 9 and 10 */ }
+
+boot();
+</script>
+</body>
+</html>
