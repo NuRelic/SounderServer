@@ -714,3 +714,111 @@ def test_resolving_does_not_move_solved_at(editor_client, monkeypatch):
 def test_solving_a_missing_thread_404s(editor_client):
     r = editor_client.post("/lamulana/api/threads/9999/solve", json={"solution": "x"})
     assert r.status_code == 404
+
+
+def test_search_spans_clues_and_threads(editor_client):
+    editor_client.post("/lamulana/api/clues", json={
+        "title": "serpent tablet", "body": "where the twin serpents meet"})
+    editor_client.post("/lamulana/api/threads", json={
+        "title": "serpent door", "body": "won't open"})
+    data = editor_client.get("/lamulana/api/search?q=serpent").get_json()
+    assert len(data["clues"]) == 1
+    assert len(data["threads"]) == 1
+
+
+def test_search_ands_every_word(editor_client):
+    editor_client.post("/lamulana/api/clues", json={
+        "title": "a", "body": "where the twin serpents meet"})
+    editor_client.post("/lamulana/api/clues", json={"title": "b", "body": "twin peaks"})
+    hits = editor_client.get("/lamulana/api/search?q=twin serpents").get_json()["clues"]
+    assert [c["title"] for c in hits] == ["a"]
+
+
+def test_search_matches_interpretation_too(editor_client):
+    editor_client.post("/lamulana/api/clues", json={
+        "title": "a", "interpretation": "this is about the Valhalla ankh"})
+    hits = editor_client.get("/lamulana/api/search?q=valhalla").get_json()["clues"]
+    assert len(hits) == 1
+
+
+def test_empty_search_returns_nothing(editor_client):
+    editor_client.post("/lamulana/api/clues", json={"title": "a"})
+    data = editor_client.get("/lamulana/api/search?q=").get_json()
+    assert data == {"clues": [], "threads": []}
+
+
+def test_checklist_toggle_stamps_and_clears_done_at(editor_client):
+    groups = editor_client.get("/lamulana/api/checklist").get_json()["groups"]
+    item = groups[0]["items"][0]
+    r = editor_client.patch(f"/lamulana/api/checklist/{item['id']}", json={"done": True})
+    assert r.get_json()["item"]["done"] is True
+    assert r.get_json()["item"]["done_at"] > 0
+    r = editor_client.patch(f"/lamulana/api/checklist/{item['id']}", json={"done": False})
+    assert r.get_json()["item"]["done"] is False
+    assert r.get_json()["item"]["done_at"] is None
+
+
+def test_checklist_note(editor_client):
+    item = editor_client.get("/lamulana/api/checklist").get_json()["groups"][0]["items"][0]
+    r = editor_client.patch(f"/lamulana/api/checklist/{item['id']}",
+                             json={"note": "behind the ice"})
+    assert r.get_json()["item"]["note"] == "behind the ice"
+
+
+def test_add_and_remove_a_custom_row(editor_client):
+    r = editor_client.post("/lamulana/api/checklist",
+                            json={"group": "Guardians", "name": "my own note"})
+    assert r.status_code == 200
+    new_id = r.get_json()["item"]["id"]
+    groups = {g["group"]: g for g in
+              editor_client.get("/lamulana/api/checklist").get_json()["groups"]}
+    assert len(groups["Guardians"]["items"]) == 11
+    assert editor_client.delete(f"/lamulana/api/checklist/{new_id}").status_code == 200
+    groups = {g["group"]: g for g in
+              editor_client.get("/lamulana/api/checklist").get_json()["groups"]}
+    assert len(groups["Guardians"]["items"]) == 10
+
+
+def test_a_custom_row_can_open_a_new_group(editor_client):
+    editor_client.post("/lamulana/api/checklist",
+                        json={"group": "Garbs", "name": "Clay Doll Suit"})
+    groups = {g["group"]: g for g in
+              editor_client.get("/lamulana/api/checklist").get_json()["groups"]}
+    assert [i["name"] for i in groups["Garbs"]["items"]] == ["Clay Doll Suit"]
+
+
+def test_duplicate_custom_row_is_rejected(editor_client):
+    editor_client.post("/lamulana/api/checklist", json={"group": "Garbs", "name": "x"})
+    r = editor_client.post("/lamulana/api/checklist", json={"group": "Garbs", "name": "X"})
+    assert r.status_code == 409
+
+
+# --- Bad input must 400, never reach SQLite as a 500 (same gap Task 4 found
+# and fixed for clues -- see _clean_body) ------------------------------------
+
+def test_checklist_add_rejects_a_non_string_group(editor_client):
+    before = editor_client.get("/lamulana/api/checklist").get_json()["groups"]
+    r = editor_client.post("/lamulana/api/checklist", json={"group": 123, "name": "x"})
+    assert r.status_code == 400
+    assert editor_client.get("/lamulana/api/checklist").get_json()["groups"] == before
+
+
+def test_checklist_add_rejects_a_non_string_name(editor_client):
+    before = editor_client.get("/lamulana/api/checklist").get_json()["groups"]
+    r = editor_client.post("/lamulana/api/checklist", json={"group": "Garbs", "name": 123})
+    assert r.status_code == 400
+    assert editor_client.get("/lamulana/api/checklist").get_json()["groups"] == before
+
+
+def test_checklist_note_rejects_a_non_string(editor_client):
+    item = editor_client.get("/lamulana/api/checklist").get_json()["groups"][0]["items"][0]
+    r = editor_client.patch(f"/lamulana/api/checklist/{item['id']}", json={"note": 123})
+    assert r.status_code == 400
+    got = editor_client.get("/lamulana/api/checklist").get_json()["groups"][0]["items"][0]
+    assert got["note"] == item["note"]
+
+
+def test_checklist_writes_need_an_editing_session(reader_client):
+    assert reader_client.patch("/lamulana/api/checklist/1", json={}).status_code == 403
+    assert reader_client.post("/lamulana/api/checklist", json={}).status_code == 403
+    assert reader_client.delete("/lamulana/api/checklist/1").status_code == 403

@@ -10,6 +10,7 @@ Tasks 6-8 -- if you came here looking for those, they are not written yet.
 """
 
 import os
+import sqlite3
 import time
 
 from flask import Blueprint, jsonify, render_template, request
@@ -631,3 +632,112 @@ def api_rooms():
         " ORDER BY room"
     ).fetchall()
     return jsonify({"rooms": [r["room"] for r in rows]})
+
+
+# ---------------------------------------------------------------------------
+# Search
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/search")
+def api_search():
+    """One query across both kinds. An empty query matches nothing, not everything."""
+    q = request.args.get("q", "")
+    cc, cp = _search_terms(q, ["c.title", "c.body", "c.interpretation", "c.room"])
+    tc, tp = _search_terms(q, ["t.title", "t.body", "t.solution"])
+    if not cc:
+        return jsonify({"clues": [], "threads": []})
+    clues = _conn().execute(
+        CLUE_SELECT + " WHERE " + cc + " ORDER BY c.updated_at DESC", cp).fetchall()
+    threads = _conn().execute(
+        THREAD_SELECT + " WHERE " + tc
+        + " ORDER BY t.state = 'solved', t.updated_at DESC", tp).fetchall()
+    return jsonify({"clues": _clue_json(clues),
+                    "threads": [dict(r) for r in threads]})
+
+
+# ---------------------------------------------------------------------------
+# Checklist
+# ---------------------------------------------------------------------------
+
+# One dict covers both writes: api_checklist_add reads group/name out of it,
+# api_checklist_patch reads note. "done" isn't listed -- it goes through
+# bool(), which tolerates any JSON type without raising, so it doesn't need
+# _clean_body's protection the way a string field being the wrong type does.
+CHECKLIST_FIELDS = {"group": str, "name": str, "note": (str, type(None))}
+
+
+def _one_item(item_id):
+    row = _conn().execute(
+        "SELECT id, group_name, name, position, done, done_at, note"
+        " FROM checklist_item WHERE id = ?", (item_id,)).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    item["group"] = item.pop("group_name")
+    item["done"] = bool(item["done"])
+    return item
+
+
+@bp.route("/api/checklist")
+def api_checklist():
+    return jsonify({"groups": _checklist_groups()})
+
+
+@bp.route("/api/checklist/<int:item_id>", methods=["PATCH"])
+def api_checklist_patch(item_id):
+    if (err := need_edit()):
+        return err
+    raw = _body()
+    b, err = _clean_body(raw, CHECKLIST_FIELDS)
+    if err:
+        return err
+    if not _one_item(item_id):
+        return jsonify({"error": "no such item"}), 404
+    with _db.LOCK:
+        if "done" in raw:
+            done = bool(raw["done"])
+            # done_at is cleared on untick rather than left behind, so it always
+            # means "when this was ticked", never "when it was ticked once".
+            _conn().execute(
+                "UPDATE checklist_item SET done = ?, done_at = ? WHERE id = ?",
+                (1 if done else 0, _now() if done else None, item_id))
+        if "note" in b:
+            _conn().execute("UPDATE checklist_item SET note = ? WHERE id = ?",
+                            (b["note"], item_id))
+        _conn().commit()
+    return jsonify({"item": _one_item(item_id)})
+
+
+@bp.route("/api/checklist", methods=["POST"])
+def api_checklist_add():
+    if (err := need_edit()):
+        return err
+    b, err = _clean_body(_body(), CHECKLIST_FIELDS)
+    if err:
+        return err
+    group = b.get("group", "").strip()
+    name = b.get("name", "").strip()
+    if not group or not name:
+        return jsonify({"error": "group and name required"}), 400
+    row = _conn().execute(
+        "SELECT COALESCE(MAX(position), -1) + 1 AS p FROM checklist_item"
+        " WHERE group_name = ?", (group,)).fetchone()
+    try:
+        with _db.LOCK:
+            cur = _conn().execute(
+                "INSERT INTO checklist_item (group_name, name, position)"
+                " VALUES (?, ?, ?)", (group, name, row["p"]))
+            _conn().commit()
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "already on the list"}), 409
+    return jsonify({"item": _one_item(cur.lastrowid)})
+
+
+@bp.route("/api/checklist/<int:item_id>", methods=["DELETE"])
+def api_checklist_delete(item_id):
+    if (err := need_edit()):
+        return err
+    with _db.LOCK:
+        _conn().execute("DELETE FROM checklist_item WHERE id = ?", (item_id,))
+        _conn().commit()
+    return jsonify({"ok": True})
