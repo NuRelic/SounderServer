@@ -60,7 +60,67 @@ command, and gets you SSH from anywhere:
 curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up
 ```
 
-## Install
+## Fast track: build the whole thing at YOUR house first
+
+If you'll be time-crunched on site, do all of this before you go. The goal is that
+the install visit is **plug in three cables and leave** — no laptop, no keyboard, no
+config, no downloads over their network.
+
+**Get their WiFi SSID and password in advance.** This is the single biggest time
+saver, because it lets you preload their network and skip all on-site setup.
+
+```bash
+# 1. Flash with Raspberry Pi Imager, preloading YOUR wifi + SSH key + hostname.
+# 2. Boot it on YOUR network, then from this repo:
+scp deploy/kitchen_agent.py deploy/prewarm_cache.py deploy/setup_node.sh <user>@soundnode-livingroom.local:~/
+
+# 3. One command does everything: installs, preloads THEIR wifi, fills the cache.
+ssh <user>@soundnode-livingroom.local 'chmod +x setup_node.sh && sudo ./setup_node.sh \
+    --name livingroom \
+    --wifi "TheirSSID:theirpassword" \
+    --cache-mb 900 --prewarm 600'
+```
+
+Add `--dry-run` first to see the whole plan without changing anything.
+
+Because both networks are configured, the box works on your bench **and** joins theirs
+automatically when it's plugged in over there. Test it on your own speakers, confirm it
+plays, then shut down and transport it.
+
+### Why `--prewarm` matters
+
+The node only downloads a sound the first time it's fired, so without pre-warming the
+first play of anything is late — up to ~20 s for the biggest songs. `--prewarm` fills the
+cache ahead of time on your fast network, ranked by all-time play count so the bytes go
+where they'll actually be used.
+
+Play counts are heavily skewed, which makes this very cheap. Measured against the live
+library (1,997 files, 88,104 recorded plays):
+
+| Budget | Files cached | Plays that become instant |
+|---|---|---|
+| 15 MB | 65 | **49%** |
+| 450 MB | ~570 | **93%** |
+
+So ~600 MB of pre-warming makes essentially everything anyone actually fires instant from
+minute one. It's safe to re-run (it skips what's already cached and resumes), and you can
+target it:
+
+```bash
+python3 prewarm_cache.py --include shorts     # clips only — tiny, huge hit rate
+python3 prewarm_cache.py --budget-mb 600
+python3 prewarm_cache.py --dry-run            # projected coverage, downloads nothing
+```
+
+Run it as the user that runs the agent — it writes into that user's cache.
+
+### On install day
+
+Plug in power, the USB audio adapter, and the speakers. It boots, joins their WiFi, and
+starts playing. Confirm by firing something from the board and watching it appear in the
+server's online list under its node name.
+
+## Install (step by step)
 
 ### 1. Flash the card
 

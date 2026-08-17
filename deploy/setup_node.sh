@@ -17,6 +17,8 @@ AUDIODEV=""                          # auto-detected unless given
 RUN_USER=""
 DRY_RUN=0
 SERVICE=sound-node
+PREWARM_MB=0                         # >0 = pre-fill the audio cache before it ships
+WIFI_SPECS=()                        # extra networks to preconfigure (SSID:password)
 
 usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
@@ -29,6 +31,8 @@ while [ $# -gt 0 ]; do
     --audiodev)  AUDIODEV="${2:?}"; shift 2 ;;
     --user)      RUN_USER="${2:?}"; shift 2 ;;
     --service)   SERVICE="${2:?}"; shift 2 ;;
+    --prewarm)   PREWARM_MB="${2:?}"; shift 2 ;;
+    --wifi)      WIFI_SPECS+=("${2:?}"); shift 2 ;;
     --dry-run)   DRY_RUN=1; shift ;;
     -h|--help)   usage 0 ;;
     *) echo "unknown option: $1" >&2; usage 1 ;;
@@ -147,6 +151,22 @@ if [ "$DRY_RUN" = 1 ]; then
   echo "  audiodev:  $AUDIODEV"
   echo "  unit:      $UNIT_PATH"
   echo "  agent:     $AGENT_SRC -> $HOME_DIR/kitchen_agent.py"
+  if [ "$PREWARM_MB" -gt 0 ]; then
+    if [ -f "$SRC_DIR/prewarm_cache.py" ]; then
+      echo "  prewarm:   ${PREWARM_MB}MB of most-played audio"
+    else
+      echo "  prewarm:   REQUESTED but prewarm_cache.py is not next to this script — would be SKIPPED"
+    fi
+  fi
+  if [ "${#WIFI_SPECS[@]}" -gt 0 ]; then
+    for spec in "${WIFI_SPECS[@]}"; do        # print SSIDs only, never the passwords
+      if [ "${spec%%:*}" = "$spec" ] || [ -z "${spec%%:*}" ]; then
+        echo "  wifi:      '$spec' INVALID — needs SSID:password"
+      else
+        echo "  wifi:      add '${spec%%:*}' (autoconnect)"
+      fi
+    done
+  fi
   echo "--- unit file that would be written ---"
   echo "$UNIT_TEXT"
   exit 0
@@ -159,6 +179,33 @@ apt-get install -y -qq python3 python3-pygame alsa-utils
 
 say "installing agent to $HOME_DIR/kitchen_agent.py"
 install -o "$RUN_USER" -g "$RUN_USER" -m 0755 "$AGENT_SRC" "$HOME_DIR/kitchen_agent.py"
+# prewarm_cache.py imports kitchen_agent, so it has to live beside it
+if [ -f "$SRC_DIR/prewarm_cache.py" ]; then
+  install -o "$RUN_USER" -g "$RUN_USER" -m 0755 "$SRC_DIR/prewarm_cache.py" "$HOME_DIR/prewarm_cache.py"
+fi
+
+# Extra WiFi networks. Preloading the DESTINATION house's network here means the box
+# can be built and tested on your own network, then just work when it's plugged in
+# over there — no keyboard, no monitor, no on-site config.
+if [ "${#WIFI_SPECS[@]}" -gt 0 ]; then
+  if command -v nmcli >/dev/null 2>&1; then
+    for spec in "${WIFI_SPECS[@]}"; do
+      wssid="${spec%%:*}"; wpsk="${spec#*:}"          # split on the FIRST colon
+      if [ -z "$wssid" ] || [ "$wssid" = "$spec" ]; then
+        echo "    !! --wifi needs SSID:password (got '${spec%%:*}') — skipping"; continue
+      fi
+      say "adding WiFi network '$wssid'"              # never print the password
+      nmcli connection delete "$wssid" >/dev/null 2>&1 || true
+      if ! nmcli connection add type wifi con-name "$wssid" ssid "$wssid" \
+             wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$wpsk" \
+             connection.autoconnect yes >/dev/null 2>&1; then
+        echo "    !! failed to add '$wssid' — add it by hand with nmcli"
+      fi
+    done
+  else
+    echo "    !! nmcli not found; cannot preconfigure WiFi on this OS. Skipping."
+  fi
+fi
 
 say "adding $RUN_USER to the audio group"
 usermod -aG audio "$RUN_USER" || true
@@ -179,6 +226,21 @@ for _ in $(seq 1 20); do
   if journalctl -u "$SERVICE" -n 40 --no-pager 2>/dev/null | grep -q "agent running"; then ok=1; break; fi
   if [ "$(systemctl show "$SERVICE" -p SubState --value)" != "running" ]; then break; fi
 done
+
+    # Pre-fill the cache while we're still on a fast network. The node only downloads
+    # a sound the first time it's fired, so without this the first play of anything is
+    # late (~20s for the biggest songs). Ranked by play count, so the bytes go to what
+    # actually gets used.
+if [ "$PREWARM_MB" -gt 0 ] && [ -f "$HOME_DIR/prewarm_cache.py" ]; then
+  echo
+  say "pre-warming the audio cache (${PREWARM_MB}MB) — this is the slow part, let it run"
+  sudo -u "$RUN_USER" env \
+      SS_SERVER="$SERVER" \
+      ${ORIGIN_IP:+SS_ORIGIN_IP="$ORIGIN_IP"} \
+      SS_CACHE_CAP_MB="$CACHE_MB" \
+      python3 "$HOME_DIR/prewarm_cache.py" --budget-mb "$PREWARM_MB" \
+    || echo "    !! prewarm did not finish cleanly — re-run it later, it resumes"
+fi
 
 echo
 if [ "$ok" = 1 ]; then
