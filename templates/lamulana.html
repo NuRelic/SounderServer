@@ -105,9 +105,98 @@
     color:var(--dim);background:var(--panel);border-top:1px solid var(--line)}
   .keys b{color:var(--txt);font-weight:500}
 
+  .prow{display:flex;align-items:baseline;gap:10px}
+  .prow .pnote{flex:0 0 200px;margin-left:auto}
+  .prow .pdel{padding:2px 9px;min-width:0}
+
   .toast{position:fixed;left:16px;bottom:16px;z-index:30;max-width:420px;
     background:#3a2822;border:1px solid #7a5230;color:var(--txt);
     padding:10px 14px;border-radius:10px;font-size:13px;box-shadow:0 4px 18px rgba(0,0,0,.4)}
+
+  /* The mobile-only chrome: a back bar above the detail pane, a button that
+     opens the filter rail as its own screen, and a + for capture. All three
+     are display:none on desktop, where the three panes are visible at once
+     and the keyboard does this job. */
+  .backbar, .filterbtn, .fab{display:none}
+
+  /* ------------------------------------------------------------------
+     Phone / narrow tablet. The desktop layout is three panes side by
+     side; there is no room for that on a handset, so the same markup
+     becomes one pane at a time and `main[data-pane]` says which. The
+     panes are hidden rather than unmounted so scroll position and focus
+     survive a trip into the detail view and back.
+     ------------------------------------------------------------------ */
+  @media (max-width: 820px) {
+    body{overflow:auto}
+
+    /* Two rows: identity + tabs, then the search box full width. */
+    header{flex-wrap:wrap;gap:8px 10px;padding:8px 12px;
+      position:sticky;top:0;z-index:10}
+    header h1{font-size:15px}
+    .tabs{flex:1;justify-content:flex-end}
+    .tabs button{padding:8px 12px}
+    /* 16px keeps iOS from zooming the page when the field takes focus --
+       same reason recipes.html pins its inputs to 16px. */
+    .search{order:3;flex-basis:100%;max-width:none;margin-left:0;font-size:16px;
+      padding:10px 12px}
+    .who{order:4;flex-basis:100%;font-size:12px}
+
+    main{display:block;min-height:0}
+    .rail, .list, .detail{width:auto;border-right:0}
+    .rail{max-height:none;padding-bottom:40px}
+
+    main[data-pane="list"]   .rail   {display:none !important}
+    main[data-pane="list"]   .detail {display:none !important}
+    main[data-pane="detail"] .rail   {display:none !important}
+    main[data-pane="detail"] .list   {display:none !important}
+    main[data-pane="rail"]   .list   {display:none !important}
+    main[data-pane="rail"]   .detail {display:none !important}
+
+    /* Thumb-sized rows. The desktop 9px padding is a mouse target. */
+    .list .row{padding:13px 14px;min-height:56px}
+    .rail button{padding:12px 16px;min-height:48px;align-items:center}
+    .detail{padding:14px 16px calc(90px + env(safe-area-inset-bottom))}
+
+    .backbar{display:flex;align-items:center;gap:10px;margin:-14px -16px 12px;
+      padding:10px 14px;background:var(--panel);
+      border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+    .backbar button{background:none;border:0;color:var(--accent);font:inherit;
+      padding:6px 4px;cursor:pointer;font-size:15px}
+
+    .filterbtn{display:flex;width:100%;align-items:center;gap:8px;
+      background:var(--panel);border:0;border-bottom:1px solid var(--line);
+      color:var(--txt);font:inherit;padding:12px 14px;cursor:pointer;
+      text-align:left;min-height:48px}
+    .filterbtn i{font-style:normal;color:var(--dim);font-size:13px}
+
+    /* Capture is keyboard-only on desktop (n / N). On a phone there is no
+       keyboard, so the primary action needs to be reachable by thumb. */
+    .fab{display:flex;align-items:center;justify-content:center;
+      position:fixed;right:18px;bottom:calc(18px + env(safe-area-inset-bottom));
+      width:56px;height:56px;border-radius:28px;z-index:15;
+      background:var(--accent);color:#12100c;border:0;font-size:30px;
+      line-height:1;box-shadow:0 4px 14px rgba(0,0,0,.45);cursor:pointer}
+
+    .fld, .search, input, select, textarea{font-size:16px}
+    .btn{padding:11px 15px;min-height:44px}
+    .modal{padding-top:0;align-items:stretch}
+    .modal .box{width:100%;max-height:100%;border-radius:0;
+      padding:16px 16px calc(24px + env(safe-area-inset-bottom))}
+    .two{flex-direction:column}
+    /* The note is a full-width second line rather than a 200px column
+       squeezed against the right edge of a 390px screen. */
+    .prow{flex-wrap:wrap;align-items:center;padding:12px 14px}
+    .prow .pnote{flex:1 0 100%;margin-left:0;order:3}
+    .prow > span{flex:1;min-width:0}
+    .prow .pdel{min-height:36px;padding:4px 12px}
+    .prow .notebtn{order:2;min-height:36px;padding:4px 12px;font-size:13px;
+      color:var(--dim)}
+    .prow input[type=checkbox]{width:22px;height:22px;flex:none}
+
+    .keys{display:none}
+    .toast{left:12px;right:12px;bottom:calc(84px + env(safe-area-inset-bottom));
+      max-width:none}
+  }
 </style>
 </head>
 <body>
@@ -122,11 +211,13 @@
   <div class="who"></div>
 </header>
 
-<main>
+<main data-pane="list">
   <div class="rail"></div>
   <div class="list"></div>
   <div class="detail"><div class="empty">Nothing selected.</div></div>
 </main>
+
+<button class="fab" aria-label="New">+</button>
 
 <div class="keys">
   <b>n</b> new clue · <b>N</b> new thread · <b>/</b> search ·
@@ -150,7 +241,16 @@ const S = {
   detail: null,            // the loaded thread detail, when a thread is selected
   query: '',
   canEdit: false,
+  // Which single pane a phone is showing: 'list' | 'detail' | 'rail'.
+  // Ignored entirely on desktop, where all three are on screen at once.
+  pane: 'list',
 };
+
+// Kept as a live query rather than a boolean captured at load, so rotating a
+// phone or dragging a desktop window narrow re-answers it instead of leaving
+// the page in a layout the CSS is no longer using.
+const NARROW = window.matchMedia('(max-width: 820px)');
+const isNarrow = () => NARROW.matches;
 
 const $ = s => document.querySelector(s);
 const el = (tag, cls, txt) => {
@@ -277,9 +377,37 @@ async function refresh() {
 function render() {
   document.querySelectorAll('.tabs button').forEach(b =>
     b.classList.toggle('on', b.dataset.tab === S.tab));
+  // Progress has no list or detail of its own — it draws into the detail
+  // pane — so on a phone it must always be the visible one.
+  const pane = (S.tab === 'progress' && !S.query) ? 'detail' : S.pane;
+  $('main').dataset.pane = pane;
   renderRail();
   renderList();
   renderDetail();
+  renderFab();
+}
+
+// The + button stands in for the n / N keys, which a phone doesn't have.
+// Hidden on Progress (that tab has its own per-group "add a row"), and for
+// a reader with no editing session, who has nothing to add.
+function renderFab() {
+  const fab = $('.fab');
+  const show = S.canEdit && S.tab !== 'progress' && !S.query
+    && ($('main').dataset.pane === 'list');
+  fab.style.display = show ? '' : 'none';
+  fab.setAttribute('aria-label', S.tab === 'threads' ? 'New thread' : 'New clue');
+  fab.onclick = () => (S.tab === 'threads' ? newThread() : newClue());
+}
+
+// On a phone the detail pane is a whole screen, so it needs a way back to
+// the list it came from. On desktop both are already visible and this is
+// display:none.
+function backBar(label) {
+  const bar = el('div', 'backbar');
+  const b = el('button', null, '‹ ' + label);
+  b.onclick = () => { S.pane = 'list'; render(); };
+  bar.appendChild(b);
+  return bar;
 }
 
 // The rail filters the *active tab's* list, which a live search overrides
@@ -293,6 +421,18 @@ function renderRail() {
   rail.style.display = hide ? 'none' : '';
   if (hide) return;
 
+  // On a phone the rail is its own screen, reached from the list and
+  // dismissed by choosing something; picking a filter and being left staring
+  // at the rail would make you tap twice for every filter change.
+  const pick = fn => () => { fn(); if (isNarrow()) S.pane = 'list'; refresh(); };
+
+  if (isNarrow()) {
+    const done = el('button', 'filterbtn railback');
+    done.appendChild(el('span', null, '‹ Back to list'));
+    done.onclick = () => { S.pane = 'list'; render(); };
+    rail.appendChild(done);
+  }
+
   const stateCounts = S.tab === 'clues' ? S.counts.clue_state : S.counts.thread_state;
   const areaCounts = S.tab === 'clues' ? S.counts.clue_area : S.counts.thread_area;
   const total = Object.values(stateCounts || {}).reduce((a, b) => a + b, 0);
@@ -303,20 +443,20 @@ function renderRail() {
 
   rail.appendChild(el('h3', null, 'State'));
   rail.appendChild(railButton('All', total, S.filterState === null,
-    () => { S.filterState = null; S.selected = null; refresh(); }));
+    pick(() => { S.filterState = null; S.selected = null; })));
   states.forEach(([key, label]) => {
     rail.appendChild(railButton(label, (stateCounts && stateCounts[key]) || 0,
       S.filterState === key,
-      () => { S.filterState = key; S.selected = null; refresh(); }));
+      pick(() => { S.filterState = key; S.selected = null; })));
   });
 
   rail.appendChild(el('h3', null, 'Area'));
   rail.appendChild(railButton('Everywhere', total, S.filterArea === null,
-    () => { S.filterArea = null; S.selected = null; refresh(); }));
+    pick(() => { S.filterArea = null; S.selected = null; })));
   S.areas.forEach(a => {
     rail.appendChild(railButton(a.name, (areaCounts && areaCounts[a.id]) || 0,
       S.filterArea === a.id,
-      () => { S.filterArea = a.id; S.selected = null; refresh(); }));
+      pick(() => { S.filterArea = a.id; S.selected = null; })));
   });
 
   // Source is a clue-only concept (see CLUE_SOURCES in lamulana/api.py) —
@@ -325,11 +465,11 @@ function renderRail() {
   if (S.tab === 'clues') {
     rail.appendChild(el('h3', null, 'Source'));
     rail.appendChild(railButton('Any', null, S.filterSource === null,
-      () => { S.filterSource = null; S.selected = null; refresh(); }));
+      pick(() => { S.filterSource = null; S.selected = null; })));
     [['tablet', 'Tablet'], ['npc', 'NPC'], ['mail', 'Mail'], ['other', 'Other']]
       .forEach(([v, label]) => {
         rail.appendChild(railButton(label, null, S.filterSource === v,
-          () => { S.filterSource = v; S.selected = null; refresh(); }));
+          pick(() => { S.filterSource = v; S.selected = null; })));
       });
   }
 }
@@ -366,6 +506,21 @@ function renderList() {
   list.style.display = show ? '' : 'none';
   if (!show) return;
 
+  // On a phone the rail is a separate screen, so the list needs a way in
+  // and a readout of what is currently filtering it — otherwise an active
+  // filter is invisible and an empty list looks like lost data.
+  if (isNarrow() && !S.query && S.tab !== 'progress') {
+    const active = [];
+    if (S.filterState) active.push(S.filterState);
+    if (S.filterArea) active.push(S.areaById[S.filterArea]);
+    if (S.filterSource) active.push(S.filterSource);
+    const fb = el('button', 'filterbtn listfilter');
+    fb.appendChild(el('span', null, 'Filter'));
+    fb.appendChild(el('i', null, active.length ? active.join(' · ') : 'everything'));
+    fb.onclick = () => { S.pane = 'rail'; render(); };
+    list.appendChild(fb);
+  }
+
   const rows = visibleRows();
   if (!rows.length) {
     list.appendChild(el('div', 'empty',
@@ -396,6 +551,9 @@ async function select(id, kind) {
   kind = kind || (S.tab === 'threads' ? 'thread' : 'clue');
   S.selected = id;
   S.selectedKind = kind;
+  // Picking a row on a phone means "go read it"; on desktop the detail pane
+  // is already on screen beside the list and nothing should move.
+  if (isNarrow()) S.pane = 'detail';
   if (kind === 'thread') {
     const data = await api('threads/' + id);
     S.detail = data ? data.thread : null;
@@ -409,6 +567,12 @@ function renderDetail() {
   const d = $('.detail');
   d.innerHTML = '';
   if (S.tab === 'progress' && !S.query) { renderProgress(d); return; }
+  // Progress is exempt above — it *is* the whole screen on a phone and has
+  // no list behind it to go back to.
+  if (isNarrow() && S.pane === 'detail') {
+    d.appendChild(backBar(S.query ? 'Results'
+      : (S.tab === 'threads' ? 'Threads' : 'Clues')));
+  }
   if (!S.selected) {
     d.appendChild(el('div', 'empty', S.query
       ? 'Select a result.'
@@ -833,10 +997,9 @@ function renderProgress(d) {
     const h = el('label', null, group.group + ' — ' + done + '/' + group.items.length);
     d.appendChild(h);
     group.items.forEach(item => {
-      const row = el('div', 'row');
-      row.style.display = 'flex';
-      row.style.alignItems = 'baseline';
-      row.style.gap = '10px';
+      // Class, not inline styles: the phone layout stacks the note under the
+      // name, and a media query cannot override a style attribute.
+      const row = el('div', 'row prow');
       const box = el('input');
       box.type = 'checkbox';
       box.checked = item.done;
@@ -848,23 +1011,32 @@ function renderProgress(d) {
       };
       const name = el('span', null, item.name);
       if (item.done) name.style.color = 'var(--dim)';
-      const note = el('input', 'fld');
+      const note = el('input', 'fld pnote');
       note.value = item.note || '';
       note.placeholder = 'note';
-      note.style.flex = '0 0 200px';
-      note.style.marginLeft = 'auto';
       note.disabled = !editable;
       note.onchange = async () => {
         const res = await api('checklist/' + item.id, {method: 'PATCH',
           body: JSON.stringify({note: note.value})});
         if (!res) note.value = item.note || '';
       };
-      row.append(box, name, note);
+      row.append(box, name);
+      // On a phone the note is a full-width second line, and 70 always-visible
+      // empty boxes turn ticking off a checklist into a very long scroll. An
+      // empty note collapses to a small tap target until it's wanted; one that
+      // already has text stays visible, because that text is the point.
+      if (isNarrow() && !item.note && editable) {
+        const addNote = el('button', 'btn notebtn', 'note');
+        addNote.onclick = () => { addNote.replaceWith(note); note.focus(); };
+        row.appendChild(addNote);
+      } else if (isNarrow() && !item.note && !editable) {
+        // nothing to show a reader: no note, and no way to add one
+      } else {
+        row.appendChild(note);
+      }
       if (editable) {
-        const del = el('button', 'btn danger', '×');
+        const del = el('button', 'btn danger pdel', '×');
         del.title = 'Remove this row';
-        del.style.padding = '2px 9px';
-        del.style.minWidth = '0';
         del.onclick = async () => {
           const res = await api('checklist/' + item.id, {method: 'DELETE'});
           if (res) refresh();
@@ -907,8 +1079,16 @@ function setTab(tab) {
   S.detail = null;
   S.filterState = null;
   S.filterSource = null;
+  // Switching tabs on a phone always lands on that tab's list, never on a
+  // stale detail or filter screen belonging to the tab you just left.
+  S.pane = 'list';
   refresh();
 }
+
+// A phone rotated into landscape, or a desktop window dragged narrow, moves
+// between the two layouts. Re-render so the panes and the mobile-only chrome
+// match whichever one is now in force.
+NARROW.addEventListener('change', () => { S.pane = 'list'; render(); });
 
 let searchTimer = null;
 $('.search').addEventListener('input', e => {
@@ -916,6 +1096,10 @@ $('.search').addEventListener('input', e => {
   searchTimer = setTimeout(() => {
     S.query = e.target.value.trim();
     S.selected = null;
+    // Typing or clearing a query replaces what the list holds, so a phone
+    // sitting on a detail screen would otherwise be left showing a result
+    // that is no longer in the list behind it.
+    S.pane = 'list';
     refresh();
   }, 180);
 });
