@@ -45,6 +45,11 @@ PORT      = int(os.environ.get("PORT", "5050"))
 
 AUDIO_EXTS = {".wav", ".mp3"}          # the two format channels
 LONG_THRESHOLD = 15.0                   # >15s = a "song" → the dedicated long lane
+# Under this, a clip is too short to sync meaningfully: seeking into it to catch up
+# eats most of the sound (a 0.9s fetch on a 1.2s clip leaves 0.3s of audio), and the
+# drift loop then keeps yanking currentTime mid-playback. So short clips always play
+# from 0, immediately — which also matches what the room boxes already do.
+INSTANT_THRESHOLD = 5.0
 TYPE_OVERRIDE_FILE = os.path.join(DATA_DIR, "type_overrides.json")
 SYNC_BUFFER = 1.0                       # must match the frontend sync buffer
 FAVS_FILE  = os.path.join(DATA_DIR, "favorites.json")
@@ -729,7 +734,8 @@ def save_colors():
 # ----------------------------------------------------------------------------
 @app.route("/")
 def index():
-    return render_template("index.html", sync_buffer=SYNC_BUFFER)
+    return render_template("index.html", sync_buffer=SYNC_BUFFER,
+                           instant_threshold=INSTANT_THRESHOLD)
 
 # ----------------------------------------------------------------------------
 # Routes — auth

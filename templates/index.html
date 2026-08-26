@@ -1587,7 +1587,12 @@ function startEntry(e){
   playing[e.token] = a;
   activeMeta[e.token] = {start:e.start, dur:e.dur||0};
   a.addEventListener('ended',()=>{ if(playing[e.token]===a){ delete playing[e.token]; delete activeMeta[e.token]; } });
-  if(SYNC && !connBad){
+  if(isInstant(e.dur)){
+    // Too short to sync: seeking in to "catch up" would eat most of the clip, and the
+    // drift loop would keep yanking it mid-playback. Fire it from 0 right now instead —
+    // that's also exactly what the room boxes do, so browsers now match them.
+    a.play().catch(()=>{});
+  } else if(SYNC && !connBad){
     // shared timeline: audio position 0 maps to wall-clock (start + buffer)
     const target = e.start + SYNC_BUFFER;
     const pos = serverNow() - target;
@@ -1760,6 +1765,11 @@ wireStep('#volDn','#vol',-1);          wireStep('#volUp','#vol',1);
 // ---- sync (shared timeline) — GLOBAL setting, admin-toggled, default on ----
 let SYNC = true;
 const SYNC_BUFFER = {{ sync_buffer|default(1.0) }};   // seconds of lead so all listeners align (injected from the server, must match)
+// Clips under this never sync — see INSTANT_THRESHOLD in server.py. Injected so the two
+// stay in step. A 0-duration entry (duration not probed yet) is NOT treated as instant,
+// since we can't tell a clip from a song without it.
+const INSTANT_MAX = {{ instant_threshold|default(5.0) }};
+function isInstant(dur){ return dur > 0 && dur < INSTANT_MAX; }
 let clockOffset = 0;              // serverTime - clientTime (seconds)
 function serverNow(){ return Date.now()/1000 + clockOffset; }
 async function syncClock(){
@@ -1801,6 +1811,7 @@ setInterval(()=>{
   for(const tok in playing){
     const m = activeMeta[tok], a = playing[tok];
     if(!m || !a || a.paused) continue;
+    if(isInstant(m.dur)) continue;   // started at 0 on purpose — never drag it back
     const expected = serverNow() - (m.start + SYNC_BUFFER);
     if(expected < 0 || (m.dur && expected > m.dur)) continue;
     const drift = a.currentTime - expected;
