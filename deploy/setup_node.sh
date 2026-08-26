@@ -177,11 +177,23 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq python3 python3-pygame alsa-utils
 
+# Copy into place, unless we were run FROM the destination — scp'ing everything to
+# ~ and running it there is the documented flow, and `install` errors out when src
+# and dest are the same file, which used to abort the whole script under `set -e`.
+place() {
+  local src="$1" dst="$2"
+  if [ -e "$dst" ] && [ "$src" -ef "$dst" ]; then
+    chown "$RUN_USER:$RUN_USER" "$dst"; chmod 0755 "$dst"
+    echo "    (already in place: $dst)"
+  else
+    install -o "$RUN_USER" -g "$RUN_USER" -m 0755 "$src" "$dst"
+  fi
+}
 say "installing agent to $HOME_DIR/kitchen_agent.py"
-install -o "$RUN_USER" -g "$RUN_USER" -m 0755 "$AGENT_SRC" "$HOME_DIR/kitchen_agent.py"
+place "$AGENT_SRC" "$HOME_DIR/kitchen_agent.py"
 # prewarm_cache.py imports kitchen_agent, so it has to live beside it
 if [ -f "$SRC_DIR/prewarm_cache.py" ]; then
-  install -o "$RUN_USER" -g "$RUN_USER" -m 0755 "$SRC_DIR/prewarm_cache.py" "$HOME_DIR/prewarm_cache.py"
+  place "$SRC_DIR/prewarm_cache.py" "$HOME_DIR/prewarm_cache.py"
 fi
 
 # Extra WiFi networks. Preloading the DESTINATION house's network here means the box
