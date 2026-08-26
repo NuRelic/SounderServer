@@ -115,11 +115,52 @@ _pin_fails = 0
 _pin_until = 0.0                 # while now < this, use plain DNS
 PIN_FAIL_LIMIT = 5               # ~15s of solid failure before falling back
 PIN_COOLDOWN = 120.0             # a false fallback just means 2min on the slower CF path
+# Both the poll loop and the download worker report into _pin_fails/_pin_until now,
+# so the read-modify-write needs its own lock.
+_PIN_LOCK = threading.Lock()
 
 def _poll_opener():
     if ORIGIN_IP and time.time() < _pin_until:
         return _opener_dns
     return _opener
+
+def _dl_opener():
+    """Same pin/DNS choice as _poll_opener, for the download worker.
+
+    Downloads used to be pinned UNCONDITIONALLY. On a node where new pinned
+    connections stopped completing their TCP handshake, the poll loop limped along on
+    its already-established keep-alive socket — so the agent looked healthy — while
+    every single download failed forever and nothing uncached could ever play.
+    """
+    if ORIGIN_IP and time.time() < _pin_until:
+        return _opener_dns
+    return _opener_dl
+
+def _note_pin_failure(who):
+    """Count one transport failure against the origin pin; past the limit, trip the
+    shared DNS cooldown. Lives here (not inline in the poll loop) because the download
+    worker sees pin breakage the poll loop can miss, and vice versa."""
+    global _pin_fails, _pin_until
+    if not ORIGIN_IP:
+        return
+    with _PIN_LOCK:
+        if time.time() < _pin_until:
+            return               # already on DNS — this failure isn't the pin's doing
+        _pin_fails += 1
+        if _pin_fails < PIN_FAIL_LIMIT:
+            return
+        _pin_until = time.time() + PIN_COOLDOWN
+        _pin_fails = 0
+    # Drop the pinned socket so the next poll redials via DNS. Safe to do from the
+    # download thread: worst case the poll loop is mid-request and sees a dead socket,
+    # which it already handles by reconnecting — which is exactly what we want here.
+    _poll_conn.close()
+    print("origin pin failing (%s) — falling back to DNS for %.0fs" % (who, PIN_COOLDOWN))
+
+def _note_pin_ok():
+    global _pin_fails
+    with _PIN_LOCK:
+        _pin_fails = 0
 
 def login():
     data = json.dumps({"password": PASSWORD}).encode()
@@ -218,6 +259,28 @@ def _evict_cache(keep):
     except Exception:
         pass
 
+def _sweep_zero_byte():
+    """Clear out 0-byte cache files once at startup.
+
+    Every one of these is a sound that can never play: they're leftovers from before
+    _download validated its output, and the old existence-only cache check treated them
+    as permanently cached. One node had accumulated 59 of them. Cheap to redo each boot,
+    and it means an upgraded node heals itself instead of needing a manual purge."""
+    n = 0
+    try:
+        for name in os.listdir(CACHE):
+            p = os.path.join(CACHE, name)
+            try:
+                if os.path.isfile(p) and os.path.getsize(p) == 0:
+                    os.remove(p); n += 1
+            except OSError:
+                pass
+    except OSError:
+        return
+    if n:
+        print("cache: removed %d zero-byte file%s (they will re-download on demand)"
+              % (n, "" if n == 1 else "s"))
+
 def cache_path(fn, ver=0):
     ext = os.path.splitext(fn)[1] or ".wav"
     # ver (the file's mtime) is part of the cache key, so an edit on the server
@@ -233,8 +296,16 @@ def ensure_cached(fn, ver=0):
     """Return the local path if the audio is already on disk, else kick off a
     background download and return None. NEVER blocks — that's the whole point."""
     path = cache_path(fn, ver)
-    if os.path.exists(path):
-        return path
+    # Size, not existence: a 0-byte cache file (interrupted download, disk full) used to
+    # satisfy os.path.exists forever, so the sound counted as cached and was never
+    # re-fetched — it just silently failed to play, permanently. Delete the corpse so
+    # the normal download path below picks it up.
+    try:
+        if os.path.getsize(path) > 0:
+            return path
+        os.remove(path)
+    except OSError:
+        pass                     # not cached yet, or another thread already unlinked it
     with _DL_LOCK:
         if path in _DL_INFLIGHT:
             return None
@@ -253,7 +324,11 @@ def _download(fn, ver, path):
         # stream straight to disk — a 1 GB mix must not buffer in RAM. Modest 256 KB
         # chunks (not 1 MB) so this thread yields often enough that the poll loop
         # stays snappy while a big song downloads.
-        with _opener_dl.open(url, timeout=DL_SOCK_TIMEOUT) as r, open(tmp, "wb") as f:
+        got = 0
+        want = -1                # -1 = server sent no usable Content-Length
+        with _dl_opener().open(url, timeout=DL_SOCK_TIMEOUT) as r, open(tmp, "wb") as f:
+            try: want = int(r.headers.get("Content-Length"))
+            except (TypeError, ValueError): pass
             while True:
                 if time.monotonic() - t0 > DL_DEADLINE:
                     raise TimeoutError("exceeded %.0fs total deadline" % DL_DEADLINE)
@@ -261,6 +336,16 @@ def _download(fn, ver, path):
                 if not chunk:
                     break
                 f.write(chunk)
+                got += len(chunk)
+        # Validate BEFORE promoting. os.replace is what turned an empty or truncated
+        # response into a "cached" file that outlived every retry. Raising instead lets
+        # the finally block bin the temp file and the worker record a normal failure,
+        # so the next play attempt tries again after the cooldown. (r/f are closed by
+        # now — os.replace already sat outside the `with`.)
+        if got == 0:
+            raise IOError("empty response")
+        if want >= 0 and got != want:
+            raise IOError("truncated: got %d of %d bytes" % (got, want))
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
@@ -281,6 +366,11 @@ def _download_worker():
             with _DL_LOCK:
                 _DL_FAILED[path] = time.time()
             print("download error:", fn, e)
+            # An HTTPError is a real answer from the server, so the transport is fine.
+            # Anything else (connect refused, TLS timeout, truncation) is evidence the
+            # pinned path is broken and should count toward the DNS fallback.
+            if not isinstance(e, urllib.error.HTTPError):
+                _note_pin_failure("download")
         finally:
             with _DL_LOCK:
                 _DL_INFLIGHT.discard(path)
@@ -364,11 +454,11 @@ def try_login():
         print("login skipped (%s) — listening is open, continuing" % e); return False
 
 def run():
-    global _pin_fails, _pin_until
     print("node %r -> %s %s | audio %s | cache %s cap %dMB"
           % (NODE, SERVER, ("(origin-pinned %s)" % ORIGIN_IP) if ORIGIN_IP else "(via DNS)",
              os.environ.get("AUDIODEV", os.environ["SDL_AUDIODRIVER"]),
              CACHE, CACHE_CAP // 1024**2))
+    _sweep_zero_byte()           # before the worker starts, so nothing races the unlink
     threading.Thread(target=_download_worker, daemon=True, name="dl").start()
     try_login()
     print("kitchen agent running. Ctrl-C to stop.")
@@ -383,7 +473,7 @@ def run():
             if gap >= BLIND_WARN:
                 print("⚠ blind for %.1fs (sounds fired in that window were missed)" % gap)
             last_ok = time.monotonic()
-            _pin_fails = 0
+            _note_pin_ok()
             active = d.get("active", [])
             vol = d.get("box_volume", 100) / 100.0
             live = {a["token"] for a in active}
@@ -428,13 +518,7 @@ def run():
             # blind window. The trailing time.sleep(POLL) already paces retries, so we
             # resume polling within POLL seconds and catch sounds we'd otherwise miss.
             print("loop error:", e)
-            if ORIGIN_IP and time.time() >= _pin_until:
-                _pin_fails += 1
-                if _pin_fails >= PIN_FAIL_LIMIT:
-                    _pin_until = time.time() + PIN_COOLDOWN
-                    _pin_fails = 0
-                    _poll_conn.close()   # drop the pinned socket so we redial via DNS
-                    print("origin pin failing — falling back to DNS for %.0fs" % PIN_COOLDOWN)
+            _note_pin_failure("poll")
         time.sleep(POLL)
 
 if __name__ == "__main__":
