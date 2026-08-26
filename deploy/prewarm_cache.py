@@ -6,8 +6,9 @@ is what makes the first play late (a 95MB song takes ~20s on the kitchen's link)
 Doing it ahead of time, on YOUR fast network before the box ever leaves, means the
 node is instantly responsive from its first minute in someone else's house.
 
-Ranks the whole library by all-time play count and fills up to a byte budget, so
-the bytes go to what gets fired instead of the alphabetical first N.
+Fills up to a byte budget in three priority passes: every short clip first, then
+songs played in the last 30 days, then the rest — see _passes() for why shorts
+outrank even the most-played song.
 
 Run it AS THE USER THAT RUNS THE AGENT (it writes into that user's cache):
     python3 prewarm_cache.py                     # 75% of the node's cache cap
@@ -19,7 +20,7 @@ It imports kitchen_agent to reuse that module's cache-key scheme and download
 path, so the files land exactly where the agent will look for them. Any drift
 between the two is impossible by construction.
 """
-import os, sys, json, argparse, urllib.request
+import os, sys, json, time, argparse, urllib.request
 
 # Must be set BEFORE importing the agent: importing it calls pygame.mixer.init(),
 # and we have no business grabbing the real audio device just to fill a cache.
@@ -32,19 +33,53 @@ except Exception as e:
     sys.exit("could not import kitchen_agent.py (must sit next to this script): %s" % e)
 
 
+RECENT_DAYS = 30      # a song nobody has fired in this long is long-tail, not rotation
+
+
 def human(n):
     return "%.1f MB" % (n / 1048576.0) if n >= 1048576 else "%.0f KB" % (n / 1024.0)
 
 
+def _passes(sounds, include):
+    """Order the library the way a node should actually fill its cache.
+
+    Pass 1 is EVERY short clip, however rarely played, ahead of every song. A short
+    only lives ~2.6s server-side, so a cache miss means the node never sees it in time
+    and the clip is simply never heard — the play is lost. A song miss only starts the
+    song late and then self-heals, since the file is cached by the time anyone plays it
+    again. That asymmetry is worth more than any play-count ranking can express, and
+    shorts are cheap: the whole clip library costs less than a handful of songs.
+
+    Passes 2 and 3 split the songs by whether they're in current rotation, so a small
+    budget spends itself on what the room is actually listening to this month.
+    """
+    shorts = [s for s in sounds if not s.get("long")]
+    songs  = [s for s in sounds if s.get("long")]
+    by_plays = lambda seq: sorted(seq, key=lambda s: -s.get("plays", 0))
+    # "last" is the unix ts of the file's last play, from /api/sounds. Absent (older
+    # server) or 0 (never played) counts as not-recent, so those land in pass 3.
+    cutoff = time.time() - RECENT_DAYS * 86400
+    recent = [s for s in songs if (s.get("last") or 0) >= cutoff]
+    stale  = [s for s in songs if (s.get("last") or 0) <  cutoff]
+    if include == "shorts":
+        return by_plays(shorts)
+    if include == "songs":
+        return by_plays(recent) + by_plays(stale)
+    return by_plays(shorts) + by_plays(recent) + by_plays(stale)
+
+
 def main():
-    p = argparse.ArgumentParser(description="Pre-fill a node's audio cache by play count.")
+    p = argparse.ArgumentParser(description="Pre-fill a node's audio cache: clips first, then songs by recency and plays.")
     p.add_argument("--budget-mb", type=int, default=None,
                    help="bytes to spend (default: 75%% of the node's cache cap)")
     p.add_argument("--include", choices=("all", "shorts", "songs"), default="all",
                    help="shorts = clips only (cheap, high value); songs = long tracks only")
-    p.add_argument("--top", type=int, default=0, help="only consider the N most-played files")
+    p.add_argument("--top", type=int, default=0, help="only consider the first N files in priority order")
     p.add_argument("--max-file-mb", type=int, default=0, help="skip files bigger than this")
-    p.add_argument("--min-plays", type=int, default=1, help="skip files played fewer times")
+    # Default 0: the goal is now the WHOLE library, and the old default of 1 silently
+    # excluded every never-played file — including brand-new clips, the ones most
+    # likely to be fired next.
+    p.add_argument("--min-plays", type=int, default=0, help="skip files played fewer times")
     p.add_argument("--dry-run", action="store_true", help="show the plan, download nothing")
     args = p.parse_args()
 
@@ -61,16 +96,14 @@ def main():
         sys.exit("could not fetch the library: %s" % e)
 
     total_plays = sum(s.get("plays", 0) for s in sounds) or 1
-    ranked = sorted(sounds, key=lambda s: -s.get("plays", 0))
-    if args.include == "shorts":
-        ranked = [s for s in ranked if not s.get("long")]
-    elif args.include == "songs":
-        ranked = [s for s in ranked if s.get("long")]
-    ranked = [s for s in ranked if s.get("plays", 0) >= args.min_plays]
+    ranked = _passes(sounds, args.include)
+    if args.min_plays:
+        ranked = [s for s in ranked if s.get("plays", 0) >= args.min_plays]
     if args.top:
         ranked = ranked[:args.top]
-    print("library: %d files, %d considered, %d all-time plays\n"
-          % (len(sounds), len(ranked), total_plays))
+    print("library: %d files, %d considered (%d shorts first), %d all-time plays\n"
+          % (len(sounds), len(ranked),
+             sum(1 for s in ranked if not s.get("long")), total_plays))
 
     spent = have = 0
     got = skipped_big = failed = 0
@@ -80,9 +113,9 @@ def main():
     for s in ranked:
         fn, ver = s["file"], s.get("ver", 0)
         path = ka.cache_path(fn, ver)
-        if os.path.exists(path):                      # already cached from a previous run
-            sz = os.path.getsize(path)
-            have += sz; spent += sz
+        sz = os.path.getsize(path) if os.path.exists(path) else 0
+        if sz:                                        # already cached from a previous run
+            have += sz; spent += sz                   # (a 0-byte file is a dead download — re-fetch it)
             plays_covered += s.get("plays", 0)
             continue
         if spent >= budget:

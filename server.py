@@ -274,6 +274,7 @@ _CMD2FILE = {}   # command (lowercased) -> file   (curated aliases)
 _FILE2ID  = {}   # file -> canonical soundid       (lowest id for that file)
 _NSFW     = set()# files flagged nsfw
 _PLAYS    = {}   # file -> all-time play count (summed across alias rows)
+_LAST     = {}   # file -> unix ts of the last play (MAX across alias rows, not a sum)
 
 def catalog_sync():
     """Add any library files missing from the catalog so new sounds get tracked."""
@@ -289,11 +290,11 @@ def catalog_sync():
     catalog_reload()
 
 def catalog_reload():
-    global _CMD2FILE, _FILE2ID, _NSFW, _PLAYS
+    global _CMD2FILE, _FILE2ID, _NSFW, _PLAYS, _LAST
     with _CAT_LOCK:
         rows  = _CAT.execute("SELECT id,command,file,nsfw FROM sounds").fetchall()
-        stats = {r["soundid"]: (r["count"] or 0)
-                 for r in _CAT.execute("SELECT soundid,count FROM sound_stats_all_time")}
+        stats = {r["soundid"]: ((r["count"] or 0), (r["last_update"] or 0))
+                 for r in _CAT.execute("SELECT soundid,count,last_update FROM sound_stats_all_time")}
     c2f, f2id, nsfw = {}, {}, set()
     file_by_id = {}
     for r in sorted(rows, key=lambda r: r["id"]):
@@ -305,12 +306,15 @@ def catalog_reload():
             c2f[cmd] = r["file"]
         if r["nsfw"]:
             nsfw.add(r["file"])
-    plays = {}
-    for sid, cnt in stats.items():               # sum stats across a file's alias rows
+    plays, last = {}, {}
+    for sid, (cnt, ts) in stats.items():         # sum stats across a file's alias rows
         f = file_by_id.get(sid)
         if f:
             plays[f] = plays.get(f, 0) + cnt
-    _CMD2FILE, _FILE2ID, _NSFW, _PLAYS = c2f, f2id, nsfw, plays
+            # "when was this last played" is the most RECENT alias row, not a total —
+            # summing timestamps would be meaningless.
+            last[f] = max(last.get(f, 0), ts)
+    _CMD2FILE, _FILE2ID, _NSFW, _PLAYS, _LAST = c2f, f2id, nsfw, plays, last
 
 def record_play(fn):
     sid = _FILE2ID.get(fn)
@@ -338,6 +342,7 @@ def record_play(fn):
             _CAT.execute("INSERT INTO sound_stats_all_time(soundid,count,last_update) VALUES(?,1,?)", (sid, now))
         _CAT.commit()
     _PLAYS[fn] = _PLAYS.get(fn, 0) + 1
+    _LAST[fn] = now                 # keep the in-memory map warm; no reload happens per play
 
 def catalog_rename(old, new):
     """Repoint a renamed file in the catalog so its soundid — and play stats — carry over."""
@@ -767,13 +772,16 @@ def api_sounds():
         _SOUNDS_SORTED = items
     with _DUR_LOCK:                         # snapshot under the lock to avoid races with the probe
         dur = dict(_DUR)
-    nsfw, plays = _NSFW, _PLAYS
+    nsfw, plays, last = _NSFW, _PLAYS, _LAST
     # favorites are per-user now — the client fetches them from /api/favorites?user=
+    # "last" (unix ts, 0 = never played) lets a node's cache pre-warmer prioritize
+    # songs that are actually in rotation over ones nobody has fired in months.
     out = [{**it,
             "dur": round(dur.get(it["file"], 0), 1),
             "long": is_long(it["file"]),
             "nsfw": it["file"] in nsfw,
-            "plays": plays.get(it["file"], 0)} for it in items]
+            "plays": plays.get(it["file"], 0),
+            "last": last.get(it["file"], 0)} for it in items]
     return jsonify({"count": len(out), "sounds": out, "scanning": _DUR_SCANNING})
 
 @app.route("/api/tags")
