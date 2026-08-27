@@ -704,7 +704,7 @@ async function loadTags(){
   }catch(e){ TAGS = []; TAGASSIGN = {}; }
 }
 function tagBy(slug){ return TAGS.find(t=>t.slug===slug) || null; }
-function tagKids(slug){ return TAGS.filter(t=>t.parent===slug); }
+function tagKids(slug){ return TAGS.filter(t=>t.parent===slug).sort((a,b)=>natCmp(a.label,b.label)); }
 // a clip belongs to `slug` if it carries it directly or carries one of its children
 function tagMembers(slug){
   const want = new Set([slug, ...tagKids(slug).map(t=>t.slug)]);
@@ -933,7 +933,7 @@ async function loadSounds(){
 function renderTagEditor(){
   const grid = $('#grid');
   grid.innerHTML = '';
-  const tops = TAGS.filter(t=>!t.parent);
+  const tops = TAGS.filter(t=>!t.parent).sort((a,b)=>natCmp(a.label,b.label));
   $('#shown').textContent = TAGS.length + ' tags · editing';
   const frag = document.createDocumentFragment();
 
@@ -996,7 +996,7 @@ function renderTagBoard(){
   if(TAGEDIT && ME.can_edit){ renderTagEditor(); return; }
   const grid = $('#grid');
   grid.innerHTML = '';
-  const tops = TAGS.filter(t=>!t.parent);
+  const tops = TAGS.filter(t=>!t.parent).sort((a,b)=>natCmp(a.label,b.label));
   $('#shown').textContent = tops.length
     ? (tops.length + ' tags · ' + Object.keys(TAGASSIGN).length + ' clips tagged')
     : 'no tags yet';
@@ -1102,6 +1102,7 @@ function render(){
       return natCmp(a.name, b.name);                  // rest alphabetical
     });
   }
+  else if(TAB==='tags') list.sort((a,b)=> natCmp(a.name, b.name));  // a tag's clips read A–Z by default (sort control still overrides)
   // (default for 'all' keeps the server's name-sorted order)
   $('#shown').textContent =
     cediting ? (list.length + ' clips · click one to edit') :
