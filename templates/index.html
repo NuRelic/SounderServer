@@ -1580,10 +1580,24 @@ function buildLanePicker(){
 
 // ---- browser playback (decentralised) ----
 const activeMeta = {};   // token -> {start, dur}  (for the drift loop)
+// First play of an UNcached clip often rejects: play() is called before any audio has
+// buffered (big/slow file, network blip), the promise rejects, and the OLD code swallowed
+// it and never retried — so the sound "didn't work" until a later play hit the browser
+// cache. Instead, retry once when the element says it can play. Autoplay-policy blocks
+// (NotAllowedError, no user gesture yet) are left alone — only a real gesture fixes those,
+// and we already unlock() on every click/fire.
+function safePlay(a){
+  if(!a) return;
+  a.play().catch(err=>{
+    if(err && err.name === 'NotAllowedError') return;   // autoplay blocked — retry won't help
+    a.addEventListener('canplay', ()=>{ a.play().catch(()=>{}); }, {once:true});
+  });
+}
 function startEntry(e){
   if(handled.has(e.token)) return;
   handled.add(e.token);
   const a = new Audio(audioUrl(e.file, e.ver));
+  a.preload = 'auto';
   a.volume = effVol();
   playing[e.token] = a;
   activeMeta[e.token] = {start:e.start, dur:e.dur||0};
@@ -1592,19 +1606,19 @@ function startEntry(e){
     // Too short to sync: seeking in to "catch up" would eat most of the clip, and the
     // drift loop would keep yanking it mid-playback. Fire it from 0 right now instead —
     // that's also exactly what the room boxes do, so browsers now match them.
-    a.play().catch(()=>{});
+    safePlay(a);
   } else if(SYNC && !connBad){
     // shared timeline: audio position 0 maps to wall-clock (start + buffer)
     const target = e.start + SYNC_BUFFER;
     const pos = serverNow() - target;
     if(pos < 0){                                    // not time yet → schedule from 0
-      setTimeout(()=>{ try{ a.currentTime=0; a.play().catch(()=>{}); }catch(_){} }, Math.min(5000, -pos*1000));
+      setTimeout(()=>{ try{ a.currentTime=0; safePlay(a); }catch(_){} }, Math.min(5000, -pos*1000));
     } else {                                        // late → seek in to catch up
       a.addEventListener('loadedmetadata',()=>{ if(pos < a.duration) a.currentTime=pos; });
-      a.play().catch(()=>{});
+      safePlay(a);
     }
   } else {
-    a.play().catch(()=>{});                          // snappy: from the start, ASAP
+    safePlay(a);                                     // snappy: from the start, ASAP
   }
 }
 async function pollActive(){
@@ -1841,7 +1855,7 @@ function playLocal(file, lane){
   unlock();
   if(soloPlaying[lane]){ try{ soloPlaying[lane].pause(); }catch(_){ } }
   const a = new Audio(audioUrl(file));
-  a.volume = effVol(); a.play().catch(()=>{});
+  a.preload = 'auto'; a.volume = effVol(); safePlay(a);
   a.addEventListener('ended', ()=>{ if(soloPlaying[lane]===a) delete soloPlaying[lane]; });
   soloPlaying[lane] = a;
 }
