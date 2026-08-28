@@ -355,16 +355,70 @@ def _download(fn, ver, path):
     print("cached %s (%.1f MB in %.1fs)"
           % (fn, os.path.getsize(path) / 1048576.0, time.monotonic() - t0))
 
+# ---------------------------------------------------------------------------
+# Self-reporting — the node had NO way to tell the server anything about itself,
+# so an "online but silent" node (failed downloads, wrong audio device, 0-byte
+# cache) was indistinguishable from a healthy one without SSHing in. This posts a
+# small health blob every REPORT_EVERY seconds on its own thread (never the poll
+# loop) so the server can surface it. Best-effort: any failure is swallowed.
+NODE_VERSION = "2026.08.28"
+REPORT_EVERY = 45
+_START = time.monotonic()
+_LAST_DL_OK = 0.0                # wall-clock ts of the last successful download
+_DL_OK = 0                       # lifetime successful downloads
+_DL_FAIL = 0                     # lifetime failed downloads
+_BLIND = 0                       # lifetime blind-window warnings
+_REPORT_LOCK = threading.Lock()
+
+def _cache_stats():
+    n = z = 0; total = 0
+    try:
+        with os.scandir(CACHE) as it:
+            for e in it:
+                if not e.is_file(): continue
+                try: sz = e.stat().st_size
+                except OSError: continue
+                n += 1; total += sz
+                if sz == 0: z += 1
+    except OSError:
+        pass
+    return n, z, total
+
+def _report_once():
+    n, zero, total = _cache_stats()
+    body = json.dumps({
+        "name": NODE, "version": NODE_VERSION,
+        "uptime_s": int(time.monotonic() - _START),
+        "audiodev": os.environ.get("AUDIODEV", os.environ.get("SDL_AUDIODRIVER", "?")),
+        "cache_mb": round(total / 1048576.0, 1), "cache_files": n, "cache_zero": zero,
+        "cache_cap_mb": CACHE_CAP // 1048576,
+        "last_dl_age_s": int(time.time() - _LAST_DL_OK) if _LAST_DL_OK else -1,
+        "dl_ok": _DL_OK, "dl_fail": _DL_FAIL, "blind": _BLIND,
+        "on_dns_fallback": bool(ORIGIN_IP and time.time() < _pin_until),
+    }).encode()
+    req = urllib.request.Request(SERVER + "/api/node/report", data=body,
+                                 headers={"Content-Type": "application/json"})
+    _poll_opener().open(req, timeout=10).read()
+
+def _report_loop():
+    while True:
+        try: _report_once()
+        except Exception: pass          # health reporting must never disturb playback
+        time.sleep(REPORT_EVERY)
+
 def _download_worker():
+    global _LAST_DL_OK, _DL_OK, _DL_FAIL
     while True:
         fn, ver, path = _DL_Q.get()
         try:
             _download(fn, ver, path)
             with _DL_LOCK:
                 _DL_FAILED.pop(path, None)
+            with _REPORT_LOCK: _LAST_DL_OK = time.time(); _DL_OK += 1
         except Exception as e:
             with _DL_LOCK:
                 _DL_FAILED[path] = time.time()
+            with _REPORT_LOCK: _DL_FAIL += 1
             print("download error:", fn, e)
             # An HTTPError is a real answer from the server, so the transport is fine.
             # Anything else (connect refused, TLS timeout, truncation) is evidence the
@@ -454,12 +508,14 @@ def try_login():
         print("login skipped (%s) — listening is open, continuing" % e); return False
 
 def run():
+    global _BLIND
     print("node %r -> %s %s | audio %s | cache %s cap %dMB"
           % (NODE, SERVER, ("(origin-pinned %s)" % ORIGIN_IP) if ORIGIN_IP else "(via DNS)",
              os.environ.get("AUDIODEV", os.environ["SDL_AUDIODRIVER"]),
              CACHE, CACHE_CAP // 1024**2))
     _sweep_zero_byte()           # before the worker starts, so nothing races the unlink
     threading.Thread(target=_download_worker, daemon=True, name="dl").start()
+    threading.Thread(target=_report_loop, daemon=True, name="report").start()
     try_login()
     print("kitchen agent running. Ctrl-C to stop.")
     last_ok = time.monotonic()
@@ -472,6 +528,7 @@ def run():
             gap = time.monotonic() - last_ok
             if gap >= BLIND_WARN:
                 print("⚠ blind for %.1fs (sounds fired in that window were missed)" % gap)
+                with _REPORT_LOCK: _BLIND += 1
             last_ok = time.monotonic()
             _note_pin_ok()
             active = d.get("active", [])

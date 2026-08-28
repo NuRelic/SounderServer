@@ -702,6 +702,41 @@ _PRESENCE = {}                 # name -> last_seen ts
 _PRESENCE_LOCK = threading.Lock()
 _PRESENCE_TTL = 70
 
+# Node health — playback boxes POST a small self-report every ~45s so an "online but
+# silent" node (failed downloads, wrong audio device, 0-byte cache) is visible without
+# SSHing in. Keyed by node name; a stale entry (no report within TTL) is dropped.
+_NODE_HEALTH = {}              # name -> {report dict, "recv": ts}
+_NODE_LOCK = threading.Lock()
+_NODE_TTL = 180
+# Fields we accept from a node report — clamp/whitelist so a stray POST can't bloat memory.
+_NODE_FIELDS = ("version", "uptime_s", "audiodev", "cache_mb", "cache_files", "cache_zero",
+                "cache_cap_mb", "last_dl_age_s", "dl_ok", "dl_fail", "blind", "on_dns_fallback")
+
+def node_report(name, data):
+    if not name:
+        return
+    rec = {k: data.get(k) for k in _NODE_FIELDS}
+    rec["recv"] = time.time()
+    with _NODE_LOCK:
+        _NODE_HEALTH[name] = rec
+        for n in [k for k, v in _NODE_HEALTH.items() if rec["recv"] - v.get("recv", 0) > _NODE_TTL]:
+            del _NODE_HEALTH[n]
+
+def node_health_list():
+    now = time.time()
+    with _NODE_LOCK:
+        out = []
+        for name, rec in _NODE_HEALTH.items():
+            if now - rec.get("recv", 0) > _NODE_TTL:
+                continue
+            r = dict(rec); r["age_s"] = int(now - rec.get("recv", 0)); r["name"] = name
+            # a node is "warn" if it's on the CF fallback, has 0-byte cache, or hasn't
+            # managed a download in a long while — the exact silent-failure signatures.
+            r["warn"] = bool(r.get("on_dns_fallback") or (r.get("cache_zero") or 0) > 0
+                             or (r.get("last_dl_age_s", -1) is not None and r.get("last_dl_age_s", -1) > 21600))
+            out.append(r)
+        return sorted(out, key=lambda x: x["name"])
+
 def presence_touch(name):
     if not name:
         return
@@ -962,7 +997,21 @@ def api_active():
     set_color(_u, request.args.get("c"))
     online = [{"name": n, "color": _USER_COLOR.get(n)} for n in presence_list()]
     return jsonify({"active": active_snapshot(), "lanes": _LANES, "song_lanes": _SONG_LANES,
-                    "box_volume": _BOX_VOL, "sync": _SYNC, "online": online})
+                    "box_volume": _BOX_VOL, "sync": _SYNC, "online": online,
+                    "nodes": node_health_list()})
+
+@app.route("/api/node/report", methods=["POST"])
+def api_node_report():
+    """A playback node's periodic self-report. Unauthenticated on purpose — nodes carry
+    no credential (see kitchen_agent SS_PASSWORD note); this is diagnostic data only, never
+    a control path, and is name-keyed + field-whitelisted."""
+    body = request.get_json(silent=True) or {}
+    node_report((body.get("name") or "").strip()[:40], body)
+    return jsonify({"ok": True})
+
+@app.route("/api/nodes")
+def api_nodes():
+    return jsonify({"nodes": node_health_list()})
 
 @app.route("/api/active/<int:token>/stop", methods=["POST"])
 def api_active_stop(token):
