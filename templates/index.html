@@ -281,6 +281,9 @@
     display:flex;gap:6px;align-items:center;flex-wrap:wrap}
   .presence .pdot{width:7px;height:7px;border-radius:50%;background:var(--accent2);flex:0 0 auto}
   .presence .who2{color:var(--txt)}
+  .ndsep{opacity:.35;margin:0 2px}
+  .nodechip{font-size:12px;padding:1px 6px;border:1px solid var(--line);border-radius:8px;color:var(--dim);cursor:default}
+  .nodechip.warn{color:#ffcf6b;border-color:#7a5a1a;background:rgba(255,180,60,.08)}
   .feed .items{flex:1 1 auto;overflow:auto;padding:10px 12px;display:flex;flex-direction:column;gap:4px}
   .fi{font-size:13px;padding:2px 0;word-break:break-word}
   .fi .u{color:var(--accent2);font-weight:600}
@@ -1674,7 +1677,7 @@ async function pollActive(){
     clearTimeout(_to);
     const d = await r.json();
     noteConn(performance.now()-_t0, true);
-    paintPresence(d.online);
+    paintPresence(d.online, d.nodes);
     if(typeof d.lanes==='number' && d.lanes!==LANES){   // admin changed lane count
       LANES=d.lanes; if(LANE>=LANES)LANE=0;
       $('#lanesN').textContent=LANES; buildLanePicker(); render();
@@ -1763,13 +1766,26 @@ function readDur(){            // lower/upper length bounds in seconds; blank = 
 function initDurFilter(){ readDur(); }     // keep typed bounds across background refreshes
 $('#durMin').oninput = () => { readDur(); render(); };
 $('#durMax').oninput = () => { readDur(); render(); };
-function paintPresence(online){
+function paintPresence(online, nodes){
   const el=$('#presence');
-  if(!online || !online.length){
-    el.innerHTML='<span class="pdot" style="background:#555"></span> nobody else here'; return;
+  let html = (!online || !online.length)
+    ? '<span class="pdot" style="background:#555"></span> nobody else here'
+    : `<span class="pdot"></span> ${online.length} online: `+
+        online.map(o=>`<span style="color:${o.color||'#e6e9f0'};font-weight:600">${esc(o.name)}</span>`).join(', ');
+  // room playback boxes report their own health — surface a compact chip per node so an
+  // online-but-silent box (⚠) is visible at a glance; hover for the details.
+  if(nodes && nodes.length){
+    const age = s => (s==null||s<0) ? 'never' : s<90 ? s+'s' : s<5400 ? Math.round(s/60)+'m' : Math.round(s/3600)+'h';
+    html += ' <span class="ndsep">·</span> ' + nodes.map(n=>{
+      const tip = `${n.audiodev} · cache ${n.cache_mb}MB / ${n.cache_files} files`
+        + (n.cache_zero ? `, ${n.cache_zero} EMPTY` : '')
+        + ` · last download ${age(n.last_dl_age_s)}`
+        + (n.on_dns_fallback ? ' · on CF fallback' : '')
+        + ` · v${n.version||'?'}`;
+      return `<span class="nodechip${n.warn?' warn':''}" data-tip="${esc(tip)}">${n.warn?'⚠':'🔊'} ${esc(n.name)}</span>`;
+    }).join(' ');
   }
-  el.innerHTML=`<span class="pdot"></span> ${online.length} online: `+
-    online.map(o=>`<span style="color:${o.color||'#e6e9f0'};font-weight:600">${esc(o.name)}</span>`).join(', ');
+  el.innerHTML = html;
 }
 function killActive(token){
   fetch('/api/active/'+token+'/stop',{method:'POST',headers:{'Content-Type':'application/json'},
