@@ -1593,6 +1593,19 @@ function safePlay(a){
     a.addEventListener('canplay', ()=>{ a.play().catch(()=>{}); }, {once:true});
   });
 }
+// Seeking to a position that hasn't downloaded yet makes the browser STALL until that
+// byte range arrives — on an uncached first play that looks like "the sound didn't play."
+// So we only ever seek-to-sync INTO already-buffered audio; otherwise the clip keeps
+// playing and syncs later once the data is there (play now, sync when we can). Cached
+// clips are fully buffered, so they still sync perfectly and immediately.
+function posReady(a, t){
+  try{
+    for(let i=0;i<a.buffered.length;i++){
+      if(t >= a.buffered.start(i)-0.25 && t <= a.buffered.end(i)) return true;
+    }
+  }catch(_){}
+  return false;
+}
 function startEntry(e){
   if(handled.has(e.token)) return;
   handled.add(e.token);
@@ -1613,8 +1626,12 @@ function startEntry(e){
     const pos = serverNow() - target;
     if(pos < 0){                                    // not time yet → schedule from 0
       setTimeout(()=>{ try{ a.currentTime=0; safePlay(a); }catch(_){} }, Math.min(5000, -pos*1000));
-    } else {                                        // late → seek in to catch up
-      a.addEventListener('loadedmetadata',()=>{ if(pos < a.duration) a.currentTime=pos; });
+    } else {                                        // late → catch up ONLY if it won't stall
+      // Seek in to sync, but only once that position is actually buffered — otherwise just
+      // play from the start now and let the drift loop sync it as it downloads.
+      const trySeek = ()=>{ if(pos < a.duration && posReady(a,pos)) a.currentTime=pos; };
+      a.addEventListener('loadedmetadata', trySeek);
+      a.addEventListener('canplay', trySeek, {once:true});
       safePlay(a);
     }
   } else {
@@ -1831,9 +1848,10 @@ setInterval(()=>{
     if(expected < 0 || (m.dur && expected > m.dur)) continue;
     const drift = a.currentTime - expected;
     if(IS_MOBILE){
-      // no playbackRate nudging on mobile; only resync after a real desync
-      if(Math.abs(drift) > 1.5){ try{ a.currentTime = expected; }catch(_){} }
-    } else if(Math.abs(drift) > 0.35){ try{ a.currentTime = expected; }catch(_){} a.playbackRate = 1; }
+      // no playbackRate nudging on mobile; only resync after a real desync — and only by
+      // seeking into buffered audio, so a still-downloading clip keeps playing vs stalling
+      if(Math.abs(drift) > 1.5 && posReady(a, expected)){ try{ a.currentTime = expected; }catch(_){} }
+    } else if(Math.abs(drift) > 0.35){ if(posReady(a, expected)){ try{ a.currentTime = expected; }catch(_){} } a.playbackRate = 1; }
     else if(Math.abs(drift) > 0.06){ a.playbackRate = drift > 0 ? 0.96 : 1.04; }
     else a.playbackRate = 1;
   }
