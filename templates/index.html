@@ -903,11 +903,39 @@ function assumeAdminIdentity(){
   loadFavs();         // load Banandon's favorites
 }
 
-// ---- audio unlock (autoplay policy) ----
+// ---- audio unlock (autoplay policy) + Web Audio master volume ----
+// iOS Safari makes <audio>.volume READ-ONLY — setting it does nothing, so the volume
+// slider/mute never worked on iPhone. Routing every clip through one shared GainNode
+// gives software volume that iOS honors. Degrades to element.volume where Web Audio is
+// unavailable (older browsers).
+let AC = null, MASTER = null;
+const _wired = new WeakSet();
+function audioCtx(){
+  if(AC) return AC;
+  try{
+    AC = new (window.AudioContext || window.webkitAudioContext)();
+    MASTER = AC.createGain();
+    MASTER.gain.value = (typeof effVol === 'function') ? effVol() : 1;
+    MASTER.connect(AC.destination);
+  }catch(_){ AC = null; MASTER = null; }
+  return AC;
+}
+// Route an <audio> element through MASTER. Each element can be wired only ONCE, and once
+// wired its sound exits ONLY via the graph — so set element.volume=1 and let MASTER.gain
+// attenuate. Returns false (→ caller keeps using element.volume) if it couldn't wire.
+function wireGain(a){
+  if(_wired.has(a)) return true;
+  const ctx = audioCtx();
+  if(!ctx) return false;
+  try{ ctx.createMediaElementSource(a).connect(MASTER); _wired.add(a); a.volume = 1; return true; }
+  catch(_){ return false; }
+}
 function unlock(){
   if(audioUnlocked) return;
   const a = new Audio("data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=");
   a.play().catch(()=>{}); audioUnlocked = true;
+  const ctx = audioCtx();                                  // create on this user gesture so iOS allows it
+  if(ctx && ctx.state === 'suspended') ctx.resume().catch(()=>{});
 }
 document.addEventListener('click', unlock, {once:false});
 
@@ -1611,7 +1639,7 @@ function startEntry(e){
   handled.add(e.token);
   const a = new Audio(audioUrl(e.file, e.ver));
   a.preload = 'auto';
-  a.volume = effVol();
+  if(!wireGain(a)) a.volume = effVol();   // wired → MASTER.gain controls volume (iOS-safe); else element volume
   playing[e.token] = a;
   activeMeta[e.token] = {start:e.start, dur:e.dur||0};
   a.addEventListener('ended',()=>{ if(playing[e.token]===a){ delete playing[e.token]; delete activeMeta[e.token]; } });
@@ -1756,8 +1784,10 @@ $('#browserVol').value = Math.round(BROWSERVOL*100);
 function effVol(){ return MUTED ? 0 : BROWSERVOL; }              // applied volume
 function applyVol(){
   const v = effVol();
-  for(const t in playing){ try{ playing[t].volume = v; }catch(_){ } }
-  for(const l in soloPlaying){ try{ soloPlaying[l].volume = v; }catch(_){ } }
+  if(MASTER){ try{ MASTER.gain.value = v; }catch(_){ } }          // iOS-honored software volume/mute
+  // elements not routed through the graph (Web Audio unavailable) still use element.volume
+  for(const t in playing){ if(!_wired.has(playing[t])) try{ playing[t].volume = v; }catch(_){ } }
+  for(const l in soloPlaying){ if(!_wired.has(soloPlaying[l])) try{ soloPlaying[l].volume = v; }catch(_){ } }
   $('#muteBtn').textContent = v===0 ? '🔇' : (v < 0.5 ? '🔉' : '🔊');
 }
 $('#browserVol').oninput = e => {
@@ -1873,7 +1903,7 @@ function playLocal(file, lane){
   unlock();
   if(soloPlaying[lane]){ try{ soloPlaying[lane].pause(); }catch(_){ } }
   const a = new Audio(audioUrl(file));
-  a.preload = 'auto'; a.volume = effVol(); safePlay(a);
+  a.preload = 'auto'; if(!wireGain(a)) a.volume = effVol(); safePlay(a);
   a.addEventListener('ended', ()=>{ if(soloPlaying[lane]===a) delete soloPlaying[lane]; });
   soloPlaying[lane] = a;
 }
