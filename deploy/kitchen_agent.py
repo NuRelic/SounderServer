@@ -384,6 +384,32 @@ def _cache_stats():
         pass
     return n, z, total
 
+NETMON_CSV = os.path.expanduser("~/netmon.csv")
+
+def _net_summary():
+    """Last row of the netmon sampler (deploy/netmon.sh), if present, folded into a
+    compact network-health block so the server can watch WiFi channel drift + uplink
+    signal over time. None if the sampler isn't installed on this node."""
+    try:
+        with open(NETMON_CSV, "rb") as f:            # read just the tail cheaply
+            f.seek(0, 2)
+            end = f.tell()
+            f.seek(max(0, end - 4096))
+            last = f.read().decode("utf-8", "replace").strip().splitlines()[-1]
+        if last.startswith("ts,"):
+            return None                              # only a header so far
+        c = last.split(",")
+        if len(c) < 17:
+            return None
+        num = lambda s: (float(s) if ("." in s or "-" in s or s.isdigit()) else None) if s else None
+        # ts,rssi,linkspeed,freq,chan,gw_avg,gw_max,gw_loss,net_avg,net_max,net_loss,rsrp,rsrq,sinr,gw_5g,devn,state
+        return {"rssi": num(c[1]), "chan": num(c[4]), "freq": num(c[3]),
+                "gw_5g_chan": num(c[14]), "net_avg_ms": num(c[8]), "net_loss": num(c[10]),
+                "rsrp": num(c[11]), "rsrq": num(c[12]), "sinr": num(c[13]),
+                "wifi_state": c[16], "sample_ts": c[0]}
+    except Exception:
+        return None
+
 def _report_once():
     n, zero, total = _cache_stats()
     body = json.dumps({
@@ -395,6 +421,7 @@ def _report_once():
         "last_dl_age_s": int(time.time() - _LAST_DL_OK) if _LAST_DL_OK else -1,
         "dl_ok": _DL_OK, "dl_fail": _DL_FAIL, "blind": _BLIND,
         "on_dns_fallback": bool(ORIGIN_IP and time.time() < _pin_until),
+        "net": _net_summary(),
     }).encode()
     req = urllib.request.Request(SERVER + "/api/node/report", data=body,
                                  headers={"Content-Type": "application/json"})

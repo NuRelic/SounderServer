@@ -1777,10 +1777,15 @@ function paintPresence(online, nodes){
   if(nodes && nodes.length){
     const age = s => (s==null||s<0) ? 'never' : s<90 ? s+'s' : s<5400 ? Math.round(s/60)+'m' : Math.round(s/3600)+'h';
     html += ' <span class="ndsep">·</span> ' + nodes.map(n=>{
-      const tip = `${n.audiodev} · cache ${n.cache_mb}MB / ${n.cache_files} files`
+      const nt = n.net || {};
+      const netbit = (nt.gw_5g_chan!=null ? ` · 5G ch${nt.gw_5g_chan}` : (nt.chan!=null ? ` · ch${nt.chan}` : ''))
+        + (nt.rsrp!=null ? ` · RSRP ${nt.rsrp}` : '')
+        + (nt.net_loss ? ` · loss ${nt.net_loss}%` : '');
+      const tip = (n.warn_reason ? '⚠ '+n.warn_reason+' — ' : '')
+        + `${n.audiodev} · cache ${n.cache_mb}MB/${n.cache_files}`
         + (n.cache_zero ? `, ${n.cache_zero} EMPTY` : '')
-        + ` · last download ${age(n.last_dl_age_s)}`
-        + (n.on_dns_fallback ? ' · on CF fallback' : '')
+        + ` · last dl ${age(n.last_dl_age_s)}`
+        + netbit
         + ` · v${n.version||'?'}`;
       return `<span class="nodechip${n.warn?' warn':''}" data-tip="${esc(tip)}">${n.warn?'⚠':'🔊'} ${esc(n.name)}</span>`;
     }).join(' ');

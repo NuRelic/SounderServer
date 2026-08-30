@@ -710,7 +710,31 @@ _NODE_LOCK = threading.Lock()
 _NODE_TTL = 180
 # Fields we accept from a node report — clamp/whitelist so a stray POST can't bloat memory.
 _NODE_FIELDS = ("version", "uptime_s", "audiodev", "cache_mb", "cache_files", "cache_zero",
-                "cache_cap_mb", "last_dl_age_s", "dl_ok", "dl_fail", "blind", "on_dns_fallback")
+                "cache_cap_mb", "last_dl_age_s", "dl_ok", "dl_fail", "blind", "on_dns_fallback",
+                "net")
+# WiFi channels every device supports (low UNII-1 band). The living-room gateway must stay
+# pinned here; anything else means it drifted to DFS or the upper band (which broke the
+# friend's Xbox + phones on 2026-08-30). See project_livingroom_node memory.
+_GOOD_5G_CHANS = {36, 40, 44, 48}
+
+def _net_warn(net):
+    """Flag the network signals that have caused real outages: 5G channel drift off the
+    low band, a very weak uplink, or sustained packet loss. Returns (warn, reason|None)."""
+    if not isinstance(net, dict):
+        return False, None
+    ch = net.get("gw_5g_chan") or net.get("chan")
+    try:
+        if ch is not None and int(ch) not in _GOOD_5G_CHANS:
+            return True, "5G channel %s (drifted off low band)" % int(ch)
+    except (TypeError, ValueError):
+        pass
+    rsrp = net.get("rsrp")
+    if isinstance(rsrp, (int, float)) and rsrp <= -110:
+        return True, "weak uplink (RSRP %s)" % int(rsrp)
+    loss = net.get("net_loss")
+    if isinstance(loss, (int, float)) and loss >= 5:
+        return True, "packet loss %s%%" % int(loss)
+    return False, None
 
 def node_report(name, data):
     if not name:
@@ -730,10 +754,18 @@ def node_health_list():
             if now - rec.get("recv", 0) > _NODE_TTL:
                 continue
             r = dict(rec); r["age_s"] = int(now - rec.get("recv", 0)); r["name"] = name
-            # a node is "warn" if it's on the CF fallback, has 0-byte cache, or hasn't
-            # managed a download in a long while — the exact silent-failure signatures.
-            r["warn"] = bool(r.get("on_dns_fallback") or (r.get("cache_zero") or 0) > 0
-                             or (r.get("last_dl_age_s", -1) is not None and r.get("last_dl_age_s", -1) > 21600))
+            # a node is "warn" if it's on the CF fallback, has 0-byte cache, hasn't managed
+            # a download in a long while, OR its network degraded (channel drift / weak
+            # uplink / loss) — the exact silent-failure signatures we've actually hit.
+            nwarn, nreason = _net_warn(r.get("net"))
+            reasons = []
+            if r.get("on_dns_fallback"): reasons.append("on CF fallback")
+            if (r.get("cache_zero") or 0) > 0: reasons.append("%d empty cache files" % r["cache_zero"])
+            if isinstance(r.get("last_dl_age_s"), int) and r["last_dl_age_s"] > 21600:
+                reasons.append("no download in %dh" % (r["last_dl_age_s"] // 3600))
+            if nwarn: reasons.append(nreason)
+            r["warn"] = bool(reasons)
+            r["warn_reason"] = "; ".join(reasons) if reasons else None
             out.append(r)
         return sorted(out, key=lambda x: x["name"])
 
