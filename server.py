@@ -722,10 +722,13 @@ def _net_warn(net):
     low band, a very weak uplink, or sustained packet loss. Returns (warn, reason|None)."""
     if not isinstance(net, dict):
         return False, None
-    ch = net.get("gw_5g_chan") or net.get("chan")
+    # Drift is judged ONLY from the gateway's actual 5G channel setting (gw_5g_chan,
+    # present only where we query the FX4100). Do NOT infer it from the Pi's observed
+    # channel — a node legitimately on 2.4 GHz (e.g. the kitchen, ch 1-13) is not "drift".
+    ch5 = net.get("gw_5g_chan")
     try:
-        if ch is not None and int(ch) not in _GOOD_5G_CHANS:
-            return True, "5G channel %s (drifted off low band)" % int(ch)
+        if ch5 is not None and int(ch5) not in _GOOD_5G_CHANS:
+            return True, "5G channel %s (drifted off low band)" % int(ch5)
     except (TypeError, ValueError):
         pass
     rsrp = net.get("rsrp")
