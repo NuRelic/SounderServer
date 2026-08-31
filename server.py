@@ -711,7 +711,7 @@ _NODE_TTL = 180
 # Fields we accept from a node report — clamp/whitelist so a stray POST can't bloat memory.
 _NODE_FIELDS = ("version", "uptime_s", "audiodev", "cache_mb", "cache_files", "cache_zero",
                 "cache_cap_mb", "last_dl_age_s", "dl_ok", "dl_fail", "blind", "on_dns_fallback",
-                "net")
+                "net", "devices")
 # WiFi channels every device supports (low UNII-1 band). The living-room gateway must stay
 # pinned here; anything else means it drifted to DFS or the upper band (which broke the
 # friend's Xbox + phones on 2026-08-30). See project_livingroom_node memory.

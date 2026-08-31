@@ -410,6 +410,32 @@ def _net_summary():
     except Exception:
         return None
 
+DEVDROPS_LOG = os.path.expanduser("~/devdrops.log")
+DEVMON_STATE = os.path.expanduser("~/.devmon_state.json")
+
+def _dev_summary():
+    """Connected-device count + how many DROP events the devmon sampler logged in the last
+    hour, so per-device connectivity drops surface on the server without anyone SSHing in.
+    None if devmon isn't installed on this node."""
+    try:
+        st = json.load(open(DEVMON_STATE))
+        count = len(st.get("devices", {}))
+    except Exception:
+        return None
+    drops_1h = 0; recent = []
+    cutoff = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(time.time() - 3600))
+    try:
+        with open(DEVDROPS_LOG) as f:
+            for line in f:
+                if "  DROP  " in line:
+                    ts = line[:19]
+                    if ts >= cutoff:            # ISO timestamps sort lexically
+                        drops_1h += 1
+                        recent.append(line.strip()[:80])
+    except Exception:
+        pass
+    return {"count": count, "drops_1h": drops_1h, "recent": recent[-5:]}
+
 def _report_once():
     n, zero, total = _cache_stats()
     body = json.dumps({
@@ -422,6 +448,7 @@ def _report_once():
         "dl_ok": _DL_OK, "dl_fail": _DL_FAIL, "blind": _BLIND,
         "on_dns_fallback": bool(ORIGIN_IP and time.time() < _pin_until),
         "net": _net_summary(),
+        "devices": _dev_summary(),
     }).encode()
     req = urllib.request.Request(SERVER + "/api/node/report", data=body,
                                  headers={"Content-Type": "application/json"})
