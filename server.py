@@ -570,12 +570,19 @@ def tags_forget(fn):
 _lanes_cfg  = _load(LIMITS_FILE, {"lanes": 2, "song_lanes": 1})
 _LANES      = max(1, min(4, int(_lanes_cfg.get("lanes", 2))))        # 1-4 short (sound) lanes
 _SONG_LANES = max(1, min(2, int(_lanes_cfg.get("song_lanes", 1))))  # 1-2 long (song) lanes
-_BOX_VOL = int(_load(BOXVOL_FILE, {"v": 50}).get("v", 50))  # kitchen box vol (admin)
+_boxvol_cfg = _load(BOXVOL_FILE, {"v": 50})
+_BOX_VOL = int(_boxvol_cfg.get("v", 50))  # default/legacy box vol (admin) — applies to any node without its own
+# Per-room box volume: each playback node reads ITS OWN level by name, so the kitchen and
+# living room can be set independently. Unknown nodes fall back to _BOX_VOL.
+_BOX_VOLS = {k: max(0, min(100, int(v))) for k, v in (_boxvol_cfg.get("per_node") or {}).items()}
 _SYNC = bool(_load(SYNC_FILE, {"on": True}).get("on", True))  # global sync (admin), default on
+
+def box_vol_for(node):
+    return _BOX_VOLS.get(node, _BOX_VOL)
 
 def save_favs():    _save(FAVS_FILE, _FAVS_BY_USER)
 def save_lanes():   _save(LIMITS_FILE, {"lanes": _LANES, "song_lanes": _SONG_LANES})
-def save_boxvol():  _save(BOXVOL_FILE, {"v": _BOX_VOL})
+def save_boxvol():  _save(BOXVOL_FILE, {"v": _BOX_VOL, "per_node": _BOX_VOLS})
 def save_sync():    _save(SYNC_FILE, {"on": _SYNC})
 
 # ----------------------------------------------------------------------------
@@ -1032,7 +1039,7 @@ def api_active():
     set_color(_u, request.args.get("c"))
     online = [{"name": n, "color": _USER_COLOR.get(n)} for n in presence_list()]
     return jsonify({"active": active_snapshot(), "lanes": _LANES, "song_lanes": _SONG_LANES,
-                    "box_volume": _BOX_VOL, "sync": _SYNC, "online": online,
+                    "box_volume": _BOX_VOL, "box_volumes": _BOX_VOLS, "sync": _SYNC, "online": online,
                     "nodes": node_health_list()})
 
 @app.route("/api/node/report", methods=["POST"])
@@ -1079,12 +1086,17 @@ def api_box_volume():
         if not session.get("admin"):
             return jsonify({"ok": False, "error": "admin only"}), 403
         body = request.get_json(silent=True) or {}
+        node = (body.get("node") or "").strip()[:40]
         try:
-            _BOX_VOL = max(0, min(100, int(body.get("v", _BOX_VOL))))
+            v = max(0, min(100, int(body.get("v"))))
+            if node:
+                _BOX_VOLS[node] = v      # this room only
+            else:
+                _BOX_VOL = v             # legacy/default: nodes without their own setting
             save_boxvol()
         except (TypeError, ValueError):
             pass
-    return jsonify({"box_volume": _BOX_VOL})
+    return jsonify({"box_volume": _BOX_VOL, "box_volumes": _BOX_VOLS})
 
 @app.route("/api/chat", methods=["POST"])
 def api_chat():

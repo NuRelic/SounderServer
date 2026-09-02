@@ -510,7 +510,7 @@
       <div class="lanes-ctl" id="lanesCtl">
         <span>🔊 Lanes</span><button id="lanesDn">−</button><b id="lanesN">2</b><button id="lanesUp">+</button>
       </div>
-      <div class="vol-ctl" id="boxVolCtl"><span>🏠 Box</span><button class="vstep" id="boxVolDn" title="quieter">−</button><input type="range" id="boxVol" min="0" max="100" value="50"><button class="vstep" id="boxVolUp" title="louder">+</button></div>
+      <div id="boxVols"></div>
     </div>
   </div>
   <span class="count" id="libcount" style="display:none"></span>
@@ -832,7 +832,7 @@ function applyMe(){
   else if(ME.can_edit){ badge.style.display='inline-block'; badge.className='badge editor'; badge.textContent='✏️ editor'; btn.textContent='Log out'; }
   else { badge.style.display='none'; btn.textContent='🔓 Log in'; }
   $('#addTab').style.display = ME.can_edit ? 'inline-block' : 'none';
-  $('#boxVolCtl').style.display = ME.admin ? 'flex' : 'none';
+  $('#boxVols').style.display = ME.admin ? 'block' : 'none';
   $('#lanesCtl').style.display = ME.admin ? 'flex' : 'none';
   $('#songLanesCtl').style.display = ME.admin ? 'flex' : 'none';
   $('#adminGear').style.display = ME.admin ? 'inline-flex' : 'none';
@@ -1685,7 +1685,7 @@ async function pollActive(){
     if(typeof d.song_lanes==='number' && d.song_lanes!==SONG_LANES){
       SONG_LANES=d.song_lanes; $('#songLanesN').textContent=SONG_LANES;
     }
-    if(typeof d.box_volume==='number' && document.activeElement!==$('#boxVol')) $('#boxVol').value=d.box_volume;
+    renderBoxVols(d.nodes, d.box_volumes||{}, d.box_volume);
     if(typeof d.sync==='boolean' && d.sync!==SYNC){ SYNC=d.sync; applySync(); }
     if(SOLO){
       // private mode: don't hear the room — stop any shared sounds
@@ -1828,14 +1828,40 @@ $('#muteBtn').onclick = () => {                                  // speaker clic
   applyVol();
 };
 applyVol();
-$('#boxVol').oninput = e => {
-  fetch('/api/box_volume',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({v:+e.target.value})});
-};
+// ---- per-room box volume (admin): one slider per playback node ----
+// Rendered from the live node list so new rooms appear automatically; each posts
+// {node, v} so the kitchen and living room are controlled independently.
+function renderBoxVols(nodes, vols, deflt){
+  const box = $('#boxVols'); if(!box) return;
+  if(!ME.admin){ box.style.display='none'; return; }
+  box.style.display='block';
+  const names = (nodes||[]).map(n=>n.name).sort();
+  const key = names.join(',');
+  if(box.dataset.key !== key){          // rebuild rows only when the set of rooms changes
+    box.dataset.key = key;
+    box.innerHTML = names.length ? names.map(n=>
+      `<div class="vol-ctl bvrow" data-node="${esc(n)}"><span>🏠 ${esc(n)}</span>`+
+      `<button class="vstep bv-dn" title="quieter">−</button>`+
+      `<input type="range" class="bv-slider" min="0" max="100" value="${vols[n]!=null?vols[n]:(deflt||50)}">`+
+      `<button class="vstep bv-up" title="louder">+</button></div>`).join('')
+      : '<span style="opacity:.5;font-size:12px">no rooms online</span>';
+    box.querySelectorAll('.bvrow').forEach(row=>{
+      const node=row.dataset.node, s=row.querySelector('.bv-slider');
+      s.oninput = ()=> fetch('/api/box_volume',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({node, v:+s.value})});
+      wireStepEl(row.querySelector('.bv-dn'), s, -1);
+      wireStepEl(row.querySelector('.bv-up'), s, 1);
+    });
+  }
+  box.querySelectorAll('.bvrow').forEach(row=>{      // refresh values unless being dragged
+    const node=row.dataset.node, s=row.querySelector('.bv-slider');
+    if(document.activeElement!==s && vols[node]!=null) s.value=vols[node];
+  });
+}
 
 // ---- +/- steppers for the volume sliders (tap = 1%, hold to repeat) ----
-function wireStep(btnSel, sliderSel, delta){
-  const b=$(btnSel), s=$(sliderSel); if(!b||!s) return;
+function wireStepEl(b, s, delta){
+  if(!b||!s) return;
   let hold=null, rep=null;
   const step=()=>{ const v=Math.max(+s.min,Math.min(+s.max,+s.value+delta));
     if(v!==+s.value){ s.value=v; s.dispatchEvent(new Event('input',{bubbles:true})); } };
@@ -1844,8 +1870,8 @@ function wireStep(btnSel, sliderSel, delta){
     hold=setTimeout(()=>{ rep=setInterval(step,80); },400); });
   ['pointerup','pointerleave','pointercancel'].forEach(ev=>b.addEventListener(ev,stop));
 }
+function wireStep(btnSel, sliderSel, delta){ wireStepEl($(btnSel), $(sliderSel), delta); }
 wireStep('#bvolDn','#browserVol',-1);  wireStep('#bvolUp','#browserVol',1);
-wireStep('#boxVolDn','#boxVol',-1);    wireStep('#boxVolUp','#boxVol',1);
 wireStep('#volDn','#vol',-1);          wireStep('#volUp','#vol',1);
 
 // ---- sync (shared timeline) — GLOBAL setting, admin-toggled, default on ----

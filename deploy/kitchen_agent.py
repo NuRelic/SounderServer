@@ -586,7 +586,9 @@ def run():
             last_ok = time.monotonic()
             _note_pin_ok()
             active = d.get("active", [])
-            vol = d.get("box_volume", 100) / 100.0
+            # per-room volume: use THIS node's own level if the server has one, else the
+            # shared default. Lets the kitchen and living room be set independently.
+            vol = d.get("box_volumes", {}).get(NODE, d.get("box_volume", 100)) / 100.0
             live = {a["token"] for a in active}
             shorts = [a for a in active if not _is_song(a)]
             songs  = [a for a in active if _is_song(a)]
