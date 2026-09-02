@@ -476,6 +476,42 @@ def test_finish_trip_keeps_the_meal_strip(recipes_client):
     assert [m["name"] for m in data["meals"]] == ["Black Bean Chili"]
 
 
+def test_clear_takes_unchecked_lines_too(recipes_client):
+    """The difference from finish-trip: nothing survives for not being in the cart."""
+    recipes_client.post("/recipes/api/list/add", json={"name": "Milk", "who": "k"})
+    recipes_client.post("/recipes/api/list/add", json={"name": "Capers", "who": "k"})
+    milk = [l for l in _lines(recipes_client) if l["name"] == "Milk"][0]
+    recipes_client.post(f"/recipes/api/list/line/{milk['id']}/check",
+                        json={"checked": True, "who": "brandon"})
+    recipes_client.post("/recipes/api/list/clear", json={"who": "brandon"})
+    assert _lines(recipes_client) == []
+
+
+def test_clear_keeps_the_meal_strip(recipes_client):
+    chili = _mk_recipe(recipes_client)
+    _add_to_list(recipes_client, chili["id"])
+    recipes_client.post("/recipes/api/list/clear", json={"who": "brandon"})
+    data = recipes_client.get("/recipes/api/list").get_json()
+    assert [m["name"] for m in data["meals"]] == ["Black Bean Chili"]
+
+
+def test_clear_bumps_the_version_so_the_other_phone_sees_it(recipes_client):
+    recipes_client.post("/recipes/api/list/add", json={"name": "Milk", "who": "k"})
+    before = recipes_client.get("/recipes/api/list").get_json()["version"]
+    recipes_client.post("/recipes/api/list/clear", json={"who": "brandon"})
+    poll = recipes_client.get(f"/recipes/api/list/poll?since={before}").get_json()
+    assert poll["changed"] is True
+
+
+def test_a_recipe_can_go_back_on_the_list_after_a_clear(recipes_client):
+    """Its meal_plan row is still there, so re-adding has to work anyway."""
+    chili = _mk_recipe(recipes_client)
+    _add_to_list(recipes_client, chili["id"])
+    recipes_client.post("/recipes/api/list/clear", json={"who": "brandon"})
+    _add_to_list(recipes_client, chili["id"])
+    assert "yellow onions" in [l["name"] for l in _lines(recipes_client)]
+
+
 def test_poll_returns_nothing_when_unchanged(recipes_client):
     version = recipes_client.get("/recipes/api/list").get_json()["version"]
     resp = recipes_client.get(f"/recipes/api/list/poll?since={version}").get_json()

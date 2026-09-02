@@ -806,6 +806,24 @@ function renderList(focused){
     main.appendChild(finish);
   }
 
+  // Start over. Quiet styling and a confirm because it is the one button here
+  // that throws away work you cannot swipe back — the undo bar only holds the
+  // last check, and the folds only hold what you ticked off.
+  if (d.lines.length){
+    const wipe = el('button','btn quiet','Clear the whole list');
+    wipe.onclick = async () => {
+      const n = d.lines.length;
+      if (!confirm('Clear all ' + n + ' item' + (n === 1 ? '' : 's') +
+                   ' off the store list?\n\nThis cannot be undone. Your planned' +
+                   ' meals stay on the strip up top.')) return;
+      clearUndo();                // every line is going, including the last check
+      const r = await api('/list/clear', {method:'POST', body:{}});
+      if (r) { STATE.list = r; STATE.version = r.version; }
+      render();
+    };
+    main.appendChild(wipe);
+  }
+
   $('#main').innerHTML = '';
   $('#main').appendChild(main);
 }

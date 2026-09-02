@@ -664,6 +664,32 @@ def api_list_finish_trip():
     return jsonify(_list_json())
 
 
+@bp.route("/api/list/clear", methods=["POST"])
+def api_list_clear():
+    """Empty the store list outright — every line, checked or not.
+
+    The sibling of finish-trip, for the other ending: that one retires what you
+    put in the cart, this one abandons the whole list. Contributions go first so
+    `trg_drop_childless_line` takes their lines down with them; the second DELETE
+    catches any line whose contributions were already gone, which the trigger
+    would never fire for.
+
+    `meal_plan` is deliberately left standing (ruling 2026-09-02): the strip is
+    the record of what was planned, and it survives its groceries. Re-adding one
+    of those recipes still works — `INSERT OR IGNORE` on an existing meal_plan
+    row is a no-op, and the contributions it writes are what rebuild the lines.
+    """
+    gate = need_edit()
+    if gate:
+        return gate
+    with _db.LOCK:
+        _conn().execute("DELETE FROM list_contribution")
+        _conn().execute("DELETE FROM list_line")
+        _conn().commit()
+    _db.bump_version(_conn())
+    return jsonify(_list_json())
+
+
 @bp.route("/api/list/remove-recipe/<int:recipe_id>", methods=["POST"])
 def api_list_remove_recipe(recipe_id):
     """Withdraw one recipe's claims from the list, leaving other recipes' intact.
