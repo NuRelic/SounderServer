@@ -513,9 +513,11 @@ def play_short(entry, vol):
 # a single stream, so with >1 song lane only the most-recent song is audible. ---
 _song_tok = None
 _song_path = None      # disk path of the streaming song — protected from cache eviction
+_song_end = 0.0        # wall-clock time this song is expected to end (start+dur); lets us tell
+                       # a normal timer age-out from an early kill so a late-started song can finish
 
 def play_song(entry, vol):
-    global _song_tok, _song_path
+    global _song_tok, _song_path, _song_end
     v = max(0.0, min(1.0, vol))
     if entry["token"] == _song_tok:
         try: pygame.mixer.music.set_volume(v)
@@ -538,17 +540,18 @@ def play_song(entry, vol):
         else:
             pygame.mixer.music.play()
         _song_tok = entry["token"]; _song_path = path
+        _song_end = float(entry.get("start") or time.time()) + float(entry.get("dur") or 0)
         print("▶ song", entry.get("name"), "by", entry.get("by"),
               ("(joined %.0fs in)" % behind) if behind > 2.0 else "")
     except Exception as e:
         print("song play error:", entry.get("file"), e)
 
 def stop_song():
-    global _song_tok, _song_path
+    global _song_tok, _song_path, _song_end
     if _song_tok is not None:
         try: pygame.mixer.music.stop()
         except Exception: pass
-        _song_tok = None; _song_path = None
+        _song_tok = None; _song_path = None; _song_end = 0.0
 
 def try_login():
     """Best-effort login. Listening no longer requires auth, so a failure here
@@ -616,8 +619,18 @@ def run():
             if cur:
                 song_vol = vol * (SONG_DUCK if shorts else SONG_GAIN)
                 play_song(cur, song_vol)
-            if _song_tok is not None and _song_tok not in live:
-                stop_song()
+            elif _song_tok is not None and _song_tok not in live:
+                # The song left the server's active set. Two reasons, handled differently:
+                #  - Killed EARLY (someone hit stop, or it was interrupted) → it vanished well
+                #    before its natural end → stop the box now.
+                #  - Aged out normally (its start+dur timer elapsed) → if the box started it LATE
+                #    (had to download, or couldn't seek an MP3 to catch up), the stream isn't
+                #    finished — let it play out to its natural end instead of hard-cutting it.
+                if time.time() < _song_end - 1.0:
+                    stop_song()                          # gone early = a real kill/interrupt
+                elif not pygame.mixer.music.get_busy():
+                    stop_song()                          # aged out and the stream has finished
+                # else: past its scheduled end but still playing its tail → let it finish
         except urllib.error.HTTPError as e:
             # 401/403 = our session was dropped (e.g. a server bounce) -> re-login so
             # the kitchen self-heals without anyone restarting the Pi. Other codes
