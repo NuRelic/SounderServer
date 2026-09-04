@@ -1127,7 +1127,19 @@ function seqUI(){
   $('#tpStop').style.display = on ? '' : 'none';
   $('#tpPlay').disabled = on; $('#tpShuf').disabled = on;
 }
-function seqStop(){ if(SEQ){ clearTimeout(SEQ.timer); SEQ=null; } seqStat(''); seqUI(); }
+function seqStop(){
+  const wasRunning = !!SEQ;
+  if(SEQ){ clearTimeout(SEQ.timer); SEQ=null; }
+  // also silence the clip that's already sounding. For "Just me" that's a local Audio in
+  // soloPlaying — pause it now (broadcast/boxes clips live on the shared timeline and just
+  // expire on their own; there's no server stop, and yanking them would hit everyone).
+  // Only when a sequence was actually running, so plain tag navigation doesn't cut a
+  // manually-played solo sound.
+  if(wasRunning){
+    for(const l of Object.keys(soloPlaying)){ try{ soloPlaying[l].pause(); }catch(_){ } delete soloPlaying[l]; }
+  }
+  seqStat(''); seqUI();
+}
 function seqStart(list){
   seqStop();
   const items=(list||[]).filter(Boolean);
