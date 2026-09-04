@@ -718,7 +718,7 @@ _NODE_TTL = 180
 # Fields we accept from a node report — clamp/whitelist so a stray POST can't bloat memory.
 _NODE_FIELDS = ("version", "uptime_s", "audiodev", "cache_mb", "cache_files", "cache_zero",
                 "cache_cap_mb", "last_dl_age_s", "dl_ok", "dl_fail", "blind", "on_dns_fallback",
-                "net", "devices")
+                "net", "net_window", "speed", "host", "devices")
 # WiFi channels every device supports (low UNII-1 band). The living-room gateway must stay
 # pinned here; anything else means it drifted to DFS or the upper band (which broke the
 # friend's Xbox + phones on 2026-08-30). See project_livingroom_node memory.
@@ -774,6 +774,10 @@ def node_health_list():
             if isinstance(r.get("last_dl_age_s"), int) and r["last_dl_age_s"] > 21600:
                 reasons.append("no download in %dh" % (r["last_dl_age_s"] // 3600))
             if nwarn: reasons.append(nreason)
+            h = r.get("host") or {}
+            if h.get("undervolt_now"): reasons.append("undervoltage now")
+            if isinstance(h.get("cpu_temp_c"), (int, float)) and h["cpu_temp_c"] >= 80:
+                reasons.append("CPU %d°C" % int(h["cpu_temp_c"]))
             r["warn"] = bool(reasons)
             r["warn_reason"] = "; ".join(reasons) if reasons else None
             out.append(r)

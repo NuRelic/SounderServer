@@ -33,7 +33,7 @@ Env:
   SS_SONG_GAIN / SS_SONG_DUCK / SS_SOUND_GAIN   per-node mix levels, 0..1
   SS_PASSWORD     optional; NOT needed to listen. Leave unset on a box you don't own.
 """
-import os, time, json, hashlib, shutil, socket, threading, queue, http.client, ssl
+import os, time, json, hashlib, shutil, socket, threading, queue, http.client, ssl, subprocess
 import urllib.request, urllib.parse, urllib.error, http.cookiejar
 
 SERVER   = os.environ.get("SS_SERVER", "https://sounderserver.party")
@@ -361,7 +361,7 @@ def _download(fn, ver, path):
 # cache) was indistinguishable from a healthy one without SSHing in. This posts a
 # small health blob every REPORT_EVERY seconds on its own thread (never the poll
 # loop) so the server can surface it. Best-effort: any failure is swallowed.
-NODE_VERSION = "2026.08.28"
+NODE_VERSION = "2026.09.03"
 REPORT_EVERY = 45
 _START = time.monotonic()
 _LAST_DL_OK = 0.0                # wall-clock ts of the last successful download
@@ -384,7 +384,104 @@ def _cache_stats():
         pass
     return n, z, total
 
+def _host_health():
+    """Cheap local Pi vitals folded into the report: CPU temp, throttling/undervoltage
+    flags (the single best early warning for the SD/power brownouts that silently hang a
+    Pi), load, and memory/disk pressure. All /proc + /sys reads plus one short vcgencmd;
+    no network and negligible CPU, so it is safe to run every report. Any probe that
+    fails is left None rather than disturbing the rest."""
+    h = {}
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp") as f:
+            h["cpu_temp_c"] = round(int(f.read().strip()) / 1000.0, 1)
+    except Exception:
+        h["cpu_temp_c"] = None
+    try:
+        with open("/proc/loadavg") as f:
+            h["load1"] = float(f.read().split()[0])
+    except Exception:
+        h["load1"] = None
+    try:
+        mt = ma = 0
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):       mt = int(line.split()[1])
+                elif line.startswith("MemAvailable:"):  ma = int(line.split()[1])
+        h["mem_used_pct"] = round((mt - ma) * 100.0 / mt, 1) if mt else None
+    except Exception:
+        h["mem_used_pct"] = None
+    try:
+        s = os.statvfs("/")
+        cap = s.f_blocks * s.f_frsize
+        used = (s.f_blocks - s.f_bfree) * s.f_frsize
+        h["disk_used_pct"] = round(used * 100.0 / cap, 1) if cap else None
+    except Exception:
+        h["disk_used_pct"] = None
+    try:
+        out = subprocess.run(["vcgencmd", "get_throttled"], capture_output=True,
+                             text=True, timeout=3).stdout.strip()
+        # throttled=0x0 is healthy. bit0 under-voltage NOW, bit1 arm-freq-capped now,
+        # bit2 throttled now, bit16 under-voltage HAS occurred, bit18 throttling has occurred.
+        val = int(out.split("=")[1], 16) if "=" in out else 0
+        h["throttled_hex"]  = out.split("=")[1] if "=" in out else None
+        h["undervolt_now"]  = bool(val & 0x1)
+        h["undervolt_ever"] = bool(val & 0x10000)
+        h["throttle_ever"]  = bool(val & 0x40000)
+    except Exception:
+        h["throttled_hex"] = None
+    return h
+
 NETMON_CSV = os.path.expanduser("~/netmon.csv")
+
+def _net_window(rows=12):
+    """Aggregate the last `rows` netmon samples (~1h at the 5-min cadence) into a rolling
+    loss/latency picture, so the hourly watcher can judge a whole hour from one report
+    fetch instead of SSHing in to read the CSV. None if the sampler isn't installed."""
+    try:
+        with open(NETMON_CSV, "rb") as f:
+            f.seek(0, 2); end = f.tell()
+            f.seek(max(0, end - 8192))
+            lines = f.read().decode("utf-8", "replace").strip().splitlines()
+    except Exception:
+        return None
+    losses = []; lats = []
+    for ln in lines[-rows:]:
+        if ln.startswith("ts,"):
+            continue
+        c = ln.split(",")
+        if len(c) < 17:
+            continue
+        try:
+            if c[10] != "": losses.append(float(c[10]))   # net_loss %
+            if c[8]  != "": lats.append(float(c[8]))       # net_avg_ms
+        except ValueError:
+            continue
+    if not losses and not lats:
+        return None
+    return {"samples": len(losses),
+            "lossy_samples": sum(1 for x in losses if x >= 30.0),   # samples ≥30% loss
+            "loss_pct_mean": round(sum(losses) / len(losses), 1) if losses else None,
+            "lat_ms_mean":   round(sum(lats) / len(lats), 1)     if lats   else None,
+            "lat_ms_max":    round(max(lats), 1)                 if lats   else None}
+
+SPEEDTEST_CSV = os.path.expanduser("~/speedtest.csv")
+
+def _speed_summary():
+    """Last row of the speedcheck sampler (deploy/speedcheck.sh): most recent measured
+    download throughput, so the watcher sees uplink speed without SSHing in. The sampler
+    itself is the only network-using probe and stays on its own 30-min timer; this just
+    reads its CSV. None if not installed."""
+    try:
+        with open(SPEEDTEST_CSV, "rb") as f:
+            f.seek(0, 2); end = f.tell()
+            f.seek(max(0, end - 2048))
+            last = f.read().decode("utf-8", "replace").strip().splitlines()[-1]
+        if last.startswith("ts,"):
+            return None
+        c = last.split(",")            # ts,dl_mbps,bytes,secs,http
+        return {"dl_mbps": float(c[1]), "http": c[4], "ts": c[0]}
+    except Exception:
+        return None
 
 def _net_summary():
     """Last row of the netmon sampler (deploy/netmon.sh), if present, folded into a
@@ -448,6 +545,9 @@ def _report_once():
         "dl_ok": _DL_OK, "dl_fail": _DL_FAIL, "blind": _BLIND,
         "on_dns_fallback": bool(ORIGIN_IP and time.time() < _pin_until),
         "net": _net_summary(),
+        "net_window": _net_window(),
+        "speed": _speed_summary(),
+        "host": _host_health(),
         "devices": _dev_summary(),
     }).encode()
     req = urllib.request.Request(SERVER + "/api/node/report", data=body,
