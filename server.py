@@ -599,8 +599,9 @@ def _prune_locked(now):
     pad = (SYNC_BUFFER if _SYNC else 0.0) + 0.6
     _ACTIVE[:] = [a for a in _ACTIVE if now < a["start"] + a["dur"] + pad]
 
-def fire(fn, user, lane=0):
-    """Play a sound in a lane. Each lane holds one sound — a new sound interrupts it."""
+def fire(fn, user, lane=0, boxes_only=False):
+    """Play a sound in a lane. Each lane holds one sound — a new sound interrupts it.
+    boxes_only: the room nodes play it but browsers stay silent (admin "play on the boxes")."""
     global _TOKEN
     info = _LIBRARY.get(fn)
     if not info:
@@ -643,6 +644,8 @@ def fire(fn, user, lane=0):
             "token": _TOKEN, "file": fn, "name": info["name"], "fmt": info["fmt"],
             "lane": lane, "start": now, "by": user, "dur": dur, "color": _USER_COLOR.get(user),
         }
+        if boxes_only:
+            entry["boxes_only"] = True      # nodes play it; browsers skip the audio
         _ACTIVE.append(entry)
     record_play(fn)
     log_event("cmd", user, name=info["name"], file=fn, fmt=info["fmt"], lane=lane,
@@ -1027,7 +1030,10 @@ def api_fire():
             fn = matches[0] if matches else None
     if not fn:
         return jsonify({"ok": False, "error": "not found"}), 404
-    entry = fire(fn, user, body.get("lane", 0))
+    # "play on the boxes only" (rooms audible, browsers silent) is an admin-only capability;
+    # a non-admin passing the flag is simply ignored.
+    boxes_only = bool(body.get("boxes_only")) and bool(session.get("admin"))
+    entry = fire(fn, user, body.get("lane", 0), boxes_only=boxes_only)
     if not entry:
         return jsonify({"ok": False, "error": "not found"}), 404
     return jsonify({"ok": True, "fired": entry, "active": active_snapshot()})
