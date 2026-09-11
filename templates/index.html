@@ -885,6 +885,7 @@ let audioUnlocked = false;
 const playing = {};      // token -> Audio (shared/room sounds)
 const soloPlaying = {};  // lane -> Audio (private solo sounds)
 const handled = new Set();// tokens we've already started
+const blocked = new Set(); // tokens whose play() the browser autoplay-blocked — retried on the next gesture
 
 // ---- login modal (add/edit/remove only — playing needs no login) ----
 function openEditLogin(){
@@ -972,7 +973,10 @@ function unlock(){
   const ctx = audioCtx();                                  // create on this user gesture so iOS allows it
   if(ctx && ctx.state === 'suspended') ctx.resume().catch(()=>{});
 }
-document.addEventListener('click', unlock, {once:false});
+// Any tap/click unlocks audio AND resumes clips the browser blocked earlier. retryBlocked must
+// run inside the gesture (iOS only permits play() synchronously within a user gesture).
+['click','pointerdown','touchend'].forEach(ev=>
+  document.addEventListener(ev, ()=>{ unlock(); retryBlocked(); }, {passive:true}));
 
 // ---- load library ----
 async function loadSounds(){
@@ -1720,12 +1724,24 @@ const activeMeta = {};   // token -> {start, dur}  (for the drift loop)
 // cache. Instead, retry once when the element says it can play. Autoplay-policy blocks
 // (NotAllowedError, no user gesture yet) are left alone — only a real gesture fixes those,
 // and we already unlock() on every click/fire.
-function safePlay(a){
+function safePlay(a, onBlocked){
   if(!a) return;
   a.play().catch(err=>{
-    if(err && err.name === 'NotAllowedError') return;   // autoplay blocked — retry won't help
+    // autoplay blocked (esp. iOS, where each play needs a fresh gesture): don't give up —
+    // let the caller mark it for retry on the next tap, or it stays silent for the whole clip.
+    if(err && err.name === 'NotAllowedError'){ if(onBlocked) onBlocked(); return; }
     a.addEventListener('canplay', ()=>{ a.play().catch(()=>{}); }, {once:true});
   });
+}
+// Replay any clips whose autoplay was blocked, now that we (hopefully) have a gesture. Keeps
+// the same Audio element (so a synced song resumes at its position; the drift loop re-syncs it).
+function retryBlocked(){
+  if(!blocked.size) return;
+  for(const tok of Array.from(blocked)){
+    const a = playing[tok];
+    if(!a){ blocked.delete(tok); continue; }
+    a.play().then(()=>blocked.delete(tok)).catch(()=>{});
+  }
 }
 // Seeking to a position that hasn't downloaded yet makes the browser STALL until that
 // byte range arrives — on an uncached first play that looks like "the sound didn't play."
@@ -1749,28 +1765,29 @@ function startEntry(e){
   if(!wireGain(a)) a.volume = effVol();   // wired → MASTER.gain controls volume (iOS-safe); else element volume
   playing[e.token] = a;
   activeMeta[e.token] = {start:e.start, dur:e.dur||0};
-  a.addEventListener('ended',()=>{ if(playing[e.token]===a){ delete playing[e.token]; delete activeMeta[e.token]; } });
+  const onBlocked = ()=>{ blocked.add(e.token); };  // autoplay-blocked → replay on the next gesture
+  a.addEventListener('ended',()=>{ if(playing[e.token]===a){ delete playing[e.token]; delete activeMeta[e.token]; blocked.delete(e.token); } });
   if(isInstant(e.dur)){
     // Too short to sync: seeking in to "catch up" would eat most of the clip, and the
     // drift loop would keep yanking it mid-playback. Fire it from 0 right now instead —
     // that's also exactly what the room boxes do, so browsers now match them.
-    safePlay(a);
+    safePlay(a, onBlocked);
   } else if(SYNC && !connBad){
     // shared timeline: audio position 0 maps to wall-clock (start + buffer)
     const target = e.start + SYNC_BUFFER;
     const pos = serverNow() - target;
     if(pos < 0){                                    // not time yet → schedule from 0
-      setTimeout(()=>{ try{ a.currentTime=0; safePlay(a); }catch(_){} }, Math.min(5000, -pos*1000));
+      setTimeout(()=>{ try{ a.currentTime=0; safePlay(a, onBlocked); }catch(_){} }, Math.min(5000, -pos*1000));
     } else {                                        // late → catch up ONLY if it won't stall
       // Seek in to sync, but only once that position is actually buffered — otherwise just
       // play from the start now and let the drift loop sync it as it downloads.
       const trySeek = ()=>{ if(pos < a.duration && posReady(a,pos)) a.currentTime=pos; };
       a.addEventListener('loadedmetadata', trySeek);
       a.addEventListener('canplay', trySeek, {once:true});
-      safePlay(a);
+      safePlay(a, onBlocked);
     }
   } else {
-    safePlay(a);                                     // snappy: from the start, ASAP
+    safePlay(a, onBlocked);                          // snappy: from the start, ASAP
   }
 }
 async function pollActive(){
@@ -1793,13 +1810,14 @@ async function pollActive(){
     if(typeof d.sync==='boolean' && d.sync!==SYNC){ SYNC=d.sync; applySync(); }
     if(SOLO){
       // private mode: don't hear the room — stop any shared sounds
-      for(const tok of Object.keys(playing)){ try{playing[tok].pause();}catch(e){} delete playing[tok]; delete activeMeta[tok]; }
+      for(const tok of Object.keys(playing)){ try{playing[tok].pause();}catch(e){} delete playing[tok]; delete activeMeta[tok]; blocked.delete(+tok); }
     } else {
       const live = new Set(d.active.map(a=>a.token));
       for(const tok of Object.keys(playing)){
-        if(!live.has(+tok)){ try{playing[tok].pause();}catch(e){} delete playing[tok]; delete activeMeta[tok]; }
+        if(!live.has(+tok)){ try{playing[tok].pause();}catch(e){} delete playing[tok]; delete activeMeta[tok]; blocked.delete(+tok); }
       }
       for(const a of d.active) startEntry(a);
+      retryBlocked();   // a clip blocked earlier may now be playable (audio since unlocked)
     }
     paintChannels(d.active);
     _roomLive = (d.active || []).length > 0;   // drives the adaptive poll cadence below
