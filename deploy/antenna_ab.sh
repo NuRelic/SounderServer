@@ -47,13 +47,18 @@ set_ext(){ # $1=0|1  -> echoes raw response
   call "$tok" "sysinterface.modem.antenna" "$BAND_METHOD" "{\"enabled\":$1}"
 }
 
-sample(){ # echoes "rsrp snr pci loss"
+sample(){ # echoes "rsrp rsrp2 snr pci loss"
   local tok cell loss
   tok=$(login)
-  if [ -z "$tok" ]; then echo "NA NA NA 100"; return; fi
+  if [ -z "$tok" ]; then echo "NA NA NA NA 100"; return; fi
   cell=$(call "$tok" "sysinterface.modem" "get_cellular_service_stats" "{}")
+  # Second receive path: only in the diagnostic blob. If rsrp2 collapses away from
+  # rsrp when the external antenna is on, only one connector is attached.
+  diag=$(call "$tok" "sysinterface.modem" "get_diagnostic_data" "{}")
+  rsrp2=$(echo "$diag" | grep -oE 'rsrp2:\[-?[0-9]+\]' | head -1 | sed 's/.*\[//; s/\]//')
   loss=$(ping -c 5 -i 0.2 -W 2 -q 1.1.1.1 2>/dev/null | sed -n 's/.*, \([0-9.]*\)% packet loss.*/\1/p')
   echo "$(echo "$cell" | grep -oE '"rsrp":-?[0-9]+' | grep -oE -- '-?[0-9]+$') \
+${rsrp2:-NA} \
 $(echo "$cell" | grep -oE '"snr":-?[0-9]+' | grep -oE -- '-?[0-9]+$') \
 $(echo "$cell" | grep -oE '"pci":[0-9]+' | grep -oE '[0-9]+$') \
 ${loss:-100}" | tr -s ' '
@@ -88,7 +93,7 @@ case "${1:-status}" in
     echo "ext_antenna    : $(call "$tok" sysinterface.modem.antenna get_ext_antenna_enabled '{}')"
     echo "ext_mhb        : $(call "$tok" sysinterface.modem.antenna "$GET_METHOD" '{}')"
     echo "antenna state  : $(call "$tok" sysinterface.modem.antenna get_state '{}')"
-    echo "sample (rsrp snr pci loss): $(sample)"
+    echo "sample (rsrp rsrp2 snr pci loss): $(sample)"
     [ -f "$KEEP" ] && echo "keep flag: SET" || echo "keep flag: not set"
     if [ -f "$WDPID" ] && kill -0 "$(cat $WDPID)" 2>/dev/null; then
       echo "watchdog: RUNNING (pid $(cat $WDPID))"
@@ -111,7 +116,7 @@ case "${1:-status}" in
     rm -f "$KEEP"
     log "=== A/B run: hold=${HOLD}s, method=$BAND_METHOD ==="
     log "BASELINE (internal antenna):"
-    for i in 1 2 3; do log "  base[$i] rsrp snr pci loss: $(sample)"; sleep 5; done
+    for i in 1 2 3; do log "  base[$i] rsrp rsrp2 snr pci loss: $(sample)"; sleep 5; done
 
     # Arm the revert BEFORE making the change. Detached so it outlives this shell,
     # this SSH session, and any WAN outage.
@@ -123,7 +128,7 @@ case "${1:-status}" in
     log "waiting 45s for the modem to re-register..."
     sleep 45
     log "AFTER (external antenna):"
-    for i in 1 2 3; do log "  after[$i] rsrp snr pci loss: $(sample)"; sleep 5; done
+    for i in 1 2 3; do log "  after[$i] rsrp rsrp2 snr pci loss: $(sample)"; sleep 5; done
     log "Toggle now reads: $(tok=$(login); call "$tok" sysinterface.modem.antenna "$GET_METHOD" '{}')"
     log "=== Decide within ${HOLD}s: '$0 keep' to keep, else it auto-reverts ==="
     ;;
