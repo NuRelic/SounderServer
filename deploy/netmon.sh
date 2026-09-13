@@ -3,7 +3,7 @@
 # netmon.timer, ~5 min). Cheap on purpose so it can run forever. Captures the exact
 # signals that have bitten the living-room node: WiFi channel drift (freq), internet
 # latency/loss, and — when a gateway config is present — the 5G uplink signal (RSRP/
-# RSRQ/SINR) and the gateway's pinned 5G channel.
+# RSRQ/SNR) and the gateway's pinned 5G channel.
 #
 # Gateway querying is OPTIONAL: only runs if /etc/soundnode-gw.conf exists, which holds
 #   GW_URL=https://192.168.1.1
@@ -11,7 +11,7 @@
 # (chmod 600, owned by the user this runs as). No config -> the gateway columns are blank
 # and only the local WiFi/latency data is logged. Keeps this script generic per node.
 CSV=/home/pi/netmon.csv
-HEADER="ts,rssi_dbm,linkspeed_mbps,freq_mhz,chan,gw_avg_ms,gw_max_ms,gw_loss_pct,net_avg_ms,net_max_ms,net_loss_pct,rsrp_dbm,rsrq_db,sinr_db,gw_5g_chan,dev_count,wifi_state"
+HEADER="ts,rssi_dbm,linkspeed_mbps,freq_mhz,chan,gw_avg_ms,gw_max_ms,gw_loss_pct,net_avg_ms,net_max_ms,net_loss_pct,rsrp_dbm,rsrq_db,snr_db,pci,cell_id,gw_5g_chan,dev_count,wifi_state"
 
 # Schema rotation: if the existing file's header differs (older/newer schema), archive it
 # so the CSV is always internally consistent for whoever parses it.
@@ -45,7 +45,7 @@ navg=$(echo  "$n" | awk -F'/' '/rtt|round-trip/{print $5}')
 nmax=$(echo  "$n" | awk -F'/' '/rtt|round-trip/{print $6}')
 
 # ---- optional gateway signal (5G uplink + pinned channel + device count) ----
-RSRP=""; RSRQ=""; SINR=""; GW5G=""; DEVN=""
+RSRP=""; RSRQ=""; SNR=""; PCI=""; CELLID=""; GW5G=""; DEVN=""
 if [ -f /etc/soundnode-gw.conf ]; then
   . /etc/soundnode-gw.conf
   UA="Mozilla/5.0"; Z=00000000000000000000000000000000
@@ -55,13 +55,16 @@ if [ -f /etc/soundnode-gw.conf ]; then
     cell=$(rpc "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"call\",\"params\":[\"$TOK\",\"sysinterface.modem\",\"get_cellular_service_stats\",{}]}")
     RSRP=$(echo "$cell" | grep -oE '"rsrp":-?[0-9]+' | grep -oE -- '-?[0-9]+$')
     RSRQ=$(echo "$cell" | grep -oE '"rsrq":-?[0-9]+' | grep -oE -- '-?[0-9]+$')
-    SINR=$(echo "$cell" | grep -oE '"sinr":-?[0-9]+' | grep -oE -- '-?[0-9]+$')
+    # The FX4100 reports a dead sinr field (always 0) next to the live snr. Parse snr.
+    SNR=$(echo "$cell" | grep -oE '"snr":-?[0-9]+' | grep -oE -- '-?[0-9]+$')
+    PCI=$(echo "$cell" | grep -oE '"pci":[0-9]+' | grep -oE '[0-9]+$')
+    CELLID=$(echo "$cell" | grep -oE '"cell_id":"[0-9]+"' | grep -oE '[0-9]+')
     GW5G=$(rpc "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"call\",\"params\":[\"$TOK\",\"sysinterface.wifi\",\"get_advanced_settings\",{}]}" | grep -oE '"wifi_5g_channel":[0-9]+' | grep -oE '[0-9]+$')
-    DEVN=$(rpc "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"call\",\"params\":[\"$TOK\",\"devui\",\"get_connected_devices\",{}]}" | grep -oc '"mac"')
+    DEVN=$(rpc "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"call\",\"params\":[\"$TOK\",\"sysinterface.router.device\",\"get_connected_devices\",{}]}" | grep -o '"mac_address"' | wc -l | tr -d ' ')
   fi
 fi
 
-echo "$(date -Is),${RSSI},${LSPD},${FREQ},${CHAN},${gavg},${gmax},${gloss:-100},${navg},${nmax},${nloss:-100},${RSRP},${RSRQ},${SINR},${GW5G},${DEVN},${STATE:-unknown}" >> "$CSV"
+echo "$(date -Is),${RSSI},${LSPD},${FREQ},${CHAN},${gavg},${gmax},${gloss:-100},${navg},${nmax},${nloss:-100},${RSRP},${RSRQ},${SNR},${PCI},${CELLID},${GW5G},${DEVN},${STATE:-unknown}" >> "$CSV"
 
 # keep ~2 months of 5-min samples, then trim oldest (preserve header)
 if [ "$(wc -l < "$CSV")" -gt 18000 ]; then
