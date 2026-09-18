@@ -30,10 +30,12 @@ Env:
   SS_CACHE_CAP_MB cache size cap in MB (default 2048)
   SS_DL_DEADLINE  total seconds allowed for one download (default 180)
   SS_BLIND_WARN   log a warning when polling stalls this long (default 2.0s)
+  SS_POLL_TIMEOUT seconds one poll may hang before it is abandoned (default 2.0)
+  SS_PIN_FAIL_LIMIT  consecutive transport failures before falling back to DNS (default 2)
   SS_SONG_GAIN / SS_SONG_DUCK / SS_SOUND_GAIN   per-node mix levels, 0..1
   SS_PASSWORD     optional; NOT needed to listen. Leave unset on a box you don't own.
 """
-import os, time, json, hashlib, shutil, socket, threading, queue, http.client, ssl, subprocess
+import os, time, json, hashlib, shutil, socket, signal, threading, queue, http.client, ssl, subprocess
 import urllib.request, urllib.parse, urllib.error, http.cookiejar
 
 SERVER   = os.environ.get("SS_SERVER", "https://sounderserver.party")
@@ -113,7 +115,19 @@ _opener_dns = _build_opener(pinned=False)   # fallback if the pinned IP goes bad
 # DNS rather than going permanently silent.
 _pin_fails = 0
 _pin_until = 0.0                 # while now < this, use plain DNS
-PIN_FAIL_LIMIT = 5               # ~15s of solid failure before falling back
+# How long one poll may hang before we abandon it. This is the unit the fallback below
+# is counted in, so it sets the cost of every transport failure. Measured internet
+# latency from a healthy node is ~15ms (max 59ms), so 2s is ~30x headroom and still
+# well under the ~2.6s a short clip lives server-side.
+POLL_TIMEOUT = float(os.environ.get("SS_POLL_TIMEOUT", "2.0"))
+# Consecutive transport failures before we stop trusting the origin pin. This used to be
+# 5, which at a 3s timeout meant ~17s of total blindness before the agent even TRIED the
+# other path — and every sound fired in that window is lost, because discovery is
+# poll-only. Observed on the kitchen node: four separate 14-25s blind windows in 24h,
+# each one a run of five timeouts ending in this fallback. Two failures (~5s) still
+# rules out a single unlucky packet while cutting the worst case ~4x. A false fallback
+# only costs PIN_COOLDOWN on the slower CF path, which is the cheaper mistake.
+PIN_FAIL_LIMIT = int(os.environ.get("SS_PIN_FAIL_LIMIT", "2"))
 PIN_COOLDOWN = 120.0             # a false fallback just means 2min on the slower CF path
 # Both the poll loop and the download worker report into _pin_fails/_pin_until now,
 # so the read-modify-write needs its own lock.
@@ -194,7 +208,7 @@ class _PollConn:
             except Exception: pass
             self._c = None
 
-    def get_json(self, path, timeout=3):
+    def get_json(self, path, timeout=POLL_TIMEOUT):
         # Short timeout on purpose: we poll every POLL seconds, so a poll that hasn't
         # returned in a few seconds is already stale — better to abandon it and let the
         # NEXT poll catch the current state than to block the loop. A long timeout here
@@ -260,18 +274,28 @@ def _evict_cache(keep):
         pass
 
 def _sweep_zero_byte():
-    """Clear out 0-byte cache files once at startup.
+    """Clear out 0-byte cache files and abandoned part-files once at startup.
 
-    Every one of these is a sound that can never play: they're leftovers from before
+    Every 0-byte file is a sound that can never play: they're leftovers from before
     _download validated its output, and the old existence-only cache check treated them
     as permanently cached. One node had accumulated 59 of them. Cheap to redo each boot,
-    and it means an upgraded node heals itself instead of needing a manual purge."""
-    n = 0
+    and it means an upgraded node heals itself instead of needing a manual purge.
+
+    Also clears abandoned "<cache>.<pid>.tmp" part-files. A download writes to one of
+    those and only os.replace()s it into place once Content-Length checks out, so a node
+    killed mid-download leaves one behind under a pid that will never exist again. They
+    are invisible to ensure_cached (different name) and nothing else ever collects them,
+    so they would sit against the cache cap forever and evict real audio."""
+    n = t = 0
     try:
         for name in os.listdir(CACHE):
             p = os.path.join(CACHE, name)
             try:
-                if os.path.isfile(p) and os.path.getsize(p) == 0:
+                if not os.path.isfile(p):
+                    continue
+                if name.endswith(".tmp"):
+                    os.remove(p); t += 1
+                elif os.path.getsize(p) == 0:
                     os.remove(p); n += 1
             except OSError:
                 pass
@@ -280,6 +304,8 @@ def _sweep_zero_byte():
     if n:
         print("cache: removed %d zero-byte file%s (they will re-download on demand)"
               % (n, "" if n == 1 else "s"))
+    if t:
+        print("cache: removed %d abandoned part-file%s" % (t, "" if t == 1 else "s"))
 
 def cache_path(fn, ver=0):
     ext = os.path.splitext(fn)[1] or ".wav"
@@ -361,7 +387,7 @@ def _download(fn, ver, path):
 # cache) was indistinguishable from a healthy one without SSHing in. This posts a
 # small health blob every REPORT_EVERY seconds on its own thread (never the poll
 # loop) so the server can surface it. Best-effort: any failure is swallowed.
-NODE_VERSION = "2026.09.03"
+NODE_VERSION = "2026.09.18"
 REPORT_EVERY = 45
 _START = time.monotonic()
 _LAST_DL_OK = 0.0                # wall-clock ts of the last successful download
@@ -747,5 +773,24 @@ def run():
             _note_pin_failure("poll")
         time.sleep(POLL)
 
+def _install_shutdown_handler():
+    """Leave promptly and on purpose when systemd says stop.
+
+    The poll loop has no exit condition and SDL keeps its own non-daemon audio thread, so
+    the process ignored SIGTERM until TimeoutStopSec expired and systemd SIGKILLed it: a
+    10s stall on every restart, and a kill that can land in the middle of a download and
+    strand a part-file. Stop the mixer (which releases the USB DAC) and exit hard. There
+    is nothing to flush: cache writes are atomic via os.replace and nothing else on this
+    process holds durable state."""
+    def _bye(signum, _frame):
+        try: pygame.mixer.stop(); pygame.mixer.music.stop(); pygame.mixer.quit()
+        except Exception: pass
+        os._exit(0)
+    for s in (signal.SIGTERM, signal.SIGINT):
+        try: signal.signal(s, _bye)
+        except (ValueError, OSError): pass      # not the main thread / unsupported
+
+
 if __name__ == "__main__":
+    _install_shutdown_handler()
     run()

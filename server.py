@@ -52,6 +52,13 @@ LONG_THRESHOLD = 15.0                   # >15s = a "song" → the dedicated long
 INSTANT_THRESHOLD = 5.0
 TYPE_OVERRIDE_FILE = os.path.join(DATA_DIR, "type_overrides.json")
 SYNC_BUFFER = 1.0                       # must match the frontend sync buffer
+# Shortest time an interrupted sound stays advertised on /api/active. Listeners are
+# poll-only (the room nodes every 0.35s, browsers ~2.5x/s), and only the browser that
+# FIRED a sound plays it without polling, straight off the /api/fire response. So a
+# sound replaced in its lane faster than that was heard by the person clicking and by
+# nobody else. This floor is set above the slowest listener's poll interval with margin;
+# it does not change the lane contract, it only stops an interrupt from beating the poll.
+MIN_VISIBLE = float(os.environ.get("SS_MIN_VISIBLE", "0.8"))
 FAVS_FILE  = os.path.join(DATA_DIR, "favorites.json")
 LIMITS_FILE= os.path.join(DATA_DIR, "limits.json")
 DUR_FILE   = os.path.join(DATA_DIR, "durations.json")
@@ -596,11 +603,31 @@ def _prune_locked(now):
     # keep a sound "active" until the slowest (synced) client has finished playing it,
     # so a finished sound is never force-stopped mid-tail. Interrupts/kills remove it
     # immediately regardless. pad covers the sync buffer + duration-estimate slack.
+    # An interrupted sound carries an explicit "expire_at" (see fire) and uses that
+    # instead, so it leaves as soon as it has been visible long enough to be polled.
     pad = (SYNC_BUFFER if _SYNC else 0.0) + 0.6
-    _ACTIVE[:] = [a for a in _ACTIVE if now < a["start"] + a["dur"] + pad]
+    _ACTIVE[:] = [a for a in _ACTIVE
+                  if now < (a.get("expire_at") or a["start"] + a["dur"] + pad)]
+
+def _interrupt_locked(entry, now):
+    """Take an interrupted sound out of its lane, but never before any listener could
+    have polled it.
+
+    A sound younger than MIN_VISIBLE has not been on the wire long enough for the room
+    nodes or other browsers to have seen it even once, so removing it outright made the
+    play silently vanish for everyone except whoever clicked. Hold it to its floor and
+    let _prune_locked drop it; anything older goes immediately, which is the ordinary
+    lane interrupt. Caller must hold _ACTIVE_LOCK."""
+    cut = entry["start"] + MIN_VISIBLE
+    if now < cut:
+        entry["expire_at"] = cut
+    else:
+        _ACTIVE.remove(entry)
+
 
 def fire(fn, user, lane=0, boxes_only=False):
-    """Play a sound in a lane. Each lane holds one sound — a new sound interrupts it.
+    """Play a sound in a lane. Each lane holds one sound — a new sound interrupts it,
+    though never so fast that pollers miss it entirely (see _interrupt_locked).
     boxes_only: the room nodes play it but browsers stay silent (admin "play on the boxes")."""
     global _TOKEN
     info = _LIBRARY.get(fn)
@@ -623,14 +650,14 @@ def fire(fn, user, lane=0, boxes_only=False):
             if req is not None:                         # use that lane, interrupt it
                 lane = req
                 for a in [x for x in _ACTIVE if x.get("lane") == lane]:
-                    _ACTIVE.remove(a)
+                    _interrupt_locked(a, now)
             else:                                       # auto-fill an open lane, else override oldest
                 songs = sorted([a for a in _ACTIVE if str(a.get("lane", "")).startswith("song")],
                                key=lambda a: a["start"])
                 used = {a["lane"] for a in songs}
                 lane = next((f"song{i}" for i in range(_SONG_LANES) if f"song{i}" not in used), None)
                 if lane is None:
-                    oldest = songs[0]; lane = oldest["lane"]; _ACTIVE.remove(oldest)
+                    oldest = songs[0]; lane = oldest["lane"]; _interrupt_locked(oldest, now)
         else:
             try:
                 lane = int(lane)
@@ -638,7 +665,7 @@ def fire(fn, user, lane=0, boxes_only=False):
                 lane = 0
             lane = max(0, min(_LANES - 1, lane))
             for a in [x for x in _ACTIVE if x.get("lane") == lane]:   # interrupt this lane
-                _ACTIVE.remove(a)
+                _interrupt_locked(a, now)
         _TOKEN += 1
         entry = {
             "token": _TOKEN, "file": fn, "name": info["name"], "fmt": info["fmt"],
