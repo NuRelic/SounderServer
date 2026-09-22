@@ -96,6 +96,7 @@ Verified end to end after deploy: the same 5-fire burst now produces 5 plays on 
 |---|---|
 | Box online, plays nothing at all | 2026-08-26 doc. Reboot the gateway first. |
 | Box plays some things, skips others, logs clean | This doc. Count fired vs played. |
+| Count comes back **equal** (fired == played) | `2026-09-22-short-clips-not-playing.md`. Nothing is being dropped — it's audibility (no headroom over the music) or a listener polling slower than the clip's life. |
 | `⚠ blind for Ns` in the journal | Transport. Check `on_dns_fallback` in `/api/nodes` and `netmon.csv`. |
 | A named sound never plays, ever | Cache. Diff library keys against the box's cache dir. |
 

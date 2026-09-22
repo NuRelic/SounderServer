@@ -55,13 +55,24 @@ POLL     = 0.35
 # no /etc/hosts entry — cloud-init rewrites /etc/hosts on EVERY boot, which is
 # exactly how the previous /etc/hosts-based bypass silently disappeared.
 ORIGIN_IP = os.environ.get("SS_ORIGIN_IP", "").strip()
-# Songs (loudness-normalized music) overpower the short clips (often quiet) on the
-# box. Short sounds already play at max (Sound.set_volume can't amplify past 1.0),
-# so we tame the song instead: a baseline reduction, and DUCK it while any short
-# sound is firing so the sound cuts through. Both env-tunable (0..1).
+# Songs (loudness-normalized music) overpower the short clips on the box: 61% of the
+# library sits below the songs' own level at source, and a clip can't be amplified past
+# 1.0 (Sound.set_volume won't gain up). So the song is what moves — a baseline reduction,
+# and a real DUCK while any short sound is firing so the clip cuts through. Clips sit
+# near the top of the box's range rather than being pulled down to meet the song, which
+# is what made them inaudible over music. All three env-tunable (0..1).
 SONG_GAIN = float(os.environ.get("SS_SONG_GAIN", "0.7"))   # song level when no sound is firing
-SONG_DUCK = float(os.environ.get("SS_SONG_DUCK", "0.6"))   # song level while a sound is firing — only a slight dip so song + clip play at comparable volume
-SOUND_GAIN = float(os.environ.get("SS_SOUND_GAIN", "0.6"))  # short-clip level relative to box volume — pulled below the song baseline so clips don't sit above songs
+# Song level while a clip is firing. This was 0.6 against a 0.7 baseline — a 1.3dB dip,
+# which is not a duck, it's a rounding error. Worse, clips carried the SAME 0.6 factor, so
+# a clip played at exactly the ducked song's level and 61% of the library is quieter than
+# the songs at source. Long clips still read; sub-second ones were simply masked, which is
+# how this presented: "the shorter sounds don't play" — while the node's own log showed
+# every one of them playing (298 fired / 298 played over 94h). 0.25 under a 0.7 baseline
+# is a ~9dB duck, the normal range for putting a voice over music.
+SONG_DUCK = float(os.environ.get("SS_SONG_DUCK", "0.25"))
+# Short-clip level relative to box volume. Clips are the thing someone just asked to hear,
+# so they sit near the top of the box's range and the song moves out of the way instead.
+SOUND_GAIN = float(os.environ.get("SS_SOUND_GAIN", "0.85"))
 # A download gets a TOTAL deadline, not just a socket timeout. urllib's `timeout`
 # is per-recv, so a connection that trickles bytes forever never trips it — that
 # could wedge a download thread indefinitely.

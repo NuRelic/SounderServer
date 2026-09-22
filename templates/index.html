@@ -944,8 +944,9 @@ function assumeAdminIdentity(){
 // slider/mute never worked on iPhone. Routing every clip through one shared GainNode
 // gives software volume that iOS honors. Degrades to element.volume where Web Audio is
 // unavailable (older browsers).
-let AC = null, MASTER = null;
+let AC = null, MASTER = null, SONGBUS = null;
 const _wired = new WeakSet();
+const _songEls = new WeakSet();     // elements playing a SONG (they're the ones that duck)
 function audioCtx(){
   if(AC) return AC;
   try{
@@ -953,18 +954,60 @@ function audioCtx(){
     MASTER = AC.createGain();
     MASTER.gain.value = (typeof effVol === 'function') ? effVol() : 1;
     MASTER.connect(AC.destination);
-  }catch(_){ AC = null; MASTER = null; }
+    // Songs get their own bus so a short clip can duck the music without touching the
+    // clip's own level. Clips connect straight to MASTER. Without this the browser had
+    // no song/clip distinction at all — one shared gain for everything — so a clip fired
+    // over music played at exactly the music's level and was simply masked by it.
+    SONGBUS = AC.createGain();
+    SONGBUS.gain.value = 1;
+    SONGBUS.connect(MASTER);
+  }catch(_){ AC = null; MASTER = null; SONGBUS = null; }
   return AC;
 }
 // Route an <audio> element through MASTER. Each element can be wired only ONCE, and once
 // wired its sound exits ONLY via the graph — so set element.volume=1 and let MASTER.gain
-// attenuate. Returns false (→ caller keeps using element.volume) if it couldn't wire.
-function wireGain(a){
+// attenuate. Songs route via SONGBUS so they can be ducked under clips. Returns false
+// (→ caller keeps using element.volume) if it couldn't wire.
+function wireGain(a, isSong){
+  if(isSong) _songEls.add(a);
   if(_wired.has(a)) return true;
   const ctx = audioCtx();
   if(!ctx) return false;
-  try{ ctx.createMediaElementSource(a).connect(MASTER); _wired.add(a); a.volume = 1; return true; }
-  catch(_){ return false; }
+  try{
+    ctx.createMediaElementSource(a).connect(isSong ? SONGBUS : MASTER);
+    _wired.add(a); a.volume = 1; return true;
+  }catch(_){ return false; }
+}
+// ---- ducking: pull the music down while a short clip is actually sounding ----
+// A clip fired over a song used to play at the song's own level, and 61% of the library
+// sits below the songs' loudness at source, so the clip landed under the music. Long
+// clips still read (you hear them for seconds); a sub-second blip is simply masked, which
+// is why this presented as "the shorter sounds don't play" even though every one of them
+// fired and played. Held by the ELEMENT's own playback, not by /api/active, so the duck
+// lasts exactly as long as the clip sounds rather than its whole advertised lifetime.
+const SONG_DUCK = 0.25;            // music level under a clip (≈ -12dB); 1 = no duck
+let _duckN = 0;
+function applyDuck(){
+  const g = _duckN > 0 ? SONG_DUCK : 1;
+  if(SONGBUS && AC){
+    // Ramp, don't step: an instant gain change on music is an audible click. Duck fast
+    // so the clip's first syllable isn't buried, release slower so it breathes back in.
+    try{ SONGBUS.gain.setTargetAtTime(g, AC.currentTime, _duckN > 0 ? 0.04 : 0.25); }
+    catch(_){ try{ SONGBUS.gain.value = g; }catch(_){ } }
+  }
+  for(const t in playing){        // elements Web Audio couldn't wire still use element.volume
+    const el = playing[t];
+    if(el && !_wired.has(el) && _songEls.has(el)) try{ el.volume = effVol() * g; }catch(_){ }
+  }
+}
+// Duck while THIS element is audibly playing. 'playing'/'ended' bracket the real audio;
+// pause/error release it so a clip that is stopped or fails can never pin the music down.
+function duckHold(a){
+  let held = false;
+  const on  = ()=>{ if(!held){ held = true;  _duckN++; applyDuck(); } };
+  const off = ()=>{ if(held){  held = false; _duckN--; applyDuck(); } };
+  a.addEventListener('playing', on);
+  for(const ev of ['ended','pause','error']) a.addEventListener(ev, off);
 }
 function unlock(){
   if(audioUnlocked) return;
@@ -1762,7 +1805,11 @@ function startEntry(e){
   if(e.boxes_only) return;      // admin "play on the boxes": rooms play it, browsers stay silent
   const a = new Audio(audioUrl(e.file, e.ver));
   a.preload = 'auto';
-  if(!wireGain(a)) a.volume = effVol();   // wired → MASTER.gain controls volume (iOS-safe); else element volume
+  const isSong = String(e.lane || '').startsWith('song');
+  // wired → MASTER.gain controls volume (iOS-safe); else element volume. Songs go on the
+  // duckable bus; clips hold the duck down while they sound so they cut through the music.
+  if(!wireGain(a, isSong)) a.volume = effVol() * (isSong && _duckN > 0 ? SONG_DUCK : 1);
+  if(!isSong) duckHold(a);
   playing[e.token] = a;
   activeMeta[e.token] = {start:e.start, dur:e.dur||0};
   const onBlocked = ()=>{ blocked.add(e.token); };  // autoplay-blocked → replay on the next gesture
@@ -1931,8 +1978,10 @@ function effVol(){ return MUTED ? 0 : BROWSERVOL; }              // applied volu
 function applyVol(){
   const v = effVol();
   if(MASTER){ try{ MASTER.gain.value = v; }catch(_){ } }          // iOS-honored software volume/mute
-  // elements not routed through the graph (Web Audio unavailable) still use element.volume
-  for(const t in playing){ if(!_wired.has(playing[t])) try{ playing[t].volume = v; }catch(_){ } }
+  // elements not routed through the graph (Web Audio unavailable) still use element.volume,
+  // and a song there has to carry the duck itself since it has no SONGBUS to ride.
+  for(const t in playing){ const el=playing[t]; if(!_wired.has(el)) try{
+    el.volume = v * ((_songEls.has(el) && _duckN > 0) ? SONG_DUCK : 1); }catch(_){ } }
   for(const l in soloPlaying){ if(!_wired.has(soloPlaying[l])) try{ soloPlaying[l].volume = v; }catch(_){ } }
   $('#muteBtn').textContent = v===0 ? '🔇' : (v < 0.5 ? '🔉' : '🔊');
 }
@@ -2075,7 +2124,11 @@ function playLocal(file, lane){
   unlock();
   if(soloPlaying[lane]){ try{ soloPlaying[lane].pause(); }catch(_){ } }
   const a = new Audio(audioUrl(file));
-  a.preload = 'auto'; if(!wireGain(a)) a.volume = effVol(); safePlay(a);
+  const isSong = String(lane || '').startsWith('song');
+  a.preload = 'auto';
+  if(!wireGain(a, isSong)) a.volume = effVol() * (isSong && _duckN > 0 ? SONG_DUCK : 1);
+  if(!isSong) duckHold(a);              // a private clip ducks the music the same way
+  safePlay(a);
   a.addEventListener('ended', ()=>{ if(soloPlaying[lane]===a) delete soloPlaying[lane]; });
   soloPlaying[lane] = a;
 }

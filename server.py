@@ -59,6 +59,21 @@ SYNC_BUFFER = 1.0                       # must match the frontend sync buffer
 # nobody else. This floor is set above the slowest listener's poll interval with margin;
 # it does not change the lane contract, it only stops an interrupt from beating the poll.
 MIN_VISIBLE = float(os.environ.get("SS_MIN_VISIBLE", "0.8"))
+# The slowest poll any real listener runs. MIN_VISIBLE above models "browsers ~2.5x/s"
+# (400ms), which is only true of a FOREGROUND tab — templates/index.html throttles a
+# backgrounded one to 2500ms to save battery:
+#
+#     function activeInterval(){ return document.hidden ? 2500 : (_roomLive ? 400 : 1000); }
+#
+# Keep this in step with that function.
+SLOWEST_POLL = float(os.environ.get("SS_SLOWEST_POLL", "2.5"))
+# Shortest time ANY sound stays advertised, interrupted or not. MIN_VISIBLE only floored
+# the interrupt path; a sound nobody interrupts just ages out at start + dur + pad, so a
+# clip under ~0.9s could begin AND end between two polls of a backgrounded tab and was
+# never seen, never played and never logged anywhere except in the browser that fired it.
+# One full cycle of the slowest poll, plus margin for the request itself. Longer sounds
+# are unaffected: their own dur + pad already clears this floor by a wide margin.
+MIN_ADVERTISED = SLOWEST_POLL + 0.4
 FAVS_FILE  = os.path.join(DATA_DIR, "favorites.json")
 LIMITS_FILE= os.path.join(DATA_DIR, "limits.json")
 DUR_FILE   = os.path.join(DATA_DIR, "durations.json")
@@ -605,9 +620,13 @@ def _prune_locked(now):
     # immediately regardless. pad covers the sync buffer + duration-estimate slack.
     # An interrupted sound carries an explicit "expire_at" (see fire) and uses that
     # instead, so it leaves as soon as it has been visible long enough to be polled.
+    # A sound nobody interrupted is held to MIN_ADVERTISED even if its own audio is
+    # shorter, so a backgrounded browser still finds it on its next (2.5s) poll. An
+    # interrupt is a deliberate cut and stays on the tighter MIN_VISIBLE floor.
     pad = (SYNC_BUFFER if _SYNC else 0.0) + 0.6
     _ACTIVE[:] = [a for a in _ACTIVE
-                  if now < (a.get("expire_at") or a["start"] + a["dur"] + pad)]
+                  if now < (a.get("expire_at")
+                            or a["start"] + max(a["dur"] + pad, MIN_ADVERTISED))]
 
 def _interrupt_locked(entry, now):
     """Take an interrupted sound out of its lane, but never before any listener could
