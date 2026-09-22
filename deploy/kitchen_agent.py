@@ -398,7 +398,7 @@ def _download(fn, ver, path):
 # cache) was indistinguishable from a healthy one without SSHing in. This posts a
 # small health blob every REPORT_EVERY seconds on its own thread (never the poll
 # loop) so the server can surface it. Best-effort: any failure is swallowed.
-NODE_VERSION = "2026.09.18"
+NODE_VERSION = "2026.09.22"
 REPORT_EVERY = 45
 _START = time.monotonic()
 _LAST_DL_OK = 0.0                # wall-clock ts of the last successful download
