@@ -672,6 +672,36 @@ def _release_finished(playing, live):
         except Exception:
             pass
 
+# --- local announcements: the house automation's `say` command (Piper TTS on this Pi) drops
+# finished .wav files into SAY_DIR; each plays once on a mixer channel and the song ducks under
+# it, exactly like a short clip. sound-node owns the ALSA device, so this is the only way another
+# process on the Pi can speak through these speakers. Missing dir = feature off. ---
+SAY_DIR = os.environ.get("SS_SAY_DIR", "/home/pi/homectl/say.d")
+_says = []   # (channel, Sound, ends_at)
+
+def play_local_says(vol):
+    """Start any queued announcements; return True while one is still sounding."""
+    try:
+        names = sorted(f for f in os.listdir(SAY_DIR) if f.endswith(".wav") and not f.endswith(".part.wav"))
+    except OSError:
+        names = []
+    for f in names:
+        p = os.path.join(SAY_DIR, f)
+        try:
+            snd = pygame.mixer.Sound(p)
+            snd.set_volume(max(0.0, min(1.0, vol)))
+            ch = pygame.mixer.find_channel(True)
+            ch.play(snd)
+            _says.append((ch, snd, time.time() + snd.get_length()))
+            print("🗣 say", f)
+        except Exception as e:
+            print("say error:", f, e)
+        try: os.remove(p)
+        except OSError: pass
+    now = time.time()
+    _says[:] = [s for s in _says if s[2] > now]
+    return bool(_says)
+
 # --- songs: STREAMED via mixer.music so a 5-min (or 45-min) file uses almost no
 # RAM. Loading them as Sounds decoded the whole song into memory (~130MB for 5
 # min, ~1GB for the long mixes), which thrashed the Pi and went silent. music is
@@ -776,9 +806,10 @@ def run():
             _release_finished(_playing, live)       # interrupted/finished on the server
             # song — single streamed lane (most-recent wins if >1 song is active).
             # Duck it while any short sound is playing so the sound cuts through.
+            saying = play_local_says(vol)
             cur = songs[-1] if songs else None
             if cur:
-                song_vol = vol * (SONG_DUCK if shorts else SONG_GAIN)
+                song_vol = vol * (SONG_DUCK if (shorts or saying) else SONG_GAIN)
                 play_song(cur, song_vol)
             elif _song_tok is not None and _song_tok not in live:
                 # The song left the server's active set. Two reasons, handled differently:
