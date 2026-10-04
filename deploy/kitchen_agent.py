@@ -398,7 +398,7 @@ def _download(fn, ver, path):
 # cache) was indistinguishable from a healthy one without SSHing in. This posts a
 # small health blob every REPORT_EVERY seconds on its own thread (never the poll
 # loop) so the server can surface it. Best-effort: any failure is swallowed.
-NODE_VERSION = "2026.09.22"
+NODE_VERSION = "2026.10.03"
 REPORT_EVERY = 45
 _START = time.monotonic()
 _LAST_DL_OK = 0.0                # wall-clock ts of the last successful download
@@ -644,6 +644,34 @@ def play_short(entry, vol):
     except Exception as e:
         print("play error:", entry.get("file"), e)
 
+def _release_finished(playing, live):
+    """Forget tokens the server no longer advertises, stopping each one's channel ONLY
+    if that channel is still playing that token's own Sound.
+
+    pygame frees a channel the instant a clip's audio ends, but the token stays here
+    until the SERVER drops it from /api/active — at least MIN_ADVERTISED (~2.9s), far
+    longer than most clips sound for. find_channel() returns the lowest-index idle
+    channel, so the next clip fired almost always inherits this one's channel. Stopping
+    unconditionally therefore cut off whatever was on the channel *now*, i.e. the newer
+    clip, and the room heard the song duck with no clip over it. Nothing showed it: the
+    node had already logged a ▶ for the newer clip, nothing raised, and the duck keys off
+    a short being present in /api/active rather than off any clip actually sounding.
+
+    Identity, not equality: two Sounds loaded from the same file are distinct objects, so
+    `is` asks the right question ("is this still MY sound on this channel?"). Popping
+    before the comparison keeps a channel that raises from stranding its token here —
+    play_short() early-returns on `tok in playing`, so a leak would mute that token for
+    the rest of the process's life."""
+    for tok in list(playing):
+        if tok in live:
+            continue
+        ch, snd = playing.pop(tok)
+        try:
+            if ch.get_sound() is snd:
+                ch.stop()
+        except Exception:
+            pass
+
 # --- songs: STREAMED via mixer.music so a 5-min (or 45-min) file uses almost no
 # RAM. Loading them as Sounds decoded the whole song into memory (~130MB for 5
 # min, ~1GB for the long mixes), which thrashed the Pi and went silent. music is
@@ -745,11 +773,7 @@ def run():
                     # clip would drop after the first poll.
                     try: _playing[a["token"]][1].set_volume(sound_vol)
                     except Exception: pass
-            for tok in list(_playing):
-                if tok not in live:                 # interrupted/finished on the server
-                    ch, _ = _playing.pop(tok)
-                    try: ch.stop()
-                    except Exception: pass
+            _release_finished(_playing, live)       # interrupted/finished on the server
             # song — single streamed lane (most-recent wins if >1 song is active).
             # Duck it while any short sound is playing so the sound cuts through.
             cur = songs[-1] if songs else None

@@ -100,6 +100,7 @@ for not pinning a lane open, and for the interrupt path staying fast.
 | **fired == played but you didn't hear it** | This doc §3. It's level, not delivery. Check the duck. |
 | Only short clips, and only in a browser | This doc §4. Compare the clip's life (`dur + 1.6s`) against `activeInterval()`. |
 | Only over music | This doc §3. |
+| **The song ducks but you hear no clip at all** | `2026-10-03-clip-silenced-by-channel-reuse.md`. The duck proves the node saw it — a finished clip's cleanup was stopping the newer clip that had reused its channel. |
 
 The trap here is that "some sounds don't play" reads as a delivery fault, so both previous
 runbooks point at transport. Count first: **if fired == played, stop looking at the network.**
