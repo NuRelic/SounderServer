@@ -1140,6 +1140,26 @@ def index():
     return render_template("index.html", sync_buffer=SYNC_BUFFER,
                            instant_threshold=INSTANT_THRESHOLD)
 
+
+# --- home-screen app support (iPhone "Add to Home Screen", Android install) — 2026-10-10 ---
+PWA_DIR = os.path.join(BASE_DIR, "pwa")
+_PWA_FILES = {f"{app_}-{n}.png" for app_ in ("sounds", "recipes") for n in (180, 192, 512)}
+
+@app.route("/pwa/<name>")
+def pwa_file(name):
+    if name not in _PWA_FILES:
+        abort(404)
+    resp = send_file(os.path.join(PWA_DIR, name), mimetype="image/png", max_age=86400)
+    return resp
+
+@app.route("/manifest.webmanifest")
+def sounds_manifest():
+    m = {"name": "Sound Server", "short_name": "Sounds", "start_url": "/", "scope": "/",
+         "display": "standalone", "background_color": "#0d0f14", "theme_color": "#0d0f14",
+         "icons": [{"src": f"/pwa/sounds-{n}.png", "sizes": f"{n}x{n}", "type": "image/png",
+                    "purpose": "any"} for n in (192, 512)]}
+    return app.response_class(json.dumps(m), mimetype="application/manifest+json")
+
 # ----------------------------------------------------------------------------
 # Routes — auth
 # ----------------------------------------------------------------------------

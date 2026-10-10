@@ -53,6 +53,18 @@ def who():
             or "someone")
 
 
+@bp.route("/manifest.webmanifest")
+def manifest():
+    """Installs /recipes as its own home-screen app, separate from the Sound Server."""
+    import json as _json
+    from flask import current_app
+    m = {"name": "Recipes", "short_name": "Recipes", "start_url": "/recipes/", "scope": "/recipes/",
+         "display": "standalone", "background_color": "#111418", "theme_color": "#111418",
+         "icons": [{"src": f"/pwa/recipes-{n}.png", "sizes": f"{n}x{n}", "type": "image/png",
+                    "purpose": "any"} for n in (192, 512)]}
+    return current_app.response_class(_json.dumps(m), mimetype="application/manifest+json")
+
+
 @bp.route("/")
 def page():
     return render_template("recipes.html")
