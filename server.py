@@ -1372,6 +1372,11 @@ def api_time():
 @app.route("/api/active")
 def api_active():
     _u = (request.args.get("u") or "").strip()[:40]
+    if _u in ("livingroom", "kitchen") and request.headers.get("CF-Connecting-IP"):
+        _remember_node_ip(_u)            # a node on the Cloudflare path: its real address
+    elif _u == "livingroom" and os.path.exists(os.path.join(DATA_DIR, "probe_livingroom")):
+        time.sleep(3)                    # temporary probe: make the pinned path time out once so the
+                                         # node falls back to Cloudflare for 2 min (2026-10-10)
     presence_touch(_u)
     set_color(_u, request.args.get("c"))
     online = [{"name": n, "color": _USER_COLOR.get(n)} for n in presence_list()]
@@ -1387,7 +1392,29 @@ def api_node_report():
     a control path, and is name-keyed + field-whitelisted."""
     body = request.get_json(silent=True) or {}
     node_report((body.get("name") or "").strip()[:40], body)
+    _remember_node_ip((body.get("name") or "").strip()[:40])
     return jsonify({"ok": True})
+
+
+def _remember_node_ip(name):
+    """Private (not served): the public address each node last reported from, via Cloudflare's
+    CF-Connecting-IP. It's how we find the living-room Pi's global IPv6 when its Tailscale drops
+    (2026-10-10). Written only on change."""
+    if not name:
+        return
+    xff = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+    ip = (request.headers.get("CF-Connecting-IP") or request.headers.get("X-Real-IP") or xff
+          or request.remote_addr or "")[:64]
+    path = os.path.join(DATA_DIR, "node_ips.json")
+    try:
+        cur = json.load(open(path)) if os.path.exists(path) else {}
+        if ip.startswith("127.") and (cur.get(name) or {}).get("ip", "").count(":") > 1:
+            return
+        if (cur.get(name) or {}).get("ip") != ip:
+            cur[name] = {"ip": ip, "at": int(time.time())}
+            json.dump(cur, open(path, "w"))
+    except Exception:
+        pass
 
 @app.route("/api/nodes")
 def api_nodes():
