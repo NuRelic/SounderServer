@@ -398,7 +398,7 @@ def _download(fn, ver, path):
 # cache) was indistinguishable from a healthy one without SSHing in. This posts a
 # small health blob every REPORT_EVERY seconds on its own thread (never the poll
 # loop) so the server can surface it. Best-effort: any failure is swallowed.
-NODE_VERSION = "2026.10.03"
+NODE_VERSION = "2026.10.10"
 REPORT_EVERY = 45
 _START = time.monotonic()
 _LAST_DL_OK = 0.0                # wall-clock ts of the last successful download
@@ -748,6 +748,88 @@ def stop_song():
         except Exception: pass
         _song_tok = None; _song_path = None; _song_end = 0.0
 
+# --- local queue: the house Pi's voice presets ("Hey Siri, play EPIC"). The house writes
+# SS_QUEUE_FILE = {"id", "title", "tracks": [{"file","ver","name"}...]}; this node streams the
+# tracks in order on its own speakers ONLY (nothing goes through the server, so the other rooms
+# and browsers never hear it). A song someone fires from the site still wins; the queue then
+# resumes at the same track. Delete the file to stop. Progress goes to SS_QUEUE_STATE. No file =
+# feature off, so nodes without a house Pi behave exactly as before. ---
+QUEUE_FILE = os.environ.get("SS_QUEUE_FILE", "/home/pi/homectl/sound_queue.json")
+QUEUE_STATE = os.environ.get("SS_QUEUE_STATE", "/home/pi/homectl/sound_queue_state.json")
+_LOCAL = "local:"
+_lq = {"id": None, "idx": 0}
+
+def _read_queue():
+    try:
+        with open(QUEUE_FILE) as f:
+            q = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return q if isinstance(q, dict) and q.get("tracks") else None
+
+def _queue_state(q, status):
+    tracks = (q or {}).get("tracks") or []
+    i = _lq["idx"]
+    st = {"id": _lq["id"], "title": (q or {}).get("title"), "status": status, "index": i,
+          "count": len(tracks), "track": tracks[i].get("name") if 0 <= i < len(tracks) else None,
+          "at": time.time()}
+    try:
+        tmp = QUEUE_STATE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(st, f)
+        os.replace(tmp, QUEUE_STATE)
+    except OSError:
+        pass
+
+def _is_local_tok(tok):
+    return isinstance(tok, str) and tok.startswith(_LOCAL)
+
+def local_queue_tick(server_busy, vol):
+    """One poll's worth of the local queue. server_busy: a site-fired song owns the stream."""
+    global _song_tok, _song_path, _song_end
+    q = _read_queue()
+    mine = _is_local_tok(_song_tok)
+    if q is None:                                   # stopped (file deleted) or never started
+        if mine:
+            stop_song()
+            _queue_state(None, "stopped")
+        _lq.update(id=None, idx=0)
+        return
+    if q.get("id") != _lq["id"]:                    # a new preset replaces whatever was queued
+        if mine:
+            stop_song(); mine = False
+        _lq.update(id=q.get("id"), idx=max(0, int(q.get("start") or 0)))
+    if server_busy:
+        return                                      # a fired song wins; resume this track after
+    tracks = q["tracks"]
+    if mine:
+        try: pygame.mixer.music.set_volume(max(0.0, min(1.0, vol)))
+        except Exception: pass
+        if pygame.mixer.music.get_busy():
+            return
+        stop_song()
+        _lq["idx"] += 1                             # finished -> next track
+    if _lq["idx"] >= len(tracks):
+        _queue_state(q, "done")
+        try: os.remove(QUEUE_FILE)
+        except OSError: pass
+        _lq.update(id=None, idx=0)
+        return
+    t = tracks[_lq["idx"]]
+    path = ensure_cached(t["file"], t.get("ver", 0))
+    if path is None:
+        return                                      # downloading; try again next poll
+    try:
+        pygame.mixer.music.load(path)
+        pygame.mixer.music.set_volume(max(0.0, min(1.0, vol)))
+        pygame.mixer.music.play()
+        _song_tok = "%s%s:%d" % (_LOCAL, _lq["id"], _lq["idx"]); _song_path = path; _song_end = 0.0
+        print("▶ local", q.get("title"), "%d/%d" % (_lq["idx"] + 1, len(tracks)), t.get("name"))
+        _queue_state(q, "playing")
+    except Exception as e:
+        print("local queue play error:", t.get("file"), e)
+        _lq["idx"] += 1
+
 def try_login():
     """Best-effort login. Listening no longer requires auth, so a failure here
     must NOT block the play loop (the kitchen only reads the public /api/active).
@@ -811,7 +893,7 @@ def run():
             if cur:
                 song_vol = vol * (SONG_DUCK if (shorts or saying) else SONG_GAIN)
                 play_song(cur, song_vol)
-            elif _song_tok is not None and _song_tok not in live:
+            elif _song_tok is not None and not _is_local_tok(_song_tok) and _song_tok not in live:
                 # The song left the server's active set. Two reasons, handled differently:
                 #  - Killed EARLY (someone hit stop, or it was interrupted) → it vanished well
                 #    before its natural end → stop the box now.
@@ -823,6 +905,8 @@ def run():
                 elif not pygame.mixer.music.get_busy():
                     stop_song()                          # aged out and the stream has finished
                 # else: past its scheduled end but still playing its tail → let it finish
+            server_busy = cur is not None or (_song_tok is not None and not _is_local_tok(_song_tok))
+            local_queue_tick(server_busy, vol * (SONG_DUCK if (shorts or saying) else SONG_GAIN))
         except urllib.error.HTTPError as e:
             # 401/403 = our session was dropped (e.g. a server bounce) -> re-login so
             # the kitchen self-heals without anyone restarting the Pi. Other codes
