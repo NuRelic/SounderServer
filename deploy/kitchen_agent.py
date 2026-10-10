@@ -398,7 +398,7 @@ def _download(fn, ver, path):
 # cache) was indistinguishable from a healthy one without SSHing in. This posts a
 # small health blob every REPORT_EVERY seconds on its own thread (never the poll
 # loop) so the server can surface it. Best-effort: any failure is swallowed.
-NODE_VERSION = "2026.10.10"
+NODE_VERSION = "2026.10.10q"
 REPORT_EVERY = 45
 _START = time.monotonic()
 _LAST_DL_OK = 0.0                # wall-clock ts of the last successful download
@@ -708,15 +708,28 @@ def play_local_says(vol):
 # a single stream, so with >1 song lane only the most-recent song is audible. ---
 _song_tok = None
 _song_path = None      # disk path of the streaming song — protected from cache eviction
+_song_start = 0.0      # the server start we began this song from (a later change = someone seeked)
 _song_end = 0.0        # wall-clock time this song is expected to end (start+dur); lets us tell
                        # a normal timer age-out from an early kill so a late-started song can finish
 
 def play_song(entry, vol):
-    global _song_tok, _song_path, _song_end
+    global _song_tok, _song_path, _song_end, _song_start
     v = max(0.0, min(1.0, vol))
     if entry["token"] == _song_tok:
         try: pygame.mixer.music.set_volume(v)
         except Exception: pass
+        start = float(entry.get("start") or 0)
+        if start and _song_start and abs(start - _song_start) > 0.75:
+            # Seek (queue mode slider): the server moved this song's shared start. Restart the
+            # stream at the new offset so the room follows the browsers.
+            pos = max(0.0, time.time() - start)
+            try:
+                pygame.mixer.music.play(start=pos)
+                print("⏩ seek", entry.get("name"), "to %.0fs" % pos)
+            except Exception as e:
+                print("seek failed:", e)
+            _song_start = start
+            _song_end = start + float(entry.get("dur") or 0)
         return
     path = ensure_cached(entry["file"], entry.get("ver", 0))
     if path is None:
@@ -735,6 +748,7 @@ def play_song(entry, vol):
         else:
             pygame.mixer.music.play()
         _song_tok = entry["token"]; _song_path = path
+        _song_start = float(entry.get("start") or 0)
         _song_end = float(entry.get("start") or time.time()) + float(entry.get("dur") or 0)
         print("▶ song", entry.get("name"), "by", entry.get("by"),
               ("(joined %.0fs in)" % behind) if behind > 2.0 else "")
@@ -865,7 +879,9 @@ def run():
                 with _REPORT_LOCK: _BLIND += 1
             last_ok = time.monotonic()
             _note_pin_ok()
-            active = d.get("active", [])
+            # entries aimed at specific rooms ("nodes": [...], queue mode / house presets) are
+            # skipped by every other node
+            active = [a for a in d.get("active", []) if not a.get("nodes") or NODE in a["nodes"]]
             # per-room volume: use THIS node's own level if the server has one, else the
             # shared default. Lets the kitchen and living room be set independently.
             vol = d.get("box_volumes", {}).get(NODE, d.get("box_volume", 100)) / 100.0

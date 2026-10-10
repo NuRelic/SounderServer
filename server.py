@@ -644,7 +644,7 @@ def _interrupt_locked(entry, now):
         _ACTIVE.remove(entry)
 
 
-def fire(fn, user, lane=0, boxes_only=False):
+def fire(fn, user, lane=0, boxes_only=False, nodes=None, extra=None):
     """Play a sound in a lane. Each lane holds one sound — a new sound interrupts it,
     though never so fast that pollers miss it entirely (see _interrupt_locked).
     boxes_only: the room nodes play it but browsers stay silent (admin "play on the boxes")."""
@@ -692,6 +692,10 @@ def fire(fn, user, lane=0, boxes_only=False):
         }
         if boxes_only:
             entry["boxes_only"] = True      # nodes play it; browsers skip the audio
+        if nodes:
+            entry["nodes"] = list(nodes)    # only these room nodes play it (others ignore it)
+        if extra:
+            entry.update(extra)
         _ACTIVE.append(entry)
     record_play(fn)
     log_event("cmd", user, name=info["name"], file=fn, fmt=info["fmt"], lane=lane,
@@ -707,6 +711,275 @@ def active_snapshot():
         for a in snap:                       # carry the file version for cache-busting
             a["ver"] = _LIBRARY.get(a["file"], {}).get("ver", 0)
     return snap
+
+# ----------------------------------------------------------------------------
+# Queue mode (docs/queue-mode.md): a shared song queue played one at a time in song0.
+# The mode only changes what a plain song click does; the queue plays whenever it has items.
+# ----------------------------------------------------------------------------
+QUEUE_FILE      = os.path.join(DATA_DIR, "queue.json")
+TAG_ORDER_FILE  = os.path.join(DATA_DIR, "tag_order.json")
+HOUSE_TOKEN_FILE = os.path.join(DATA_DIR, "house_token")
+QUEUE_LANE      = "song0"
+QUEUE_HISTORY   = 20
+# Built-in sections: EPIC: The Musical (tag "e"), saga -> first track number.
+DEFAULT_TAG_ORDER = {"e": {"sections": [["Troy", 1], ["Cyclops", 6], ["Ocean", 10], ["Circe", 14],
+                                        ["Underworld", 18], ["Thunder", 21], ["Wisdom", 26],
+                                        ["Vengeance", 31], ["Ithaca", 36]]}}
+
+_Q_LOCK = threading.Lock()
+_q_saved = _load(QUEUE_FILE, {})
+_QUEUE = {
+    "mode": _q_saved.get("mode") if _q_saved.get("mode") in ("overlap", "queue") else "overlap",
+    "items": [i for i in (_q_saved.get("items") or []) if isinstance(i, dict) and i.get("file")],
+    "current": None,      # {id, file, name, by, token, ...item}
+    "history": [],        # items already played (most recent last)
+}
+_Q_NEXT_ID = [max([int(i.get("id") or 0) for i in _QUEUE["items"]] + [0]) + 1]
+
+
+def _house_token():
+    tok = (os.environ.get("HOUSE_TOKEN") or "").strip()
+    if tok:
+        return tok
+    try:
+        with open(HOUSE_TOKEN_FILE) as f:
+            tok = f.read().strip()
+    except OSError:
+        tok = ""
+    if not tok:
+        tok = _secrets.token_urlsafe(24)
+        try:
+            with open(HOUSE_TOKEN_FILE, "w") as f:
+                f.write(tok)
+            os.chmod(HOUSE_TOKEN_FILE, 0o600)
+        except OSError:
+            pass
+    return tok
+
+
+def queue_privileged():
+    """Editors, admins, or the house automation (X-House-Token) may replace/clear/stop/mode."""
+    if session.get("admin") or can_edit():
+        return True
+    sent = (request.headers.get("X-House-Token") or "").strip()
+    return bool(sent) and _secrets.compare_digest(sent, _house_token())
+
+
+def _q_save():
+    _save(QUEUE_FILE, {"mode": _QUEUE["mode"], "items": _QUEUE["items"]})
+
+
+def _q_item(fn, user, opts=None):
+    info = _LIBRARY.get(fn)
+    if not info:
+        return None
+    it = {"id": _Q_NEXT_ID[0], "file": fn, "name": info["name"], "by": user}
+    _Q_NEXT_ID[0] += 1
+    for k in ("nodes", "boxes_only"):
+        if opts and opts.get(k):
+            it[k] = opts[k]
+    return it
+
+
+def _song_active_locked(now):
+    """Caller holds _ACTIVE_LOCK."""
+    _prune_locked(now)
+    return any(str(a.get("lane", "")).startswith("song") for a in _ACTIVE)
+
+
+def _stop_token(tok):
+    with _ACTIVE_LOCK:
+        for a in [x for x in _ACTIVE if x["token"] == tok]:
+            _ACTIVE.remove(a)
+
+
+def queue_tick(now=None):
+    """Advance the queue: notice a finished/killed current song, start the next when the
+    song lanes are free. Safe to call often (every /api/active and from a 1s thread)."""
+    now = now or time.time()
+    start = None
+    with _Q_LOCK:
+        cur = _QUEUE["current"]
+        with _ACTIVE_LOCK:
+            _prune_locked(now)
+            live = {a["token"] for a in _ACTIVE}
+            busy = any(str(a.get("lane", "")).startswith("song") for a in _ACTIVE)
+        if cur and cur.get("token") not in live:
+            _QUEUE["history"].append({k: v for k, v in cur.items() if k != "token"})
+            del _QUEUE["history"][:-QUEUE_HISTORY]
+            _QUEUE["current"] = cur = None
+        if cur is None and not busy:
+            while _QUEUE["items"]:
+                it = _QUEUE["items"].pop(0)
+                if it["file"] in _LIBRARY:
+                    start = it
+                    break
+            if start is not None:
+                _q_save()
+                # Fire under _Q_LOCK so two ticks can't both start a song. fire() only takes
+                # _ACTIVE_LOCK; lock order is always _Q_LOCK -> _ACTIVE_LOCK.
+                e = fire(start["file"], start.get("by") or "queue", lane=QUEUE_LANE,
+                         boxes_only=bool(start.get("boxes_only")), nodes=start.get("nodes"),
+                         extra={"queue": True, "qid": start["id"]})
+                if e:
+                    _QUEUE["current"] = dict(start, token=e["token"])
+    return start
+
+
+def queue_add(files, user, mode="append", opts=None):
+    items = [it for it in (_q_item(f, user, opts) for f in files) if it]
+    with _Q_LOCK:
+        old = _QUEUE["current"]
+        if mode == "replace":
+            _QUEUE["items"] = []
+            _QUEUE["current"] = None
+        _QUEUE["items"].extend(items)
+        _q_save()
+    if mode == "replace" and old:
+        _stop_token(old["token"])
+        with _Q_LOCK:
+            _QUEUE["history"].append({k: v for k, v in old.items() if k != "token"})
+    queue_tick()
+    return items
+
+
+def queue_skip():
+    with _Q_LOCK:
+        cur = _QUEUE["current"]
+    if not cur:
+        return False
+    _stop_token(cur["token"])
+    queue_tick()
+    return True
+
+
+def queue_prev():
+    with _Q_LOCK:
+        if not _QUEUE["history"]:
+            return False
+        prev = _QUEUE["history"].pop()
+        cur = _QUEUE["current"]
+        front = [dict(prev)]
+        if cur:
+            front.append({k: v for k, v in cur.items() if k != "token"})
+        _QUEUE["items"][:0] = front
+        _QUEUE["current"] = None          # so the stopped song isn't pushed onto history
+        _q_save()
+    if cur:
+        _stop_token(cur["token"])
+    queue_tick()
+    return True
+
+
+def queue_seek(token, pos):
+    """Jump a playing (song) entry to `pos` seconds by moving its shared start."""
+    now = time.time()
+    with _ACTIVE_LOCK:
+        e = next((a for a in _ACTIVE if a["token"] == token), None)
+        if not e:
+            return None
+        dur = float(e.get("dur") or 0)
+        pos = max(0.0, min(float(pos), max(0.0, dur - 1.0)))
+        e["start"] = now - pos - SYNC_BUFFER
+        e["seek"] = int(e.get("seek") or 0) + 1
+        e.pop("expire_at", None)
+        return dict(e)
+
+
+def queue_move(qid, to):
+    with _Q_LOCK:
+        items = _QUEUE["items"]
+        i = next((n for n, it in enumerate(items) if it["id"] == qid), None)
+        if i is None:
+            return False
+        it = items.pop(i)
+        items.insert(max(0, min(len(items), int(to))), it)
+        _q_save()
+    return True
+
+
+def queue_remove(qid):
+    with _Q_LOCK:
+        n = len(_QUEUE["items"])
+        _QUEUE["items"] = [it for it in _QUEUE["items"] if it["id"] != qid]
+        _q_save()
+        return len(_QUEUE["items"]) != n
+
+
+def queue_clear(stop=False):
+    with _Q_LOCK:
+        _QUEUE["items"] = []
+        cur = _QUEUE["current"]
+        _q_save()
+    if stop and cur:
+        _stop_token(cur["token"])
+        queue_tick()
+
+
+def queue_state():
+    now = time.time()
+    with _Q_LOCK:
+        cur = dict(_QUEUE["current"]) if _QUEUE["current"] else None
+        items = [dict(it) for it in _QUEUE["items"]]
+        hist = len(_QUEUE["history"])
+        mode = _QUEUE["mode"]
+    if cur:
+        with _ACTIVE_LOCK:
+            e = next((a for a in _ACTIVE if a["token"] == cur["token"]), None)
+        if e:
+            cur.update(start=e["start"], dur=e.get("dur") or 0,
+                       pos=max(0.0, now - e["start"] - SYNC_BUFFER))
+    for it in items:
+        it["dur"] = duration(it["file"]) if it["file"] in _LIBRARY else 0
+    return {"mode": mode, "current": cur, "items": items, "history": hist,
+            "total": sum(it["dur"] for it in items)}
+
+
+# ---- ordered tags (albums) + named sections ("start EPIC at the Circe saga") ----
+_NUM_RE = None
+
+def _first_num(fn):
+    global _NUM_RE
+    if _NUM_RE is None:
+        import re
+        _NUM_RE = re.compile(r"(\d+)")
+    m = _NUM_RE.search(os.path.splitext(fn)[0])
+    return int(m.group(1)) if m else None
+
+
+def tag_order(slug):
+    """Songs of a tag (and its children) in album order: first number in the filename, then name."""
+    snap = tags_snapshot()
+    kids = {t["slug"] for t in snap["tags"] if t.get("parent") == slug}
+    want = {slug} | kids
+    files = [f for f, ss in snap["assign"].items() if want & set(ss) and is_long(f)]
+    files.sort(key=lambda f: (_first_num(f) is None, _first_num(f) or 0, f.lower()))
+    cfg = dict(DEFAULT_TAG_ORDER)
+    cfg.update(_load(TAG_ORDER_FILE, {}) or {})
+    sections = []
+    for name, num in (cfg.get(slug) or {}).get("sections", []):
+        idx = next((i for i, f in enumerate(files) if _first_num(f) == int(num)), None)
+        if idx is not None:
+            sections.append({"name": name, "index": idx, "file": files[idx]})
+    return {"slug": slug, "files": files, "sections": sections,
+            "names": [_LIBRARY.get(f, {}).get("name", f) for f in files]}
+
+
+def _match_section(sections, want):
+    w = (want or "").strip().lower()
+    for s in sections:
+        if s["name"].lower() == w or s["name"].lower().startswith(w) or w.startswith(s["name"].lower()):
+            return s
+    return None
+
+
+def _queue_loop():
+    while True:
+        time.sleep(1.0)
+        try:
+            queue_tick()
+        except Exception:
+            traceback.print_exc()
 
 # ----------------------------------------------------------------------------
 # Unified feed (chat + commands + log)
@@ -1079,6 +1352,14 @@ def api_fire():
     # "play on the boxes only" (rooms audible, browsers silent) is an admin-only capability;
     # a non-admin passing the flag is simply ignored.
     boxes_only = bool(body.get("boxes_only")) and bool(session.get("admin"))
+    # Queue mode: a plain song click lines up behind the current song instead of cutting it.
+    # Short sounds still fire right away. body["now"] forces the old overlap behaviour.
+    if _QUEUE["mode"] == "queue" and is_long(fn) and not body.get("now"):
+        items = queue_add([fn], user, "append", {"boxes_only": boxes_only} if boxes_only else None)
+        info = _LIBRARY[fn]
+        log_event("queue", user, name=info["name"], file=fn, fmt=info["fmt"], color=_USER_COLOR.get(user))
+        return jsonify({"ok": True, "queued": items[0] if items else None, "queue": queue_state(),
+                        "active": active_snapshot()})
     entry = fire(fn, user, body.get("lane", 0), boxes_only=boxes_only)
     if not entry:
         return jsonify({"ok": False, "error": "not found"}), 404
@@ -1094,7 +1375,8 @@ def api_active():
     presence_touch(_u)
     set_color(_u, request.args.get("c"))
     online = [{"name": n, "color": _USER_COLOR.get(n)} for n in presence_list()]
-    return jsonify({"active": active_snapshot(), "lanes": _LANES, "song_lanes": _SONG_LANES,
+    queue_tick()
+    return jsonify({"active": active_snapshot(), "queue": queue_state(), "lanes": _LANES, "song_lanes": _SONG_LANES,
                     "box_volume": _BOX_VOL, "box_volumes": _BOX_VOLS, "sync": _SYNC, "online": online,
                     "nodes": node_health_list()})
 
@@ -1124,6 +1406,137 @@ def api_active_stop(token):
             return jsonify({"ok": False, "error": "not allowed"}), 403
         _ACTIVE.remove(entry)
     return jsonify({"ok": True, "active": active_snapshot()})
+
+# ----------------------------------------------------------------------------
+# Routes — queue mode (docs/queue-mode.md)
+# ----------------------------------------------------------------------------
+def _q_user(body):
+    return (body.get("user") or "someone").strip()[:40]
+
+def _q_opts(body):
+    opts = {}
+    nodes = body.get("nodes")
+    if isinstance(nodes, list) and nodes:
+        opts["nodes"] = [str(n)[:40] for n in nodes][:8]
+    if body.get("boxes_only") and (session.get("admin") or queue_privileged()):
+        opts["boxes_only"] = True
+    return opts or None
+
+@app.route("/api/queue")
+def api_queue():
+    queue_tick()
+    return jsonify(queue_state())
+
+@app.route("/api/queue/add", methods=["POST"])
+def api_queue_add():
+    body = request.get_json(silent=True) or {}
+    mode = body.get("mode") or "append"
+    if mode not in ("append", "replace"):
+        return jsonify({"ok": False, "error": "mode must be append or replace"}), 400
+    if mode == "replace" and not queue_privileged():
+        return jsonify({"ok": False, "error": "login required"}), 403
+    files = [f for f in (body.get("files") or []) if isinstance(f, str)][:500]
+    items = queue_add(files, _q_user(body), mode, _q_opts(body))
+    if not items:
+        return jsonify({"ok": False, "error": "nothing playable"}), 404
+    return jsonify({"ok": True, "added": len(items), "queue": queue_state()})
+
+@app.route("/api/queue/from", methods=["POST"])
+def api_queue_from():
+    """Play an ordered tag from a track / section / index to the end."""
+    body = request.get_json(silent=True) or {}
+    mode = body.get("mode") or "replace"
+    if mode == "replace" and not queue_privileged():
+        mode = "append"            # only editors / the house may wipe someone else's queue
+    o = tag_order((body.get("tag") or "").strip())
+    files = o["files"]
+    if not files:
+        return jsonify({"ok": False, "error": "no songs in that tag"}), 404
+    idx = 0
+    if body.get("file") in files:
+        idx = files.index(body["file"])
+    elif body.get("section"):
+        sec = _match_section(o["sections"], body["section"])
+        if not sec:
+            return jsonify({"ok": False, "error": "no such section",
+                            "sections": [x["name"] for x in o["sections"]]}), 404
+        idx = sec["index"]
+    elif body.get("index") is not None:
+        try:
+            idx = max(0, min(len(files) - 1, int(body["index"])))
+        except (TypeError, ValueError):
+            idx = 0
+    items = queue_add(files[idx:], _q_user(body), "replace" if mode == "replace" else "append", _q_opts(body))
+    return jsonify({"ok": True, "added": len(items), "from": o["names"][idx], "queue": queue_state()})
+
+@app.route("/api/tag_order/<slug>")
+def api_tag_order(slug):
+    return jsonify(tag_order(slug))
+
+@app.route("/api/queue/skip", methods=["POST"])
+def api_queue_skip():
+    return jsonify({"ok": queue_skip(), "queue": queue_state()})
+
+@app.route("/api/queue/prev", methods=["POST"])
+def api_queue_prev():
+    return jsonify({"ok": queue_prev(), "queue": queue_state()})
+
+@app.route("/api/queue/seek", methods=["POST"])
+def api_queue_seek():
+    body = request.get_json(silent=True) or {}
+    try:
+        tok, pos = int(body.get("token")), float(body.get("pos"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "token and pos required"}), 400
+    e = queue_seek(tok, pos)
+    if not e:
+        return jsonify({"ok": False}), 404
+    return jsonify({"ok": True, "entry": e})
+
+@app.route("/api/queue/move", methods=["POST"])
+def api_queue_move():
+    body = request.get_json(silent=True) or {}
+    try:
+        ok = queue_move(int(body.get("id")), int(body.get("to")))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False}), 400
+    return jsonify({"ok": ok, "queue": queue_state()})
+
+@app.route("/api/queue/remove", methods=["POST"])
+def api_queue_remove():
+    body = request.get_json(silent=True) or {}
+    try:
+        ok = queue_remove(int(body.get("id")))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False}), 400
+    return jsonify({"ok": ok, "queue": queue_state()})
+
+@app.route("/api/queue/clear", methods=["POST"])
+def api_queue_clear():
+    if not queue_privileged():
+        return jsonify({"ok": False, "error": "login required"}), 403
+    queue_clear(stop=False)
+    return jsonify({"ok": True, "queue": queue_state()})
+
+@app.route("/api/queue/stop", methods=["POST"])
+def api_queue_stop():
+    if not queue_privileged():
+        return jsonify({"ok": False, "error": "login required"}), 403
+    queue_clear(stop=True)
+    return jsonify({"ok": True, "queue": queue_state()})
+
+@app.route("/api/queue/mode", methods=["POST"])
+def api_queue_mode():
+    if not queue_privileged():
+        return jsonify({"ok": False, "error": "login required"}), 403
+    body = request.get_json(silent=True) or {}
+    m = body.get("mode")
+    if m not in ("overlap", "queue"):
+        return jsonify({"ok": False, "error": "mode must be overlap or queue"}), 400
+    with _Q_LOCK:
+        _QUEUE["mode"] = m
+        _q_save()
+    return jsonify({"ok": True, "queue": queue_state()})
 
 @app.route("/api/sync", methods=["GET", "POST"])
 def api_sync():
@@ -1700,6 +2113,8 @@ if __name__ == "__main__":
     load_feed()
     threading.Thread(target=_persist_loop, daemon=True).start()
     threading.Thread(target=probe_all_durations, daemon=True).start()
+    threading.Thread(target=_queue_loop, daemon=True, name="queue").start()
+    _house_token()
     print(f"Sound Server — {n} sounds from {SOUND_DIR}")
     print(f"  http://localhost:{PORT}")
     try:

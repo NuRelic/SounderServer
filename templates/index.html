@@ -421,6 +421,33 @@
   .np-slot .fav.on{color:var(--fav)}
   .np-slot .kill{width:16px;height:16px;border-radius:50%;background:#ff5b5b;color:#fff;border:none;
     font-size:10px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  /* queue mode (docs/queue-mode.md) */
+  .np-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap;position:relative}
+  .qmode{display:inline-flex;border:1px solid var(--line);border-radius:999px;overflow:hidden}
+  .qmode button{background:var(--panel2);border:none;border-left:1px solid var(--line);color:var(--dim);
+    padding:2px 9px;cursor:pointer;font:inherit;font-size:11px}
+  .qmode button:first-child{border-left:none}
+  .qmode button.on{background:var(--song);color:#1a0e2e;font-weight:700}
+  .qmode button:disabled{cursor:default}
+  .qbtn{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:999px;
+    padding:2px 9px;cursor:pointer;font:inherit;font-size:11px;font-weight:600}
+  .qbtn:hover{border-color:var(--song)}
+  .qpanel{display:none;position:absolute;top:100%;left:0;z-index:60;margin-top:4px;width:min(440px,92vw);
+    max-height:60vh;overflow:auto;background:var(--panel);border:1px solid var(--song);border-radius:10px;
+    padding:8px;box-shadow:0 8px 28px rgba(0,0,0,.45)}
+  .qpanel.show{display:block}
+  .qrow{display:flex;align-items:center;gap:6px;padding:5px 6px;border-radius:7px;font-size:12px}
+  .qrow:nth-child(odd){background:var(--panel2)}
+  .qrow.now{border:1px solid var(--song)}
+  .qrow .qn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+  .qrow .qd{color:var(--dim);font-variant-numeric:tabular-nums}
+  .qrow button{background:none;border:1px solid var(--line);color:var(--dim);border-radius:6px;cursor:pointer;
+    font-size:11px;padding:1px 6px}
+  .qrow button:hover{color:var(--txt);border-color:var(--song)}
+  .qfoot{display:flex;gap:8px;align-items:center;justify-content:space-between;margin-top:6px;color:var(--dim);font-size:11px}
+  .np-slot{position:relative}
+  .np-slot .seek{position:absolute;left:8px;right:8px;bottom:1px;height:8px;margin:0;accent-color:var(--song);cursor:pointer}
+  select.tp{appearance:auto}
   .np-slot.idle{color:var(--dim);justify-content:center;font-size:11px;border-style:dashed}
   /* controls size to their content and never wrap; now-playing yields the width */
   .hdctrls{flex:0 0 auto;display:flex;flex-direction:column;gap:6px;justify-content:center;align-items:flex-end;
@@ -491,7 +518,16 @@
 <body>
 <header class="combo">
   <div class="nowplay">
-    <span class="np-lab">▶ Now playing</span>
+    <div class="np-head">
+      <span class="np-lab">▶ Now playing</span>
+      <div class="qmode" id="qMode" title="Overlap: a new song cuts the current one. Queue: songs line up and play in order.">
+        <button data-m="overlap">Overlap</button><button data-m="queue">Queue</button>
+      </div>
+      <button class="qbtn" id="qBtn" title="Show the song queue">🎶 <b id="qCount">0</b></button>
+      <button class="qbtn" id="qPrev" title="Previous song" style="display:none">⏮</button>
+      <button class="qbtn" id="qSkip" title="Skip to the next song" style="display:none">⏭</button>
+      <div class="qpanel" id="qPanel"></div>
+    </div>
     <div id="laneBoxes" class="np-grid"></div>
   </div>
   <button class="iconbtn" id="ctrlToggle" title="Settings &amp; controls">☰</button>
@@ -579,6 +615,8 @@
         <button class="tp" id="tpShuf"   title="Play all clips in this tag, shuffled">🔀 Shuffle</button>
         <button class="tp" id="tpRand"   title="Play one random clip from this tag">🎲 Random</button>
         <button class="tp stop" id="tpStop" title="Stop the sequence" style="display:none">⏹ Stop</button>
+        <button class="tp" id="tpQueue" title="Add every clip shown here to the song queue">➕ Queue all</button>
+        <select class="tp" id="tpFrom" title="Play this album from a chosen point to the end" style="display:none"></select>
         <span class="tpstat" id="tpStat"></span>
       </div>
       <div class="tagkids" id="tagKids"></div>
@@ -1135,6 +1173,7 @@ function paintTagBar(){
   const t = tagBy(TAGSEL);
   $('#tagName').textContent  = t ? t.label : TAGSEL;
   $('#tagCount').textContent = (t ? t.count : 0) + ' clips';
+  paintFromPicker(TAGSEL);
   const kids = tagKids(TAGSEL), box = $('#tagKids');
   box.innerHTML = '';
   if(!kids.length) return;
@@ -1220,6 +1259,102 @@ $('#scopeSel').addEventListener('click', e => {
   TAGSCOPE=b.dataset.scope;
   $('#scopeSel').querySelectorAll('button').forEach(x=>x.classList.toggle('on', x===b));
 });
+
+// ---- queue mode (docs/queue-mode.md) ----
+let QUEUE = {mode:'overlap', current:null, items:[], history:0, total:0};
+async function qPost(url, body){
+  try{
+    const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(Object.assign({user: uname()}, body||{}))});
+    const d = await safeJson(r);
+    if(r.status === 403){ seqStat('log in (☰) to do that'); return d; }
+    if(d && d.queue) paintQueue(d.queue);
+    return d;
+  }catch(_){ return null; }
+}
+function qDur(d){ return fmtDur(d||0); }
+function paintQueue(q){
+  if(!q) return;
+  QUEUE = q;
+  const canMode = !!(ME.admin || ME.can_edit);
+  document.querySelectorAll('#qMode button').forEach(b=>{
+    b.classList.toggle('on', b.dataset.m === q.mode);
+    b.disabled = !canMode;
+    b.title = canMode ? '' : 'log in to switch modes';
+  });
+  const n = (q.items||[]).length + (q.current ? 1 : 0);
+  $('#qCount').textContent = n;
+  $('#qSkip').style.display = q.current ? '' : 'none';
+  $('#qPrev').style.display = (q.history > 0) ? '' : 'none';
+  const panel = $('#qPanel');
+  if(!panel.classList.contains('show')) return;
+  const sig = JSON.stringify([q.current && q.current.token, (q.items||[]).map(i=>i.id), q.mode, canMode]);
+  if(panel.dataset.sig === sig) return;
+  panel.dataset.sig = sig;
+  let h = '';
+  if(q.current) h += `<div class="qrow now"><span>▶</span><span class="qn">${esc(q.current.name)}</span><span class="qd">${qDur(q.current.dur)}</span></div>`;
+  (q.items||[]).forEach((it, i) => {
+    h += `<div class="qrow" data-id="${it.id}"><span class="qd">${i+1}</span><span class="qn">${esc(it.name)}</span>`+
+         `<span class="qd">${qDur(it.dur)}</span>`+
+         `<button data-a="up" title="move up">↑</button><button data-a="down" title="move down">↓</button>`+
+         `<button data-a="rm" title="remove">✕</button></div>`;
+  });
+  if(!q.current && !(q.items||[]).length)
+    h += `<div class="qrow"><span class="qn" style="font-weight:400;color:var(--dim)">Queue is empty. `+
+         (q.mode === 'queue' ? 'Click songs to line them up.' : 'Switch to Queue mode, or use ➕ Queue all / Start at… in a tag.')+`</span></div>`;
+  h += `<div class="qfoot"><span>${(q.items||[]).length} up next · ${qDur(q.total)}</span>`+
+       (canMode ? `<span><button class="qbtn" id="qClear">Clear</button> <button class="qbtn" id="qStop">⏹ Stop all</button></span>` : '')+`</div>`;
+  panel.innerHTML = h;
+  panel.querySelectorAll('.qrow[data-id] button').forEach(b=>{
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      const id = +b.closest('.qrow').dataset.id, idx = (QUEUE.items||[]).findIndex(x=>x.id===id);
+      if(b.dataset.a === 'rm') qPost('/api/queue/remove', {id});
+      else qPost('/api/queue/move', {id, to: Math.max(0, idx + (b.dataset.a === 'up' ? -1 : 1))});
+    };
+  });
+  const c = $('#qClear'); if(c) c.onclick = (ev)=>{ ev.stopPropagation(); qPost('/api/queue/clear'); };
+  const st = $('#qStop'); if(st) st.onclick = (ev)=>{ ev.stopPropagation(); qPost('/api/queue/stop'); };
+}
+$('#qMode').addEventListener('click', e => {
+  const b = e.target.closest('button[data-m]'); if(!b || b.disabled) return;
+  qPost('/api/queue/mode', {mode: b.dataset.m});
+});
+$('#qBtn').onclick = (e) => { e.stopPropagation(); const p=$('#qPanel'); p.classList.toggle('show'); p.dataset.sig=''; paintQueue(QUEUE); };
+$('#qPanel').addEventListener('click', e => e.stopPropagation());
+document.addEventListener('click', () => $('#qPanel').classList.remove('show'));
+$('#qSkip').onclick = () => qPost('/api/queue/skip');
+$('#qPrev').onclick = () => qPost('/api/queue/prev');
+$('#tpQueue').onclick = async () => {
+  const files = LASTLIST.filter(Boolean).map(s=>s.file);
+  if(!files.length){ seqStat('nothing to queue'); return; }
+  const d = await qPost('/api/queue/add', {files, mode:'append'});
+  if(d && d.ok) seqStat('➕ queued ' + d.added);
+};
+// "Start at…" for album-like tags: tracks in album order + named sections (EPIC's sagas)
+const _tagOrderCache = {};
+async function paintFromPicker(slug){
+  const sel = $('#tpFrom');
+  if(!slug){ sel.style.display='none'; return; }
+  let o = _tagOrderCache[slug];
+  if(!o){ try{ o = await (await fetch('/api/tag_order/'+encodeURIComponent(slug))).json(); }catch(_){ o = null; } _tagOrderCache[slug] = o; }
+  if(TAGSEL !== slug) return;
+  if(!o || (o.files||[]).length < 2){ sel.style.display='none'; return; }
+  let h = `<option value="">⏩ Start at…</option>`;
+  if((o.sections||[]).length){
+    h += `<optgroup label="Sagas / sections">` + o.sections.map(s=>`<option value="s:${esc(s.name)}">${esc(s.name)} saga → end</option>`).join('') + `</optgroup>`;
+  }
+  h += `<optgroup label="Track">` + o.files.map((f,i)=>`<option value="f:${esc(f)}">${i+1}. ${esc(o.names[i])}</option>`).join('') + `</optgroup>`;
+  sel.innerHTML = h; sel.style.display = '';
+}
+$('#tpFrom').onchange = async () => {
+  const v = $('#tpFrom').value; $('#tpFrom').value = '';
+  if(!v || !TAGSEL) return;
+  const body = {tag: TAGSEL};
+  if(v.startsWith('s:')) body.section = v.slice(2); else body.file = v.slice(2);
+  const d = await qPost('/api/queue/from', body);
+  if(d && d.ok) seqStat('⏩ from ' + d.from + ' · ' + d.added + ' songs');
+};
 
 // ---- render board ----
 function render(){
@@ -1731,6 +1866,7 @@ async function fireFile(file, lane){
   const r = await fetch('/api/fire',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({file, user:uname(), lane, color:ucolor()})});
   const d = await r.json();
+  if(d.queue) paintQueue(d.queue);
   if(d.ok && d.fired) startEntry(d.fired);   // instant for the firing user
 }
 async function fireCmd(cmd, lane){
@@ -1863,10 +1999,19 @@ async function pollActive(){
       for(const tok of Object.keys(playing)){
         if(!live.has(+tok)){ try{playing[tok].pause();}catch(e){} delete playing[tok]; delete activeMeta[tok]; blocked.delete(+tok); }
       }
-      for(const a of d.active) startEntry(a);
+      for(const a of d.active){
+        const m = activeMeta[a.token];
+        if(m && Math.abs((m.start||0) - a.start) > 0.5){          // someone seeked this song
+          m.start = a.start;
+          const el = playing[a.token];
+          if(el){ try{ el.currentTime = Math.max(0, serverNow() - (a.start + SYNC_BUFFER)); }catch(_){ } }
+        }
+        startEntry(a);
+      }
       retryBlocked();   // a clip blocked earlier may now be playable (audio since unlocked)
     }
     paintChannels(d.active);
+    if(d.queue) paintQueue(d.queue);
     _roomLive = (d.active || []).length > 0;   // drives the adaptive poll cadence below
   }catch(e){ noteConn(performance.now()-_t0, false); }
 }
@@ -1887,7 +2032,7 @@ function paintChannels(active){
     else slots.push({idle:true, song:false});
   }
   // only rebuild when contents change — otherwise the countdown span gets wiped each poll
-  const sig=slots.map(s=>s.idle ? ('idle'+(s.song?'S':'')) : s.a.token).join(',');
+  const sig=slots.map(s=>s.idle ? ('idle'+(s.song?'S':'')) : (s.a.token+':'+(s.a.seek||0))).join(',');
   if(box.dataset.sig===sig) return;
   box.dataset.sig=sig; _remDirty=true;
   box.innerHTML='';
@@ -1904,12 +2049,23 @@ function paintChannels(active){
       (canKill?`<button class="kill" title="stop this sound">✕</button>`:'')+
       `<span class="cnm" data-tip="${esc(a.name)}">${esc(a.name)}</span>`+
       `<span class="by"${a.color?' style="color:'+a.color+'"':''}>${esc(a.by||'')}</span>`+
-      `<span class="rem" data-end="${a.start+(a.dur||0)}"></span>`;
+      `<span class="rem" data-end="${a.start+(a.dur||0)}"></span>`+
+      ((s.song && (a.dur||0) >= 10) ? `<input type="range" class="seek" min="0" max="${Math.floor(a.dur)}" step="1" title="drag to jump in the song">` : '');
     if(canKill) el.querySelector('.kill').onclick=()=>killActive(a.token);
+    const sk = el.querySelector('.seek');
+    if(sk){
+      sk._start = a.start; sk._tok = a.token;
+      sk.addEventListener('input', ()=>{ sk._drag = true; });
+      sk.addEventListener('change', async ()=>{
+        await qPost('/api/queue/seek', {token: a.token, pos: +sk.value});
+        setTimeout(()=>{ sk._drag = false; }, 1500);
+      });
+    }
     updateRem(el.querySelector('.rem'));
     box.appendChild(el);
   }
   _remNodes = Array.from(document.querySelectorAll('#laneBoxes .np-slot .rem')); _remDirty=false;
+  _seekNodes = Array.from(document.querySelectorAll('#laneBoxes .np-slot .seek'));
 }
 function laneClass(lane){ return 'lane-'+lane; }   // 'lane-0'.. or 'lane-song0'/'lane-song1'
 // live "time remaining" countdown on the channel chips
@@ -1919,7 +2075,11 @@ function updateRem(el){
   el.textContent = r>=60 ? (Math.floor(r/60)+':'+String(Math.floor(r%60)).padStart(2,'0')) : (Math.ceil(r)+'s');
 }
 let _remDirty = true, _remNodes = [];
-setInterval(()=>{ for(const el of _remNodes) updateRem(el); }, 250);
+let _seekNodes = [];
+setInterval(()=>{
+  for(const el of _remNodes) updateRem(el);
+  for(const sk of _seekNodes){ if(!sk._drag) sk.value = Math.max(0, serverNow() - (sk._start + SYNC_BUFFER)); }
+}, 250);
 document.querySelectorAll('#typeFilter button').forEach(b=>{
   b.onclick=()=>{ SONGFILTER=b.dataset.t;
     document.querySelectorAll('#typeFilter button').forEach(x=>x.classList.toggle('on',x===b));
@@ -2207,6 +2367,10 @@ function feedItem(it){
       (it.file?`<button class="fav${FAVSET.has(it.file)?' on':''}" data-file="${esc(it.file)}" title="favorite this sound">★</button>`:'')+
       `<span class="t">${t}</span>`;
     if(it.file){ const fb=el.querySelector('.fav'); fb.onclick=(e)=>{ e.stopPropagation(); toggleFav({file:it.file}); fb.classList.toggle('on', FAVSET.has(it.file)); }; }
+  } else if(it.kind==='queue'){
+    el.className = 'fi chat';
+    el.innerHTML = `<span class="u" style="color:${uc}">${esc(it.user)}</span> `+
+      `<span class="x">➕ queued ${esc(it.name||'')}</span><span class="t">${t}</span>`;
   } else {
     el.className = 'fi chat';
     el.innerHTML = `<span class="u" style="color:${uc}">${esc(it.user)}</span> `+
